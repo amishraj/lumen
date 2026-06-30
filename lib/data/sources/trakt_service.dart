@@ -21,8 +21,10 @@ class TraktService {
   // you register once at trakt.tv/oauth/applications) and every user — you and
   // your friends — connects with just a code, no per-user app registration.
   // Leave empty to fall back to in-app credential entry.
-  static const _embeddedClientId = '';
-  static const _embeddedClientSecret = '';
+  static const _embeddedClientId =
+      '351218759d9c05f412c54ba1edeb61144f8aa238270671d54d80a2e5f6aa626e';
+  static const _embeddedClientSecret =
+      '468da7a135dbf1bce84a072a543cfbfef27a9c6f07b2f995d424e66e8ae463db';
 
   static const _api = 'https://api.trakt.tv';
   final _dio = Dio(BaseOptions(
