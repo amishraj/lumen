@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lumen — your IPTV, everywhere</title>
+<style>
+  :root{
+    --bg:#0A0B0F; --surface:#14161D; --surface-hi:#1C1F29;
+    --accent:#7B9BFF; --warm:#FFB35C; --text:#E6E8EF; --muted:#9AA0B0;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg);color:var(--text);
+    -webkit-font-smoothing:antialiased;line-height:1.5;
+  }
+  .hero{
+    min-height:62vh;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;text-align:center;padding:80px 24px 60px;
+    background:radial-gradient(1200px 600px at 50% -10%, #1B2348 0%, var(--bg) 60%);
+  }
+  .logo{font-size:64px;line-height:1}
+  h1{font-size:clamp(40px,8vw,76px);letter-spacing:-2px;font-weight:800;margin:14px 0 6px}
+  .tag{color:var(--muted);font-size:clamp(16px,3vw,21px);max-width:620px}
+  .pill{display:inline-block;margin-top:22px;padding:7px 16px;border-radius:30px;
+    background:var(--surface);color:var(--accent);font-size:13px;font-weight:600}
+  .grid{
+    max-width:980px;margin:0 auto;padding:20px 24px 80px;
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;
+  }
+  .card{
+    background:var(--surface);border-radius:22px;padding:28px 24px;
+    border:1px solid #ffffff0d;transition:transform .18s ease, border-color .18s ease;
+  }
+  .card:hover{transform:translateY(-4px);border-color:#7b9bff44}
+  .card .ic{font-size:34px}
+  .card h3{margin:14px 0 4px;font-size:20px}
+  .card p{color:var(--muted);font-size:13.5px;min-height:38px}
+  .btn{
+    display:block;text-align:center;margin-top:16px;padding:13px;border-radius:14px;
+    background:var(--accent);color:#0A0B0F;font-weight:700;text-decoration:none;
+    transition:filter .15s ease;
+  }
+  .btn:hover{filter:brightness(1.08)}
+  .btn.ghost{background:var(--surface-hi);color:var(--text)}
+  .note{max-width:720px;margin:0 auto 70px;padding:20px 24px;color:var(--muted);
+    font-size:13px;text-align:center}
+  .note code{background:var(--surface-hi);padding:2px 7px;border-radius:6px;color:var(--accent)}
+  footer{text-align:center;color:#5b6072;font-size:12px;padding:40px 0 60px}
+  a.inline{color:var(--accent)}
+</style>
+</head>
+<body>
+  <header class="hero">
+    <div class="logo">⚡</div>
+    <h1>Lumen</h1>
+    <p class="tag">Your IPTV — buttery smooth on every screen. Live TV &amp; movies from your own M3U or Xtream account, built to fly through 40,000+ channels.</p>
+    <span class="pill">Android · Google&nbsp;TV · iOS · macOS</span>
+  </header>
+
+  <main class="grid">
+    <div class="card">
+      <div class="ic">🤖</div>
+      <h3>Android</h3>
+      <p>Phones &amp; tablets. Universal build — installs on anything.</p>
+      <a class="btn" href="../../releases/latest/download/Lumen-universal.apk">Download APK</a>
+    </div>
+    <div class="card">
+      <div class="ic">📺</div>
+      <h3>Google TV / Android TV</h3>
+      <p>Sideload the same universal APK; it shows in the TV launcher.</p>
+      <a class="btn ghost" href="../../releases/latest/download/Lumen-universal.apk">Download APK</a>
+    </div>
+    <div class="card">
+      <div class="ic">🍏</div>
+      <h3>iOS</h3>
+      <p>Unsigned IPA — install with AltStore or Sideloadly.</p>
+      <a class="btn ghost" href="../../releases/latest/download/Lumen-iOS-unsigned.ipa">Download IPA</a>
+    </div>
+    <div class="card">
+      <div class="ic">💻</div>
+      <h3>macOS</h3>
+      <p>Native desktop app. Unzip and drag to Applications.</p>
+      <a class="btn ghost" href="../../releases/latest/download/Lumen-macOS.zip">Download for Mac</a>
+    </div>
+  </main>
+
+  <p class="note">
+    Links point to the latest <a class="inline" href="../../releases/latest">GitHub Release</a>.
+    iOS unsigned builds need <code>AltStore</code> or <code>Sideloadly</code>.
+    On macOS, right-click → Open the first time (unsigned).
+    All versions are listed on the <a class="inline" href="../../releases">Releases page</a>.
+  </p>
+
+  <footer>
+    Lumen is a media player. It plays only the playlists you provide. · Built with Flutter.
+  </footer>
+</body>
+</html>

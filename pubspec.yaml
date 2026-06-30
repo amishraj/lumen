@@ -1,0 +1,41 @@
+name: lumen
+description: "Lumen — a buttery-smooth personal IPTV player for Android, Google TV, iOS & macOS."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.5.1
+
+  # Storage — SQLite source of truth + FTS5 search
+  sqflite: ^2.3.3
+  path: ^1.9.0
+  path_provider: ^2.1.4
+
+  # Networking (M3U download + Xtream Codes API)
+  dio: ^5.7.0
+
+  # Player — libmpv, handles MPEG-TS/HLS and the messy real-world IPTV codecs
+  media_kit: ^1.1.11
+  media_kit_video: ^1.2.5
+  media_kit_libs_video: ^1.0.5
+
+  # Logos — disk-cached, downscaled so 40k images never OOM
+  cached_network_image: ^3.4.1
+
+  # Misc UI
+  shimmer: ^3.0.0
+
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
