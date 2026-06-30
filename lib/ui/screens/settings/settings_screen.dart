@@ -2,12 +2,46 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/sources/omdb_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../home/home_customize_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import 'trakt_screen.dart';
+
+Future<void> _editOmdbKey(BuildContext context, WidgetRef ref) async {
+  final svc = await ref.read(omdbServiceProvider.future);
+  final ctl = TextEditingController(text: await svc.key() ?? '');
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('OMDb API key'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+              'Free key from omdbapi.com/apikey.aspx — enables IMDb, Rotten '
+              'Tomatoes & Metacritic ratings.',
+              style: TextStyle(fontSize: 12.5, color: Color(0xFF9AA0B0))),
+          const SizedBox(height: 12),
+          TextField(controller: ctl, decoration: const InputDecoration(hintText: 'API key')),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () async {
+            await svc.saveKey(ctl.text);
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
 
 /// Manage sources: switch active playlist, re-sync, or remove.
 class SettingsScreen extends ConsumerWidget {
@@ -91,6 +125,15 @@ class SettingsScreen extends ConsumerWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const TraktScreen())),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.star_rounded, color: Color(0xFFF5C518)),
+              title: const Text('Ratings (OMDb)'),
+              subtitle: const Text('IMDb / Rotten Tomatoes / Metacritic key'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _editOmdbKey(context, ref),
             ),
           ),
         ],

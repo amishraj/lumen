@@ -108,6 +108,8 @@ class LibraryRepository {
   Future<Set<int>> favoriteIds() => db.favoriteIds();
   Future<void> toggleFavorite(int id, bool fav) => db.toggleFavorite(id, fav);
   Future<List<StreamItem>> favorites() => db.favorites();
+  Future<List<StreamItem>> sportsEvents(int playlistId) =>
+      db.sportsEvents(playlistId);
   Future<EpgEntry?> nowPlaying(String channelId) =>
       db.nowPlaying(channelId, DateTime.now().millisecondsSinceEpoch);
 

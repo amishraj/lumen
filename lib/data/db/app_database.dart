@@ -382,6 +382,29 @@ class AppDatabase {
     return rows.map(StreamItem.fromRow).toList();
   }
 
+  /// Event-style live channels for the Sports tab: "TEAM vs TEAM" names plus
+  /// anything in a sports-flavoured category. (LIKE is case-insensitive for
+  /// ASCII, so "% vs %" also catches "VS".)
+  Future<List<StreamItem>> sportsEvents(int playlistId, {int limit = 1200}) async {
+    final rows = await db.rawQuery(
+      "SELECT * FROM streams WHERE playlist_id=? AND kind='live' AND ("
+      "  name LIKE '% vs %' OR name LIKE '% v %'"
+      "  OR group_title LIKE '%sport%' OR group_title LIKE '%world cup%'"
+      "  OR group_title LIKE '%football%' OR group_title LIKE '%soccer%'"
+      "  OR group_title LIKE '%basket%' OR group_title LIKE '%nba%'"
+      "  OR group_title LIKE '%nfl%' OR group_title LIKE '%nhl%'"
+      "  OR group_title LIKE '%hockey%' OR group_title LIKE '%tennis%'"
+      "  OR group_title LIKE '%ufc%' OR group_title LIKE '%boxing%'"
+      "  OR group_title LIKE '%olympic%' OR group_title LIKE '%espn%'"
+      "  OR group_title LIKE '%dazn%' OR group_title LIKE '%sky spor%'"
+      "  OR group_title LIKE '%cricket%' OR group_title LIKE '%rugby%'"
+      "  OR group_title LIKE '%motogp%' OR group_title LIKE '%formula%' OR group_title LIKE '% f1%'"
+      ") ORDER BY group_title, num, name COLLATE NOCASE LIMIT ?",
+      [playlistId, limit],
+    );
+    return rows.map(StreamItem.fromRow).toList();
+  }
+
   /// FTS search — instant substring/prefix match across all names.
   Future<List<StreamItem>> search({
     required int playlistId,

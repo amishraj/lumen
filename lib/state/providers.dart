@@ -164,6 +164,15 @@ final favoritesListProvider =
   return repo.favorites();
 });
 
+/// Event-style live channels for the Sports tab.
+final sportsEventsProvider =
+    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  return repo.sportsEvents(pl!.id!);
+});
+
 /// First N items of a kind (for "Movies for You" / "TV Shows" home rows).
 final kindSampleProvider = FutureProvider.autoDispose
     .family<List<StreamItem>, StreamKind>((ref, kind) async {

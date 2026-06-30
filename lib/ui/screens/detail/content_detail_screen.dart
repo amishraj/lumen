@@ -1,0 +1,146 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../data/models/models.dart';
+import '../../../data/sources/omdb_service.dart';
+import '../../../state/providers.dart';
+import '../../theme/lumen_theme.dart';
+import '../../widgets/focusable_item.dart';
+import '../../widgets/logo_image.dart';
+import '../../widgets/rating_badges.dart';
+import '../player/player_screen.dart';
+
+/// Movie detail page (Netflix/Kodi-style): backdrop, title, IMDb/RT/Metacritic
+/// ratings + plot from OMDb, and Play. Metadata loads lazily and is cached.
+class ContentDetailScreen extends ConsumerWidget {
+  const ContentDetailScreen({super.key, required this.item});
+  final StreamItem item;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final meta = ref.watch(omdbProvider(item.name));
+    final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
+    final isFav = item.id != null && favs.contains(item.id);
+    final info = meta.valueOrNull;
+
+    return Scaffold(
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 320,
+            pinned: true,
+            flexibleSpace: FlexibleSpaceBar(
+              background: Stack(
+                fit: StackFit.expand,
+                children: [
+                  LogoImage(
+                    url: info?.poster ?? item.logo,
+                    size: 1000,
+                    height: 320,
+                    radius: 0,
+                    fallbackText: item.name,
+                  ),
+                  const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.transparent, Color(0xFF0A0B0F)],
+                        stops: [0.45, 1],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(item.name,
+                      style: const TextStyle(
+                          fontSize: 26, fontWeight: FontWeight.w900, height: 1.1)),
+                  const SizedBox(height: 8),
+                  if (info != null)
+                    Text(
+                      [info.year, info.rated, info.runtime, info.genre]
+                          .where((e) => e != null && e.isNotEmpty)
+                          .join('  •  '),
+                      style: const TextStyle(color: Color(0xFF9AA0B0), fontSize: 13),
+                    ),
+                  const SizedBox(height: 14),
+                  if (meta.isLoading)
+                    const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                  else
+                    RatingBadges(info: info),
+                  const SizedBox(height: 18),
+                  Row(children: [
+                    FocusableItem(
+                      autofocus: true,
+                      borderRadius: 12,
+                      onActivate: () => Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => PlayerScreen(item: item))),
+                      builder: (context, focused) => Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 13),
+                        decoration: BoxDecoration(
+                            color: Colors.white, borderRadius: BorderRadius.circular(12)),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.play_arrow_rounded, color: Color(0xFF0A0B0F)),
+                          SizedBox(width: 6),
+                          Text('Play',
+                              style: TextStyle(
+                                  color: Color(0xFF0A0B0F),
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 15)),
+                        ]),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    FocusableItem(
+                      borderRadius: 12,
+                      onActivate: () async {
+                        if (item.id == null) return;
+                        final repo = await ref.read(repositoryProvider.future);
+                        await repo.toggleFavorite(item.id!, !isFav);
+                        ref.invalidate(favoriteIdsProvider);
+                        ref.invalidate(favoritesListProvider);
+                      },
+                      builder: (context, focused) => Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+                        decoration: BoxDecoration(
+                            color: LumenTheme.surfaceHi,
+                            borderRadius: BorderRadius.circular(12)),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(isFav ? Icons.check : Icons.add,
+                              color: Colors.white, size: 20),
+                          const SizedBox(width: 6),
+                          const Text('My List',
+                              style: TextStyle(
+                                  color: Colors.white, fontWeight: FontWeight.w700)),
+                        ]),
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 20),
+                  if (info?.plot != null)
+                    Text(info!.plot!,
+                        style: const TextStyle(
+                            fontSize: 14, height: 1.5, color: Color(0xFFC7CBD6)))
+                  else if (!meta.isLoading)
+                    const Text('No description available.',
+                        style: TextStyle(color: Color(0xFF6B7080), fontSize: 13)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

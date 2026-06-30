@@ -188,6 +188,51 @@ class TraktService {
     return out;
   }
 
+  /// Resume point (0..1) for a title from Trakt's cross-device playback store.
+  /// Title-matched, so best-effort for IPTV items.
+  Future<double?> resumeProgress(String title, {bool isShow = false}) async {
+    if (!await isConnected()) return null;
+    try {
+      final type = isShow ? 'episodes' : 'movies';
+      final res = await _dio.get('$_api/sync/playback/$type',
+          options: Options(headers: await _authHeaders()));
+      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      if (list is! List) return null;
+      final needle = title.toLowerCase();
+      for (final e in list) {
+        if (e is! Map) continue;
+        final node = e[isShow ? 'show' : 'movie'];
+        final t = node is Map ? '${node['title']}'.toLowerCase() : '';
+        if (t.isNotEmpty && (needle.contains(t) || t.contains(needle))) {
+          final p = (e['progress'] as num?)?.toDouble();
+          if (p != null) return p / 100.0;
+        }
+      }
+    } catch (_) {/* best effort */}
+    return null;
+  }
+
+  /// Push a playback progress checkpoint (pause scrobble) so other devices can
+  /// resume. progress is 0..100.
+  Future<void> savePlayback(String title,
+      {int? year, bool isShow = false, required double progressPct}) async {
+    if (!await isConnected()) return;
+    if (progressPct < 1 || progressPct > 95) return;
+    try {
+      final type = isShow ? 'show' : 'movie';
+      final search = await _dio.get('$_api/search/$type',
+          queryParameters: {'query': title, if (year != null) 'years': '$year'},
+          options: Options(headers: await _authHeaders()));
+      final list = search.data is String ? jsonDecode(search.data) : search.data;
+      if (list is! List || list.isEmpty) return;
+      final node = (list.first as Map)[type];
+      if (node is! Map) return;
+      await _dio.post('$_api/scrobble/pause',
+          data: jsonEncode({type: {'ids': node['ids']}, 'progress': progressPct}),
+          options: Options(headers: await _authHeaders()));
+    } catch (_) {/* best effort */}
+  }
+
   /// Best-effort: mark a title watched on Trakt by searching for it first.
   /// IPTV items aren't tied to Trakt ids, so we match on title/year.
   Future<void> markWatched(String title, {int? year, bool isShow = false}) async {

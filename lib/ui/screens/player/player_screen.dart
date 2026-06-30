@@ -40,31 +40,54 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     }
-    // Persist resume position for VOD as it plays, and scrobble to Trakt once
-    // a movie passes the 90% completion mark (best-effort title match).
-    if (widget.item.kind != StreamKind.live) {
-      _player.stream.position.listen((pos) async {
-        final dur = _player.state.duration;
-        if (dur.inMilliseconds <= 0) return;
-        if (widget.item.id != null) {
-          final repo = ref.read(repositoryProvider).valueOrNull;
-          await repo?.db.saveProgress(
-              widget.item.id!, pos.inMilliseconds, dur.inMilliseconds);
-        }
-        if (!_scrobbled && pos.inMilliseconds / dur.inMilliseconds >= 0.9) {
-          _scrobbled = true;
-          final svc = ref.read(traktServiceProvider).valueOrNull;
-          svc?.markWatched(widget.item.name,
-              isShow: widget.item.kind == StreamKind.series);
-        }
-      });
-    }
+    if (widget.item.kind == StreamKind.live) return;
+
+    // Cross-device resume: ask Trakt where this title was left off, then seek
+    // once we know the duration.
+    final svc = ref.read(traktServiceProvider).valueOrNull;
+    final resume = await svc?.resumeProgress(widget.item.name,
+        isShow: widget.item.kind == StreamKind.series);
+
+    _player.stream.position.listen((pos) async {
+      final dur = _player.state.duration;
+      if (dur.inMilliseconds <= 0) return;
+      _lastPosMs = pos.inMilliseconds;
+      _lastDurMs = dur.inMilliseconds;
+
+      // Seek to the Trakt resume point once, near the start of playback.
+      if (!_sought && resume != null && resume > 0.02 && resume < 0.9) {
+        _sought = true;
+        await _player.seek(Duration(milliseconds: (dur.inMilliseconds * resume).round()));
+      }
+
+      if (widget.item.id != null) {
+        final repo = ref.read(repositoryProvider).valueOrNull;
+        await repo?.db.saveProgress(widget.item.id!, pos.inMilliseconds, dur.inMilliseconds);
+      }
+      if (!_scrobbled && pos.inMilliseconds / dur.inMilliseconds >= 0.9) {
+        _scrobbled = true;
+        svc?.markWatched(widget.item.name,
+            isShow: widget.item.kind == StreamKind.series);
+      }
+    });
   }
 
   bool _scrobbled = false;
+  bool _sought = false;
+  int _lastPosMs = 0;
+  int _lastDurMs = 0;
 
   @override
   void dispose() {
+    // Push a resume checkpoint to Trakt so other devices can pick up.
+    if (widget.item.kind != StreamKind.live &&
+        _lastDurMs > 0 &&
+        !_scrobbled) {
+      final svc = ref.read(traktServiceProvider).valueOrNull;
+      svc?.savePlayback(widget.item.name,
+          isShow: widget.item.kind == StreamKind.series,
+          progressPct: _lastPosMs / _lastDurMs * 100.0);
+    }
     _player.dispose();
     super.dispose();
   }

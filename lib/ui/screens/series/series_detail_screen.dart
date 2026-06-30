@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/sources/omdb_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/logo_image.dart';
+import '../../widgets/rating_badges.dart';
 import '../player/player_screen.dart';
 
 /// Shows a series' seasons & episodes. Episodes are fetched lazily from the
@@ -85,6 +87,27 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
                 ],
               ),
             ),
+          ),
+          SliverToBoxAdapter(
+            child: Consumer(builder: (context, ref, _) {
+              final info = ref.watch(omdbProvider(widget.series.name)).valueOrNull;
+              if (info == null) return const SizedBox(height: 8);
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    RatingBadges(info: info),
+                    if (info.plot != null) ...[
+                      const SizedBox(height: 12),
+                      Text(info.plot!,
+                          style: const TextStyle(
+                              fontSize: 13.5, height: 1.5, color: Color(0xFFC7CBD6))),
+                    ],
+                  ],
+                ),
+              );
+            }),
           ),
           SliverToBoxAdapter(
             child: FutureBuilder<List<Episode>>(

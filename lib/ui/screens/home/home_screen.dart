@@ -11,9 +11,10 @@ import '../live/live_tv_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import '../search/search_screen.dart';
 import '../settings/settings_screen.dart';
+import '../sports/sports_screen.dart';
 import 'home_feed_screen.dart';
 
-const int _searchTab = 2;
+const int _searchTab = 3;
 
 /// Root shell. Auto-routes to onboarding when no source exists, otherwise shows
 /// the tabbed experience with a master search bar in the app bar.
@@ -67,6 +68,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         const pages = [
           HomeFeedScreen(),
           LiveTvScreen(),
+          SportsScreen(),
           SearchScreen(),
           SettingsScreen(),
         ];
@@ -106,6 +108,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 items: const [
                   NavRailItem(Icons.home_outlined, Icons.home, 'Home'),
                   NavRailItem(Icons.live_tv_outlined, Icons.live_tv, 'Watch'),
+                  NavRailItem(Icons.sports_soccer_outlined, Icons.sports_soccer, 'Sports'),
                   NavRailItem(Icons.search, Icons.search, 'Search'),
                   NavRailItem(Icons.tune, Icons.tune, 'Sources'),
                 ],
