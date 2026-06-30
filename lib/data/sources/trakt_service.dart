@@ -164,28 +164,117 @@ class TraktService {
   }
 
   /// The user's Trakt watchlist (movies + shows), as discovery items.
-  Future<List<TraktItem>> watchlist() async {
+  Future<List<TraktItem>> watchlist() => _itemsFrom('$_api/sync/watchlist');
+
+  /// Movies the user has marked watched on Trakt.
+  Future<List<TraktItem>> watchedMovies() async {
     if (!await isConnected()) return [];
-    final res = await _dio.get('$_api/sync/watchlist',
-        options: Options(headers: await _authHeaders()));
-    if (res.statusCode != 200) return [];
-    final list = res.data is String ? jsonDecode(res.data) : res.data;
-    final out = <TraktItem>[];
-    if (list is List) {
-      for (final e in list) {
-        if (e is! Map) continue;
-        final type = '${e['type']}';
-        final node = e[type];
-        if (node is Map) {
-          out.add(TraktItem(
-            title: '${node['title'] ?? ''}',
-            year: (node['year'] as num?)?.toInt(),
-            type: type,
-          ));
+    try {
+      final res = await _dio.get('$_api/sync/watched/movies',
+          options: Options(headers: await _authHeaders()));
+      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final out = <TraktItem>[];
+      if (list is List) {
+        for (final e in list) {
+          final m = e is Map ? e['movie'] : null;
+          if (m is Map && m['title'] != null) {
+            out.add(TraktItem(
+                title: '${m['title']}',
+                year: (m['year'] as num?)?.toInt(),
+                type: 'movie'));
+          }
         }
       }
+      return out;
+    } catch (_) {
+      return [];
     }
-    return out;
+  }
+
+  /// The user's custom Trakt lists.
+  Future<List<TraktList>> lists() async {
+    if (!await isConnected()) return [];
+    try {
+      final res = await _dio.get('$_api/users/me/lists',
+          options: Options(headers: await _authHeaders()));
+      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final out = <TraktList>[];
+      if (list is List) {
+        for (final e in list) {
+          if (e is Map && e['ids'] is Map) {
+            out.add(TraktList(
+                id: '${(e['ids'] as Map)['trakt']}',
+                name: '${e['name'] ?? 'List'}',
+                count: (e['item_count'] as num?)?.toInt() ?? 0));
+          }
+        }
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<List<TraktItem>> listItems(String listId) =>
+      _itemsFrom('$_api/users/me/lists/$listId/items/movies,shows');
+
+  /// In-progress playback (resume points) across the user's devices.
+  Future<List<TraktPlayback>> playback() async {
+    if (!await isConnected()) return [];
+    try {
+      final res = await _dio.get('$_api/sync/playback',
+          options: Options(headers: await _authHeaders()));
+      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final out = <TraktPlayback>[];
+      if (list is List) {
+        for (final e in list) {
+          if (e is! Map) continue;
+          final type = '${e['type']}';
+          final node = e[type];
+          final prog = (e['progress'] as num?)?.toDouble();
+          if (node is Map && node['title'] != null && prog != null) {
+            out.add(TraktPlayback(
+              item: TraktItem(
+                  title: '${node['title']}',
+                  year: (node['year'] as num?)?.toInt(),
+                  type: type),
+              progress: prog / 100.0,
+            ));
+          }
+        }
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<List<TraktItem>> _itemsFrom(String url) async {
+    if (!await isConnected()) return [];
+    try {
+      final res =
+          await _dio.get(url, options: Options(headers: await _authHeaders()));
+      if (res.statusCode != 200) return [];
+      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final out = <TraktItem>[];
+      if (list is List) {
+        for (final e in list) {
+          if (e is! Map) continue;
+          final type = '${e['type']}';
+          final node = e[type];
+          if (node is Map && node['title'] != null) {
+            out.add(TraktItem(
+              title: '${node['title']}',
+              year: (node['year'] as num?)?.toInt(),
+              type: type,
+            ));
+          }
+        }
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
   }
 
   /// Resume point (0..1) for a title from Trakt's cross-device playback store.
@@ -280,6 +369,19 @@ class TraktItem {
   const TraktItem({required this.title, this.year, required this.type});
 }
 
+class TraktList {
+  final String id;
+  final String name;
+  final int count;
+  const TraktList({required this.id, required this.name, this.count = 0});
+}
+
+class TraktPlayback {
+  final TraktItem item;
+  final double progress; // 0..1
+  const TraktPlayback({required this.item, required this.progress});
+}
+
 // ---- Providers -------------------------------------------------------------
 
 final traktServiceProvider = FutureProvider<TraktService>((ref) async {
@@ -304,4 +406,17 @@ final traktWatchlistProvider =
   if (!connected) return [];
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.watchlist();
+});
+
+final traktListsProvider = FutureProvider.autoDispose<List<TraktList>>((ref) async {
+  final connected = await ref.watch(traktConnectedProvider.future);
+  if (!connected) return [];
+  final svc = await ref.watch(traktServiceProvider.future);
+  return svc.lists();
+});
+
+final traktListItemsProvider =
+    FutureProvider.autoDispose.family<List<TraktItem>, String>((ref, listId) async {
+  final svc = await ref.watch(traktServiceProvider.future);
+  return svc.listItems(listId);
 });

@@ -47,6 +47,16 @@ class HomeFeedScreen extends ConsumerWidget {
             ),
             orElse: () => const SliverToBoxAdapter(child: SizedBox.shrink()),
           ),
+          // The user's custom Trakt lists, one row each.
+          SliverToBoxAdapter(
+            child: Consumer(builder: (context, ref, _) {
+              final lists = ref.watch(traktListsProvider).valueOrNull ?? const [];
+              if (lists.isEmpty) return const SizedBox.shrink();
+              return Column(
+                children: [for (final l in lists) _TraktListRow(list: l)],
+              );
+            }),
+          ),
           const SliverToBoxAdapter(child: SizedBox(height: 28)),
         ],
       ),
@@ -396,6 +406,42 @@ class _TraktRow extends ConsumerWidget {
         );
       },
       orElse: () => const SizedBox.shrink(),
+    );
+  }
+}
+
+/// One of the user's Trakt lists rendered as a titled strip.
+class _TraktListRow extends ConsumerWidget {
+  const _TraktListRow({required this.list});
+  final TraktList list;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(traktListItemsProvider(list.id)).valueOrNull ?? const [];
+    if (items.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 16, 10),
+          child: Row(children: [
+            const Icon(Icons.bookmark, color: Color(0xFFED1C24), size: 18),
+            const SizedBox(width: 6),
+            Text(list.name,
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          ]),
+        ),
+        SizedBox(
+          height: 92,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (_, i) => _TraktChip(item: items[i]),
+          ),
+        ),
+      ],
     );
   }
 }

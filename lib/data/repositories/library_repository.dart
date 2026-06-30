@@ -108,6 +108,17 @@ class LibraryRepository {
   Future<Set<int>> favoriteIds() => db.favoriteIds();
   Future<void> toggleFavorite(int id, bool fav) => db.toggleFavorite(id, fav);
   Future<List<StreamItem>> favorites() => db.favorites();
+  Future<void> markWatched(int id) => db.markWatched(id);
+  Future<Set<int>> watchedIds(int playlistId) => db.watchedIds(playlistId);
+
+  /// First movie/series in the library matching a title (for Trakt matching).
+  Future<StreamItem?> findByTitle(int playlistId, String title) async {
+    final hits = await db.search(playlistId: playlistId, query: title);
+    for (final h in hits) {
+      if (h.kind == StreamKind.movie || h.kind == StreamKind.series) return h;
+    }
+    return hits.isEmpty ? null : hits.first;
+  }
   Future<List<StreamItem>> sportsEvents(int playlistId) =>
       db.sportsEvents(playlistId);
   Future<EpgEntry?> nowPlaying(String channelId) =>

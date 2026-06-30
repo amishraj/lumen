@@ -146,7 +146,52 @@ final continueWatchingProvider =
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
-  return repo.continueWatching(pl!.id!);
+  final local = await repo.continueWatching(pl!.id!);
+  final result = <StreamItem>[...local];
+  final seen = local.map((e) => e.id).toSet();
+  // Merge Trakt's cross-device in-progress items, matched to the library.
+  try {
+    final connected = await ref.watch(traktConnectedProvider.future);
+    if (connected) {
+      final svc = await ref.watch(traktServiceProvider.future);
+      for (final p in (await svc.playback()).take(20)) {
+        final hit = await repo.findByTitle(pl.id!, p.item.title);
+        if (hit != null && !seen.contains(hit.id)) {
+          result.add(hit);
+          seen.add(hit.id);
+        }
+      }
+    }
+  } catch (_) {/* offline / not connected */}
+  return result;
+});
+
+/// Set of library item ids the user has watched — locally and (synced once an
+/// hour) from Trakt's watched history. Drives the "seen" check on posters.
+final watchedIdsProvider = FutureProvider.autoDispose<Set<int>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return {};
+  try {
+    final connected = await ref.watch(traktConnectedProvider.future);
+    if (connected) {
+      final last = int.tryParse(
+              await repo.getSetting('trakt_watched_sync_at') ?? '') ??
+          0;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      if (nowMs - last > 3600 * 1000) {
+        final svc = await ref.watch(traktServiceProvider.future);
+        for (final w in (await svc.watchedMovies()).take(150)) {
+          final hit = await repo.findByTitle(pl!.id!, w.title);
+          if (hit?.id != null && hit!.kind == StreamKind.movie) {
+            await repo.markWatched(hit.id!);
+          }
+        }
+        await repo.setSetting('trakt_watched_sync_at', '$nowMs');
+      }
+    }
+  } catch (_) {/* best effort */}
+  return repo.watchedIds(pl!.id!);
 });
 
 final recentlyWatchedProvider =

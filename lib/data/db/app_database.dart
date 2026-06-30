@@ -7,10 +7,28 @@ import '../models/models.dart';
 /// Single SQLite database. This is the source of truth — the UI never holds the
 /// full channel set in memory; it queries indexed, paginated windows from here.
 class AppDatabase {
-  AppDatabase._(this.db);
+  AppDatabase._(this.db, this.ftsAvailable);
   final Database db;
 
+  /// Whether the device's SQLite has the FTS5 module. Many Android TV boxes
+  /// ship SQLite without it, so we degrade to LIKE search instead of crashing.
+  final bool ftsAvailable;
+
   static AppDatabase? _instance;
+
+  // Set in onConfigure (runs before onCreate) so schema creation can branch.
+  static bool _fts = false;
+
+  static Future<bool> _detectFts5(Database db) async {
+    try {
+      await db.execute(
+          'CREATE VIRTUAL TABLE IF NOT EXISTS temp.__fts_probe USING fts5(x)');
+      await db.execute('DROP TABLE IF EXISTS temp.__fts_probe');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   static Future<AppDatabase> open() async {
     if (_instance != null) return _instance!;
@@ -26,6 +44,7 @@ class AppDatabase {
         await db.rawQuery('PRAGMA journal_mode=WAL');
         await db.execute('PRAGMA synchronous=NORMAL');
         await db.execute('PRAGMA foreign_keys=ON');
+        _fts = await _detectFts5(db);
       },
       onCreate: (db, v) async {
         await _createSchema(db, v);
@@ -35,7 +54,7 @@ class AppDatabase {
         if (from < 2) await _createV2(db);
       },
     );
-    return _instance = AppDatabase._(db);
+    return _instance = AppDatabase._(db, _fts);
   }
 
   static Future<void> _createSchema(Database db, int version) async {
@@ -72,9 +91,12 @@ class AppDatabase {
         'CREATE INDEX idx_streams_cat ON streams(playlist_id, kind, group_title, num)');
     await db.execute('CREATE INDEX idx_streams_tvg ON streams(tvg_id)');
 
-    // FTS5 over channel names for instant search across 40k+ entries.
-    await db.execute(
-        "CREATE VIRTUAL TABLE streams_fts USING fts5(name, tokenize='unicode61')");
+    // FTS5 over channel names for instant search — only where the device's
+    // SQLite actually has the fts5 module (some Android TV boxes don't).
+    if (_fts) {
+      await db.execute(
+          "CREATE VIRTUAL TABLE streams_fts USING fts5(name, tokenize='unicode61')");
+    }
 
     await db.execute('''
       CREATE TABLE epg (
@@ -239,11 +261,11 @@ class AppDatabase {
 
   Future<void> deletePlaylist(int id) async {
     await db.delete('playlists', where: 'id=?', whereArgs: [id]);
-    // FTS rows for this playlist's streams are orphaned by id; rebuild is cheap
-    // relative to a full resync, but we prune precisely here.
-    await db.execute(
-        'DELETE FROM streams_fts WHERE rowid IN (SELECT id FROM streams WHERE playlist_id=?)',
-        [id]);
+    if (ftsAvailable) {
+      await db.execute(
+          'DELETE FROM streams_fts WHERE rowid IN (SELECT id FROM streams WHERE playlist_id=?)',
+          [id]);
+    }
     await db.delete('streams', where: 'playlist_id=?', whereArgs: [id]);
   }
 
@@ -268,9 +290,11 @@ class AppDatabase {
     int batchSize = 800,
   }) async {
     // Clear old rows + their FTS shadow.
-    await db.execute(
-        'DELETE FROM streams_fts WHERE rowid IN (SELECT id FROM streams WHERE playlist_id=?)',
-        [playlistId]);
+    if (ftsAvailable) {
+      await db.execute(
+          'DELETE FROM streams_fts WHERE rowid IN (SELECT id FROM streams WHERE playlist_id=?)',
+          [playlistId]);
+    }
     await db.delete('streams', where: 'playlist_id=?', whereArgs: [playlistId]);
 
     int written = 0;
@@ -310,10 +334,12 @@ class AppDatabase {
 
     // Populate the FTS shadow in one pass over the freshly inserted rows.
     // A single INSERT..SELECT is far faster than per-row FTS writes during ingest.
-    await db.execute(
-        'INSERT INTO streams_fts(rowid, name) '
-        'SELECT id, name FROM streams WHERE playlist_id=?',
-        [playlistId]);
+    if (ftsAvailable) {
+      await db.execute(
+          'INSERT INTO streams_fts(rowid, name) '
+          'SELECT id, name FROM streams WHERE playlist_id=?',
+          [playlistId]);
+    }
 
     return written;
   }
@@ -405,21 +431,44 @@ class AppDatabase {
     return rows.map(StreamItem.fromRow).toList();
   }
 
-  /// FTS search — instant substring/prefix match across all names.
+  /// Search across names. Uses FTS5 when available (instant prefix match),
+  /// otherwise falls back to indexed LIKE so devices without fts5 still search.
   Future<List<StreamItem>> search({
     required int playlistId,
     StreamKind? kind,
     required String query,
     int limit = 200,
   }) async {
-    final tokens = query
+    final rawTokens = query
         .trim()
         .split(RegExp(r'\s+'))
         .where((t) => t.isNotEmpty)
-        .map((t) => '"${t.replaceAll('"', '')}"*')
         .toList();
-    if (tokens.isEmpty) return [];
-    final match = tokens.join(' ');
+    if (rawTokens.isEmpty) return [];
+
+    if (!ftsAvailable) {
+      // LIKE fallback: AND together each token as a substring match.
+      final where = StringBuffer('playlist_id=?');
+      final args = <Object?>[playlistId];
+      if (kind != null) {
+        where.write(' AND kind=?');
+        args.add(kind.name);
+      }
+      for (final t in rawTokens) {
+        where.write(' AND name LIKE ?');
+        args.add('%$t%');
+      }
+      final rows = await db.query(
+        'streams',
+        where: where.toString(),
+        whereArgs: args,
+        orderBy: 'name COLLATE NOCASE',
+        limit: limit,
+      );
+      return rows.map(StreamItem.fromRow).toList();
+    }
+
+    final match = rawTokens.map((t) => '"${t.replaceAll('"', '')}"*').join(' ');
     final args = <Object?>[match, playlistId];
     var kindClause = '';
     if (kind != null) {
@@ -461,6 +510,30 @@ class AppDatabase {
       'ORDER BY fv.added_at DESC',
     );
     return rows.map(StreamItem.fromRow).toList();
+  }
+
+  /// Mark an item watched (e.g. reflecting Trakt's watched history).
+  Future<void> markWatched(int streamId) async {
+    await db.insert(
+      'progress',
+      {
+        'stream_id': streamId,
+        'position_ms': 0,
+        'duration_ms': 0,
+        'watched': 1,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<Set<int>> watchedIds(int playlistId) async {
+    final rows = await db.rawQuery(
+      'SELECT pr.stream_id FROM progress pr JOIN streams s ON s.id=pr.stream_id '
+      'WHERE s.playlist_id=? AND pr.watched=1',
+      [playlistId],
+    );
+    return rows.map((r) => r['stream_id'] as int).toSet();
   }
 
   Future<void> saveProgress(int streamId, int posMs, int durMs) async {
