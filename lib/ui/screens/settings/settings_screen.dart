@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../home/home_customize_screen.dart';
 import '../onboarding/add_source_screen.dart';
+import 'trakt_screen.dart';
 
 /// Manage sources: switch active playlist, re-sync, or remove.
 class SettingsScreen extends ConsumerWidget {
@@ -62,6 +65,33 @@ class SettingsScreen extends ConsumerWidget {
             ),
             icon: const Icon(Icons.add),
             label: const Text('Add source'),
+          ),
+          const SizedBox(height: 28),
+          const Text('Personalize',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.tune, color: LumenTheme.accent),
+              title: const Text('Customize Home'),
+              subtitle: const Text('Choose & reorder home rows'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => const HomeCustomizeScreen())),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.check_circle, color: Color(0xFFED1C24)),
+              title: const Text('Trakt'),
+              subtitle: Consumer(builder: (context, ref, _) {
+                final connected = ref.watch(traktConnectedProvider).valueOrNull;
+                return Text(connected == true ? 'Connected' : 'Not connected');
+              }),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const TraktScreen())),
+            ),
           ),
         ],
       ),

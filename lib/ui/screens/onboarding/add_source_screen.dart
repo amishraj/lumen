@@ -71,10 +71,15 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
             ? '${p.stage}  (${p.written} items)'
             : p.stage);
       }
-      ref.invalidate(playlistsProvider);
+      // Set the active source first, then refresh the list. When onboarding is
+      // the root screen (first run) there's no route to pop — invalidating
+      // playlistsProvider rebuilds HomeScreen into the tabbed UI. Only pop when
+      // we were actually pushed (e.g. from Settings → Add source).
       ref.read(activePlaylistProvider.notifier).state =
           (await repo.playlists()).firstWhere((e) => e.id == saved.id);
-      if (mounted) Navigator.of(context).pop(true);
+      ref.invalidate(playlistsProvider);
+      if (!mounted) return;
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
         setState(() {

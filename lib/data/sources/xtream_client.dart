@@ -92,6 +92,10 @@ class XtreamClient {
     onStage?.call('Loading movies…');
     final vodStreams = await _safe(() => _get('get_vod_streams'));
 
+    onStage?.call('Loading TV shows…');
+    final seriesCats = await _safe(() => _get('get_series_categories'));
+    final series = await _safe(() => _get('get_series'));
+
     onStage?.call('Indexing…');
     return compute(
       _transform,
@@ -104,8 +108,50 @@ class XtreamClient {
         liveStreams: liveStreams,
         vodCats: vodCats ?? '[]',
         vodStreams: vodStreams ?? '[]',
+        seriesCats: seriesCats ?? '[]',
+        series: series ?? '[]',
       ),
     );
+  }
+
+  /// Resolve a series' episodes on demand (two-level Xtream model). The series
+  /// id is stored in [StreamItem.url] for kind==series.
+  Future<List<Episode>> seriesEpisodes(String seriesId) async {
+    final body = await _get('get_series_info&series_id=$seriesId');
+    final json = jsonDecode(body);
+    final out = <Episode>[];
+    if (json is! Map) return out;
+    final eps = json['episodes'];
+    if (eps is Map) {
+      eps.forEach((seasonKey, list) {
+        if (list is! List) return;
+        for (final e in list) {
+          if (e is! Map) continue;
+          final id = '${e['id']}';
+          final ext = _nullIfEmpty('${e['container_extension'] ?? ''}') ?? 'mp4';
+          final info = e['info'];
+          out.add(Episode(
+            id: id,
+            title: '${e['title'] ?? 'Episode ${e['episode_num'] ?? ''}'}'.trim(),
+            season: int.tryParse('$seasonKey') ??
+                int.tryParse('${e['season'] ?? 0}') ??
+                0,
+            episode: int.tryParse('${e['episode_num'] ?? 0}') ?? 0,
+            url: '$_base/series/${playlist.username}/${playlist.password}/$id.$ext',
+            plot: info is Map ? _nullIfEmpty('${info['plot'] ?? ''}') : null,
+            still: info is Map
+                ? _nullIfEmpty('${info['movie_image'] ?? ''}')
+                : null,
+            durationSecs:
+                info is Map ? int.tryParse('${info['duration_secs'] ?? ''}') : null,
+          ));
+        }
+      });
+    }
+    out.sort((a, b) => a.season != b.season
+        ? a.season.compareTo(b.season)
+        : a.episode.compareTo(b.episode));
+    return out;
   }
 
   Future<String?> _safe(Future<String> Function() f) async {
@@ -120,7 +166,7 @@ class XtreamClient {
 class _XtArgs {
   final int playlistId;
   final String base, user, pass;
-  final String liveCats, liveStreams, vodCats, vodStreams;
+  final String liveCats, liveStreams, vodCats, vodStreams, seriesCats, series;
   const _XtArgs({
     required this.playlistId,
     required this.base,
@@ -130,6 +176,8 @@ class _XtArgs {
     required this.liveStreams,
     required this.vodCats,
     required this.vodStreams,
+    required this.seriesCats,
+    required this.series,
   });
 }
 
@@ -183,6 +231,25 @@ List<StreamItem> _transform(_XtArgs a) {
         logo: _nullIfEmpty('${s['stream_icon'] ?? s['cover'] ?? ''}'),
         url: '${a.base}/movie/${a.user}/${a.pass}/$id.$ext',
         groupTitle: vodCatNames['${s['category_id']}'] ?? 'Movies',
+        rating: double.tryParse('${s['rating'] ?? ''}'),
+      ));
+    }
+  }
+
+  // Series: store the series_id in `url`; episodes are resolved on demand.
+  final seriesCatNames = _catMap(a.seriesCats);
+  final series = jsonDecode(a.series);
+  if (series is List) {
+    for (final s in series) {
+      if (s is! Map) continue;
+      final sid = '${s['series_id']}';
+      out.add(StreamItem(
+        playlistId: a.playlistId,
+        kind: StreamKind.series,
+        name: '${s['name'] ?? ''}'.trim(),
+        logo: _nullIfEmpty('${s['cover'] ?? s['stream_icon'] ?? ''}'),
+        url: sid,
+        groupTitle: seriesCatNames['${s['category_id']}'] ?? 'TV Shows',
         rating: double.tryParse('${s['rating'] ?? ''}'),
       ));
     }

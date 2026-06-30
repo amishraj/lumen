@@ -4,6 +4,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 
@@ -39,18 +40,28 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     }
-    // Persist resume position for VOD as it plays.
+    // Persist resume position for VOD as it plays, and scrobble to Trakt once
+    // a movie passes the 90% completion mark (best-effort title match).
     if (widget.item.kind != StreamKind.live) {
       _player.stream.position.listen((pos) async {
         final dur = _player.state.duration;
-        if (widget.item.id != null && dur.inMilliseconds > 0) {
+        if (dur.inMilliseconds <= 0) return;
+        if (widget.item.id != null) {
           final repo = ref.read(repositoryProvider).valueOrNull;
           await repo?.db.saveProgress(
               widget.item.id!, pos.inMilliseconds, dur.inMilliseconds);
         }
+        if (!_scrobbled && pos.inMilliseconds / dur.inMilliseconds >= 0.9) {
+          _scrobbled = true;
+          final svc = ref.read(traktServiceProvider).valueOrNull;
+          svc?.markWatched(widget.item.name,
+              isShow: widget.item.kind == StreamKind.series);
+        }
       });
     }
   }
+
+  bool _scrobbled = false;
 
   @override
   void dispose() {

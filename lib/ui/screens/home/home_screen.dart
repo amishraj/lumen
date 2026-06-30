@@ -7,6 +7,7 @@ import '../live/live_tv_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import '../search/search_screen.dart';
 import '../settings/settings_screen.dart';
+import 'home_feed_screen.dart';
 
 /// Root shell. Auto-routes to onboarding when no source exists, otherwise shows
 /// the tabbed experience (Live, Search, Settings).
@@ -40,6 +41,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
 
         final pages = [
+          const HomeFeedScreen(),
           const LiveTvScreen(),
           const SearchScreen(),
           const SettingsScreen(),
@@ -74,6 +76,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             selectedIndex: _index,
             onDestinationSelected: (i) => setState(() => _index = i),
             destinations: const [
+              NavigationDestination(
+                  icon: Icon(Icons.home_outlined),
+                  selectedIcon: Icon(Icons.home),
+                  label: 'Home'),
               NavigationDestination(
                   icon: Icon(Icons.live_tv_outlined),
                   selectedIcon: Icon(Icons.live_tv),

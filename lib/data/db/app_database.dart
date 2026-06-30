@@ -18,7 +18,7 @@ class AppDatabase {
     final path = p.join(dir.path, 'lumen.db');
     final db = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onConfigure: (db) async {
         // journal_mode returns a row ("wal"); on sqflite_darwin (iOS/macOS)
         // running it via execute() throws "not an error" — must use rawQuery.
@@ -27,7 +27,13 @@ class AppDatabase {
         await db.execute('PRAGMA synchronous=NORMAL');
         await db.execute('PRAGMA foreign_keys=ON');
       },
-      onCreate: _createSchema,
+      onCreate: (db, v) async {
+        await _createSchema(db, v);
+        await _createV2(db);
+      },
+      onUpgrade: (db, from, to) async {
+        if (from < 2) await _createV2(db);
+      },
     );
     return _instance = AppDatabase._(db);
   }
@@ -94,6 +100,131 @@ class AppDatabase {
         watched INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
       )''');
+    await db.execute('CREATE INDEX idx_progress_updated ON progress(updated_at)');
+  }
+
+  /// v2: key/value settings (home layout, Trakt tokens) + pinned categories.
+  static Future<void> _createV2(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pinned_categories (
+        playlist_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (playlist_id, kind, name)
+      )''');
+    // progress index may not exist on installs created before this index line.
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_progress_updated ON progress(updated_at)');
+  }
+
+  // ---- Settings (key/value) ------------------------------------------------
+
+  Future<String?> getSetting(String key) async {
+    final rows =
+        await db.query('app_settings', where: 'key=?', whereArgs: [key], limit: 1);
+    return rows.isEmpty ? null : rows.first['value'] as String?;
+  }
+
+  Future<void> setSetting(String key, String? value) async {
+    if (value == null) {
+      await db.delete('app_settings', where: 'key=?', whereArgs: [key]);
+    } else {
+      await db.insert('app_settings', {'key': key, 'value': value},
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+  }
+
+  // ---- Pinned categories ---------------------------------------------------
+
+  Future<List<String>> pinnedCategories(int playlistId, StreamKind kind) async {
+    final rows = await db.query(
+      'pinned_categories',
+      columns: ['name'],
+      where: 'playlist_id=? AND kind=?',
+      whereArgs: [playlistId, kind.name],
+      orderBy: 'position, name',
+    );
+    return rows.map((r) => r['name'] as String).toList();
+  }
+
+  Future<void> setPinned(
+      int playlistId, StreamKind kind, String name, bool pinned) async {
+    if (pinned) {
+      await db.insert(
+        'pinned_categories',
+        {
+          'playlist_id': playlistId,
+          'kind': kind.name,
+          'name': name,
+          'position': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } else {
+      await db.delete('pinned_categories',
+          where: 'playlist_id=? AND kind=? AND name=?',
+          whereArgs: [playlistId, kind.name, name]);
+    }
+  }
+
+  // ---- Home feed rows ------------------------------------------------------
+
+  /// In-progress VOD (started but not finished), most recent first.
+  Future<List<StreamItem>> continueWatching(int playlistId,
+      {int limit = 20}) async {
+    final rows = await db.rawQuery(
+      'SELECT s.* FROM progress pr JOIN streams s ON s.id=pr.stream_id '
+      'WHERE s.playlist_id=? AND pr.watched=0 AND pr.position_ms>60000 '
+      'ORDER BY pr.updated_at DESC LIMIT ?',
+      [playlistId, limit],
+    );
+    return rows.map(StreamItem.fromRow).toList();
+  }
+
+  /// Anything touched recently (watched or not).
+  Future<List<StreamItem>> recentlyWatched(int playlistId,
+      {int limit = 20}) async {
+    final rows = await db.rawQuery(
+      'SELECT s.* FROM progress pr JOIN streams s ON s.id=pr.stream_id '
+      'WHERE s.playlist_id=? ORDER BY pr.updated_at DESC LIMIT ?',
+      [playlistId, limit],
+    );
+    return rows.map(StreamItem.fromRow).toList();
+  }
+
+  /// Featured picks for the hero banner — items that have artwork, sampled
+  /// pseudo-randomly but cheaply (no full-table sort).
+  Future<List<StreamItem>> featured(int playlistId, {int limit = 8}) async {
+    final rows = await db.rawQuery(
+      "SELECT * FROM streams WHERE playlist_id=? AND kind IN ('movie','series') "
+      "AND logo IS NOT NULL AND logo!='' "
+      'ORDER BY (id * 2654435761) % 100000 LIMIT ?',
+      [playlistId, limit],
+    );
+    return rows.map(StreamItem.fromRow).toList();
+  }
+
+  /// A preview strip for a category (first N items) for home rows.
+  Future<List<StreamItem>> categoryPreview({
+    required int playlistId,
+    required StreamKind kind,
+    required String groupTitle,
+    int limit = 20,
+  }) async {
+    final rows = await db.query(
+      'streams',
+      where: 'playlist_id=? AND kind=? AND group_title=?',
+      whereArgs: [playlistId, kind.name, groupTitle],
+      orderBy: 'num IS NULL, num, name COLLATE NOCASE',
+      limit: limit,
+    );
+    return rows.map(StreamItem.fromRow).toList();
   }
 
   // ---- Playlists -----------------------------------------------------------

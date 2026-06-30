@@ -36,6 +36,102 @@ final categoriesProvider =
 /// The category the user is browsing (null = first/all).
 final selectedCategoryProvider = StateProvider<Category?>((ref) => null);
 
+/// Names of pinned categories for the active source + kind.
+final pinnedCategoriesProvider =
+    FutureProvider.autoDispose<Set<String>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  final kind = ref.watch(selectedKindProvider);
+  if (pl?.id == null) return {};
+  return (await repo.pinnedCategories(pl!.id!, kind)).toSet();
+});
+
+/// Categories with pinned ones floated to the top — drives the sidebar.
+final orderedCategoriesProvider =
+    FutureProvider.autoDispose<List<Category>>((ref) async {
+  final cats = await ref.watch(categoriesProvider.future);
+  final pinned = await ref.watch(pinnedCategoriesProvider.future);
+  final pinnedList = cats.where((c) => pinned.contains(c.name)).toList();
+  final rest = cats.where((c) => !pinned.contains(c.name)).toList();
+  return [...pinnedList, ...rest];
+});
+
+// ---------------------------------------------------------------------------
+// Home feed
+// ---------------------------------------------------------------------------
+
+final featuredProvider = FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  return repo.featured(pl!.id!);
+});
+
+final continueWatchingProvider =
+    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  return repo.continueWatching(pl!.id!);
+});
+
+final recentlyWatchedProvider =
+    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  return repo.recentlyWatched(pl!.id!);
+});
+
+final favoritesListProvider =
+    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  ref.watch(favoriteIdsProvider); // refresh when favorites change
+  return repo.favorites();
+});
+
+/// First N items of a kind (for "Movies for You" / "TV Shows" home rows).
+final kindSampleProvider = FutureProvider.autoDispose
+    .family<List<StreamItem>, StreamKind>((ref, kind) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  return repo.page(
+      playlistId: pl!.id!, kind: kind, groupTitle: null, offset: 0, limit: 20);
+});
+
+/// Catalogue of home rows the user can toggle/reorder.
+class HomeRow {
+  final String id;
+  final String label;
+  const HomeRow(this.id, this.label);
+}
+
+const kAllHomeRows = <HomeRow>[
+  HomeRow('continue', 'Continue Watching'),
+  HomeRow('favorites', 'My Favorites'),
+  HomeRow('recent', 'Recently Watched'),
+  HomeRow('trakt_watchlist', 'Trakt Watchlist'),
+  HomeRow('movies', 'Movies for You'),
+  HomeRow('series', 'TV Shows'),
+];
+
+const _defaultHomeRows = 'continue,favorites,recent,movies,series';
+
+/// Ordered list of enabled home-row ids, persisted in settings.
+final homeConfigProvider =
+    FutureProvider.autoDispose<List<String>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final raw = await repo.getSetting('home_rows') ?? _defaultHomeRows;
+  return raw.split(',').where((s) => s.isNotEmpty).toList();
+});
+
+Future<void> saveHomeConfig(WidgetRef ref, List<String> ids) async {
+  final repo = await ref.read(repositoryProvider.future);
+  await repo.setSetting('home_rows', ids.join(','));
+  ref.invalidate(homeConfigProvider);
+}
+
 final favoriteIdsProvider = FutureProvider.autoDispose<Set<int>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   return repo.favoriteIds();

@@ -10,33 +10,35 @@ class LogoImage extends StatelessWidget {
     super.key,
     required this.url,
     this.size = 56,
+    double? height,
     this.radius = 12,
     this.fallbackText,
-  });
+  }) : height = height ?? size;
 
   final String? url;
-  final double size;
+  final double size; // width
+  final double height;
   final double radius;
   final String? fallbackText;
 
   @override
   Widget build(BuildContext context) {
-    final placeholder = _Fallback(size: size, radius: radius, text: fallbackText);
+    final placeholder =
+        _Fallback(width: size, height: height, radius: radius, text: fallbackText);
     if (url == null || url!.isEmpty) return placeholder;
 
     final dpr = MediaQuery.of(context).devicePixelRatio;
-    final cachePx = (size * dpr).round();
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: CachedNetworkImage(
         imageUrl: url!,
         width: size,
-        height: size,
+        height: height,
         fit: BoxFit.cover,
         // Cap decoded size — the killer optimisation for huge libraries.
-        memCacheWidth: cachePx,
-        memCacheHeight: cachePx,
+        memCacheWidth: (size * dpr).round(),
+        memCacheHeight: (height * dpr).round(),
         fadeInDuration: const Duration(milliseconds: 180),
         placeholder: (_, __) => placeholder,
         errorWidget: (_, __, ___) => placeholder,
@@ -46,8 +48,10 @@ class LogoImage extends StatelessWidget {
 }
 
 class _Fallback extends StatelessWidget {
-  const _Fallback({required this.size, required this.radius, this.text});
-  final double size;
+  const _Fallback(
+      {required this.width, required this.height, required this.radius, this.text});
+  final double width;
+  final double height;
   final double radius;
   final String? text;
 
@@ -57,8 +61,8 @@ class _Fallback extends StatelessWidget {
         ? '•'
         : text!.trim().characters.first.toUpperCase();
     return Container(
-      width: size,
-      height: size,
+      width: width,
+      height: height,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(radius),
         gradient: const LinearGradient(
@@ -73,7 +77,7 @@ class _Fallback extends StatelessWidget {
         style: TextStyle(
           color: LumenTheme.accent,
           fontWeight: FontWeight.w700,
-          fontSize: size * 0.34,
+          fontSize: width * 0.34,
         ),
       ),
     );

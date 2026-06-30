@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../state/providers.dart';
+import '../../navigation.dart';
 import '../../widgets/channel_tile.dart';
-import '../player/player_screen.dart';
 
 /// Instant search across the whole library via the FTS5 index. Debounced so we
 /// query at most a few times per second even while typing fast.
@@ -69,8 +69,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                   itemCount: items.length,
                   itemBuilder: (_, i) => ChannelTile(
                     item: items[i],
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => PlayerScreen(item: items[i]))),
+                    onTap: () => openItem(context, ref, items[i]),
                   ),
                 );
               },

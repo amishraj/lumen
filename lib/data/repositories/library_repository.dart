@@ -98,6 +98,34 @@ class LibraryRepository {
 
   Future<Set<int>> favoriteIds() => db.favoriteIds();
   Future<void> toggleFavorite(int id, bool fav) => db.toggleFavorite(id, fav);
+  Future<List<StreamItem>> favorites() => db.favorites();
   Future<EpgEntry?> nowPlaying(String channelId) =>
       db.nowPlaying(channelId, DateTime.now().millisecondsSinceEpoch);
+
+  // Home feed.
+  Future<List<StreamItem>> continueWatching(int playlistId) =>
+      db.continueWatching(playlistId);
+  Future<List<StreamItem>> recentlyWatched(int playlistId) =>
+      db.recentlyWatched(playlistId);
+  Future<List<StreamItem>> featured(int playlistId) => db.featured(playlistId);
+  Future<List<StreamItem>> categoryPreview(
+          int playlistId, StreamKind kind, String group) =>
+      db.categoryPreview(playlistId: playlistId, kind: kind, groupTitle: group);
+
+  // Pinned categories.
+  Future<List<String>> pinnedCategories(int playlistId, StreamKind kind) =>
+      db.pinnedCategories(playlistId, kind);
+  Future<void> setPinned(int playlistId, StreamKind kind, String name, bool p) =>
+      db.setPinned(playlistId, kind, name, p);
+
+  // Settings.
+  Future<String?> getSetting(String key) => db.getSetting(key);
+  Future<void> setSetting(String key, String? value) =>
+      db.setSetting(key, value);
+
+  /// Resolve series episodes on demand (Xtream only).
+  Future<List<Episode>> seriesEpisodes(Playlist pl, String seriesId) async {
+    if (pl.kind != SourceKind.xtream) return [];
+    return XtreamClient(pl).seriesEpisodes(seriesId);
+  }
 }

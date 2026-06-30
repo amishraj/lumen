@@ -154,6 +154,29 @@ class StreamItem {
       );
 }
 
+/// One episode of a series (resolved on demand from Xtream get_series_info).
+class Episode {
+  final String id;
+  final String title;
+  final int season;
+  final int episode;
+  final String url; // direct play url
+  final String? plot;
+  final String? still; // thumbnail
+  final int? durationSecs;
+
+  const Episode({
+    required this.id,
+    required this.title,
+    required this.season,
+    required this.episode,
+    required this.url,
+    this.plot,
+    this.still,
+    this.durationSecs,
+  });
+}
+
 /// Now/next EPG programme.
 class EpgEntry {
   final String channelId;
