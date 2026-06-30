@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../state/providers.dart';
@@ -132,24 +131,11 @@ class _MasterSearchBar extends ConsumerWidget {
     final q = ref.watch(searchQueryProvider);
     return SizedBox(
       height: 40,
-      child: Focus(
-        canRequestFocus: false,
-        skipTraversal: true,
-        onKeyEvent: (node, event) {
-          // Let Down arrow escape the text field into the results below.
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.arrowDown) {
-            FocusManager.instance.primaryFocus
-                ?.focusInDirection(TraversalDirection.down);
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: TextField(
-          controller: controller,
-          onChanged: onChanged,
-          textInputAction: TextInputAction.search,
-          style: const TextStyle(fontSize: 14),
+      child: TextField(
+        controller: controller,
+        onChanged: onChanged,
+        textInputAction: TextInputAction.search,
+        style: const TextStyle(fontSize: 14),
         decoration: InputDecoration(
           isDense: true,
           hintText: 'Search movies, shows & channels',
@@ -164,7 +150,6 @@ class _MasterSearchBar extends ConsumerWidget {
                     onChanged('');
                   },
                 ),
-          ),
         ),
       ),
     );

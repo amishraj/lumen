@@ -26,6 +26,21 @@ class LumenApp extends StatelessWidget {
       title: 'Lumen',
       debugShowCheckedModeBanner: false,
       theme: LumenTheme.dark(),
+      // TV/remote: make Up/Down always move focus spatially, even inside text
+      // fields (which would otherwise eat the arrows for cursor movement). This
+      // Shortcuts sits below DefaultTextEditingShortcuts so it wins. Left/Right
+      // are left alone so desktop keyboard users can still move the cursor.
+      builder: (context, child) => Shortcuts(
+        shortcuts: const <ShortcutActivator, Intent>{
+          SingleActivator(LogicalKeyboardKey.arrowUp):
+              DirectionalFocusIntent(TraversalDirection.up),
+          SingleActivator(LogicalKeyboardKey.arrowDown):
+              DirectionalFocusIntent(TraversalDirection.down),
+          SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
+        },
+        child: child!,
+      ),
       home: const HomeScreen(),
     );
   }
