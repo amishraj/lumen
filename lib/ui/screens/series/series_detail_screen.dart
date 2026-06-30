@@ -40,16 +40,24 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
     return repo.seriesEpisodes(widget.playlist, widget.series.url);
   }
 
-  void _play(Episode ep) {
+  StreamItem _toItem(Episode ep) => StreamItem(
+        playlistId: widget.playlist.id!,
+        kind: StreamKind.series,
+        name: 'S${ep.season}E${ep.episode} · ${ep.title}',
+        url: ep.url,
+        logo: ep.still ?? widget.series.logo,
+      );
+
+  /// Plays [ep] with the whole series as a queue so the player can skip between
+  /// episodes.
+  void _play(List<Episode> all, Episode ep) {
+    final queue = all.map(_toItem).toList();
+    final index = all.indexOf(ep);
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => PlayerScreen(
-        item: StreamItem(
-          playlistId: widget.playlist.id!,
-          kind: StreamKind.series,
-          name: 'S${ep.season}E${ep.episode} · ${ep.title}',
-          url: ep.url,
-          logo: ep.still ?? widget.series.logo,
-        ),
+        item: queue[index],
+        queue: queue,
+        startIndex: index < 0 ? 0 : index,
       ),
     ));
   }
@@ -190,7 +198,7 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
                               : null,
                           trailing: const Icon(Icons.play_circle_fill,
                               color: LumenTheme.accent),
-                          onTap: () => _play(ep),
+                          onTap: () => _play(eps, ep),
                         )),
                     const SizedBox(height: 24),
                   ],
