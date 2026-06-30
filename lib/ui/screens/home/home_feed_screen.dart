@@ -34,7 +34,7 @@ class HomeFeedScreen extends ConsumerWidget {
           SliverToBoxAdapter(
             child: featured.maybeWhen(
               data: (items) =>
-                  items.isEmpty ? const SizedBox(height: 8) : _Hero(item: items.first),
+                  items.isEmpty ? const SizedBox(height: 8) : _HeroCarousel(items: items),
               orElse: () => const _HeroSkeleton(),
             ),
           ),
@@ -74,10 +74,83 @@ class HomeFeedScreen extends ConsumerWidget {
   }
 }
 
-/// Full-bleed cinematic hero with Play + favorite, like Netflix's billboard.
-class _Hero extends ConsumerWidget {
-  const _Hero({required this.item});
+/// Arrow-navigable hero carousel of current-popular movies. Left from Play or
+/// Right from My List pages to the previous/next featured title.
+class _HeroCarousel extends StatefulWidget {
+  const _HeroCarousel({required this.items});
+  final List<StreamItem> items;
+
+  @override
+  State<_HeroCarousel> createState() => _HeroCarouselState();
+}
+
+class _HeroCarouselState extends State<_HeroCarousel> {
+  final _controller = PageController();
+  int _page = 0;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _go(int delta) {
+    final next = (_page + delta).clamp(0, widget.items.length - 1);
+    if (next == _page) return;
+    _controller.animateToPage(next,
+        duration: const Duration(milliseconds: 280), curve: Curves.easeOut);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final h = (MediaQuery.of(context).size.height * 0.5).clamp(300.0, 460.0);
+    return SizedBox(
+      height: h,
+      child: Stack(
+        children: [
+          PageView.builder(
+            controller: _controller,
+            onPageChanged: (i) => setState(() => _page = i),
+            itemCount: widget.items.length,
+            itemBuilder: (context, i) => _HeroBillboard(
+              item: widget.items[i],
+              onPrev: i > 0 ? () => _go(-1) : null,
+              onNext: i < widget.items.length - 1 ? () => _go(1) : null,
+            ),
+          ),
+          // Page dots
+          Positioned(
+            bottom: 8,
+            right: 24,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < widget.items.length; i++)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: i == _page ? 18 : 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: i == _page ? LumenTheme.accent : const Color(0x66FFFFFF),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Full-bleed cinematic hero with Play + My List, like Netflix's billboard.
+class _HeroBillboard extends ConsumerWidget {
+  const _HeroBillboard({required this.item, this.onPrev, this.onNext});
   final StreamItem item;
+  final VoidCallback? onPrev;
+  final VoidCallback? onNext;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -178,6 +251,7 @@ class _Hero extends ConsumerWidget {
                     FocusableItem(
                       autofocus: true,
                       borderRadius: 12,
+                      onLeft: onPrev,
                       onActivate: () => openItem(context, ref, item),
                       builder: (context, focused) => Container(
                         padding:
@@ -200,6 +274,7 @@ class _Hero extends ConsumerWidget {
                     const SizedBox(width: 12),
                     FocusableItem(
                       borderRadius: 12,
+                      onRight: onNext,
                       onActivate: () async {
                         if (item.id == null) return;
                         final repo = await ref.read(repositoryProvider.future);
@@ -264,10 +339,11 @@ class _ContentRow extends ConsumerWidget {
                   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
             ),
             SizedBox(
-              height: 218,
+              height: 250,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 20),
+                clipBehavior: Clip.none, // don't clip the focus glow / scale
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
                 itemCount: items.length,
                 separatorBuilder: (_, __) => const SizedBox(width: 14),
                 itemBuilder: (_, i) => PosterCard(

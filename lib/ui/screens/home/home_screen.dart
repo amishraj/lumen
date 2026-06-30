@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../../widgets/nav_rail.dart';
 import '../live/live_tv_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import '../search/search_screen.dart';
@@ -96,21 +98,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ],
             ),
           ),
-          body: IndexedStack(index: _index, children: pages),
-          bottomNavigationBar: NavigationBar(
-            selectedIndex: _index,
-            onDestinationSelected: (i) => setState(() => _index = i),
-            destinations: const [
-              NavigationDestination(
-                  icon: Icon(Icons.home_outlined),
-                  selectedIcon: Icon(Icons.home),
-                  label: 'Home'),
-              NavigationDestination(
-                  icon: Icon(Icons.live_tv_outlined),
-                  selectedIcon: Icon(Icons.live_tv),
-                  label: 'Watch'),
-              NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
-              NavigationDestination(icon: Icon(Icons.tune), label: 'Sources'),
+          body: Row(
+            children: [
+              NavRail(
+                selectedIndex: _index,
+                onSelect: (i) => setState(() => _index = i),
+                items: const [
+                  NavRailItem(Icons.home_outlined, Icons.home, 'Home'),
+                  NavRailItem(Icons.live_tv_outlined, Icons.live_tv, 'Watch'),
+                  NavRailItem(Icons.search, Icons.search, 'Search'),
+                  NavRailItem(Icons.tune, Icons.tune, 'Sources'),
+                ],
+              ),
+              Expanded(child: IndexedStack(index: _index, children: pages)),
             ],
           ),
         );
@@ -129,11 +129,24 @@ class _MasterSearchBar extends ConsumerWidget {
     final q = ref.watch(searchQueryProvider);
     return SizedBox(
       height: 40,
-      child: TextField(
-        controller: controller,
-        onChanged: onChanged,
-        textInputAction: TextInputAction.search,
-        style: const TextStyle(fontSize: 14),
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: (node, event) {
+          // Let Down arrow escape the text field into the results below.
+          if (event is KeyDownEvent &&
+              event.logicalKey == LogicalKeyboardKey.arrowDown) {
+            FocusManager.instance.primaryFocus
+                ?.focusInDirection(TraversalDirection.down);
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: TextField(
+          controller: controller,
+          onChanged: onChanged,
+          textInputAction: TextInputAction.search,
+          style: const TextStyle(fontSize: 14),
         decoration: InputDecoration(
           isDense: true,
           hintText: 'Search movies, shows & channels',
@@ -148,6 +161,7 @@ class _MasterSearchBar extends ConsumerWidget {
                     onChanged('');
                   },
                 ),
+          ),
         ),
       ),
     );

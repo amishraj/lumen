@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/lumen_theme.dart';
 
@@ -7,7 +8,9 @@ import '../theme/lumen_theme.dart';
 /// - clearly highlighted while focused (scale + accent glow)
 /// - activates on Enter / Space / D-pad-select, and on tap/click
 ///
-/// This is the building block for end-to-end TV navigation.
+/// [onLeft]/[onRight] optionally intercept the left/right arrows at this item
+/// (e.g. to page a carousel from its edge button); when they don't fire, the
+/// arrow falls through to normal directional focus traversal.
 class FocusableItem extends StatefulWidget {
   const FocusableItem({
     super.key,
@@ -16,6 +19,8 @@ class FocusableItem extends StatefulWidget {
     this.autofocus = false,
     this.borderRadius = 14,
     this.focusNode,
+    this.onLeft,
+    this.onRight,
   });
 
   final VoidCallback onActivate;
@@ -23,6 +28,8 @@ class FocusableItem extends StatefulWidget {
   final bool autofocus;
   final double borderRadius;
   final FocusNode? focusNode;
+  final VoidCallback? onLeft;
+  final VoidCallback? onRight;
 
   @override
   State<FocusableItem> createState() => _FocusableItemState();
@@ -31,9 +38,24 @@ class FocusableItem extends StatefulWidget {
 class _FocusableItemState extends State<FocusableItem> {
   bool _focused = false;
 
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft && widget.onLeft != null) {
+      widget.onLeft!();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowRight && widget.onRight != null) {
+      widget.onRight!();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return FocusableActionDetector(
+    final detector = FocusableActionDetector(
       focusNode: widget.focusNode,
       autofocus: widget.autofocus,
       mouseCursor: SystemMouseCursors.click,
@@ -51,7 +73,7 @@ class _FocusableItemState extends State<FocusableItem> {
       child: GestureDetector(
         onTap: widget.onActivate,
         child: AnimatedScale(
-          scale: _focused ? 1.05 : 1.0,
+          scale: _focused ? 1.04 : 1.0,
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: AnimatedContainer(
@@ -76,6 +98,15 @@ class _FocusableItemState extends State<FocusableItem> {
           ),
         ),
       ),
+    );
+
+    if (widget.onLeft == null && widget.onRight == null) return detector;
+    // Intercept edge arrows without becoming a focus stop itself.
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: _onKey,
+      child: detector,
     );
   }
 }

@@ -138,6 +138,31 @@ class TraktService {
 
   Future<String?> username() => _repo.getSetting('trakt_username');
 
+  /// Currently-popular movies (Trakt trending). Public endpoint — needs only
+  /// the app's api key, so it works even before the user connects.
+  Future<List<TraktItem>> trendingMovies({int limit = 30}) async {
+    final clientId = await _clientId();
+    if (clientId == null || clientId.isEmpty) return [];
+    final res = await _dio.get('$_api/movies/trending',
+        queryParameters: {'limit': '$limit'},
+        options: Options(headers: {'trakt-api-key': clientId}));
+    if (res.statusCode != 200) return [];
+    final list = res.data is String ? jsonDecode(res.data) : res.data;
+    final out = <TraktItem>[];
+    if (list is List) {
+      for (final e in list) {
+        final m = e is Map ? e['movie'] : null;
+        if (m is Map && m['title'] != null) {
+          out.add(TraktItem(
+              title: '${m['title']}',
+              year: (m['year'] as num?)?.toInt(),
+              type: 'movie'));
+        }
+      }
+    }
+    return out;
+  }
+
   /// The user's Trakt watchlist (movies + shows), as discovery items.
   Future<List<TraktItem>> watchlist() async {
     if (!await isConnected()) return [];

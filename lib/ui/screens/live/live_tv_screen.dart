@@ -442,12 +442,13 @@ class _ContentPaneState extends ConsumerState<_ContentPane> {
     if (isGrid) {
       return GridView.builder(
         controller: _scroll,
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+        clipBehavior: Clip.none,
+        padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
         gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-          maxCrossAxisExtent: 134,
-          mainAxisExtent: 224,
-          crossAxisSpacing: 14,
-          mainAxisSpacing: 12,
+          maxCrossAxisExtent: 140,
+          mainAxisExtent: 242,
+          crossAxisSpacing: 16,
+          mainAxisSpacing: 14,
         ),
         itemCount: items.length + (reachedEnd ? 0 : 1),
         itemBuilder: (context, i) {

@@ -73,10 +73,11 @@ class _Section extends ConsumerWidget {
           ]),
         ),
         SizedBox(
-          height: 214,
+          height: 250,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            clipBehavior: Clip.none,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
             itemCount: items.length,
             separatorBuilder: (_, __) => const SizedBox(width: 12),
             itemBuilder: (_, i) => PosterCard(

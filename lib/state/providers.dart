@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/db/app_database.dart';
 import '../data/models/models.dart';
 import '../data/repositories/library_repository.dart';
+import '../data/sources/trakt_service.dart';
 
 /// Database + repository singletons.
 final databaseProvider = FutureProvider<AppDatabase>((ref) => AppDatabase.open());
@@ -116,6 +117,27 @@ final featuredProvider = FutureProvider.autoDispose<List<StreamItem>>((ref) asyn
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
+  // Prefer current popular movies (Trakt trending) that exist in the library.
+  try {
+    final svc = await ref.watch(traktServiceProvider.future);
+    final trending = await svc.trendingMovies(limit: 30);
+    final picks = <StreamItem>[];
+    final seen = <int>{};
+    for (final t in trending) {
+      final hits = await repo.search(
+          playlistId: pl!.id!, kind: StreamKind.movie, query: t.title);
+      if (hits.isNotEmpty) {
+        final m = hits.first;
+        if (m.id != null &&
+            seen.add(m.id!) &&
+            (m.logo?.isNotEmpty ?? false)) {
+          picks.add(m);
+          if (picks.length >= 8) break;
+        }
+      }
+    }
+    if (picks.isNotEmpty) return picks;
+  } catch (_) {/* fall back below */}
   return repo.featured(pl!.id!);
 });
 
