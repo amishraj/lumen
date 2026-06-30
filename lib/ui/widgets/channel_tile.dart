@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/models/models.dart';
 import '../theme/lumen_theme.dart';
+import 'focusable_item.dart';
 import 'logo_image.dart';
 
 /// A single row in the channel/movie list. Deliberately lightweight — const
@@ -24,13 +25,17 @@ class ChannelTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
+    return FocusableItem(
+      onActivate: onTap,
+      borderRadius: 16,
+      builder: (context, focused) => Material(
+        color: focused ? LumenTheme.surfaceHi : Colors.transparent,
         borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             children: [
               LogoImage(url: item.logo, size: 52, fallbackText: item.name),
@@ -82,6 +87,7 @@ class ChannelTile extends StatelessWidget {
               const Icon(Icons.play_circle_fill,
                   color: LumenTheme.accent, size: 26),
             ],
+          ),
           ),
         ),
       ),

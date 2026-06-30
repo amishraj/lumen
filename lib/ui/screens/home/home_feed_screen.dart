@@ -6,13 +6,13 @@ import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../navigation.dart';
 import '../../theme/lumen_theme.dart';
+import '../../widgets/focusable_item.dart';
 import '../../widgets/logo_image.dart';
 import '../../widgets/poster_card.dart';
 import 'home_customize_screen.dart';
 
-/// The Netflix-style landing tab: a featured hero banner, then customizable
-/// rows (continue watching, favorites, recent, Trakt watchlist, movies, shows).
-/// Each row is a virtualized horizontal list pulling a small DB window — light.
+/// Netflix/Kodi-style landing: one cinematic hero, then clean customizable
+/// rows. Each row is a virtualized horizontal list over a small DB window.
 class HomeFeedScreen extends ConsumerWidget {
   const HomeFeedScreen({super.key});
 
@@ -34,26 +34,8 @@ class HomeFeedScreen extends ConsumerWidget {
           SliverToBoxAdapter(
             child: featured.maybeWhen(
               data: (items) =>
-                  items.isEmpty ? const SizedBox(height: 8) : _Banner(items: items),
-              orElse: () => const SizedBox(height: 220),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 18, 8, 4),
-              child: Row(
-                children: [
-                  const Text('For You',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => const HomeCustomizeScreen())),
-                    icon: const Icon(Icons.tune, size: 18),
-                    label: const Text('Customize'),
-                  ),
-                ],
-              ),
+                  items.isEmpty ? const SizedBox(height: 8) : _Hero(item: items.first),
+              orElse: () => const _HeroSkeleton(),
             ),
           ),
           config.maybeWhen(
@@ -65,7 +47,7 @@ class HomeFeedScreen extends ConsumerWidget {
             ),
             orElse: () => const SliverToBoxAdapter(child: SizedBox.shrink()),
           ),
-          const SliverToBoxAdapter(child: SizedBox(height: 24)),
+          const SliverToBoxAdapter(child: SizedBox(height: 28)),
         ],
       ),
     );
@@ -81,11 +63,9 @@ class HomeFeedScreen extends ConsumerWidget {
         return _ContentRow(title: 'Recently Watched', provider: recentlyWatchedProvider);
       case 'movies':
         return _ContentRow(
-            title: 'Movies for You',
-            provider: kindSampleProvider(StreamKind.movie));
+            title: 'Movies for You', provider: kindSampleProvider(StreamKind.movie));
       case 'series':
-        return _ContentRow(
-            title: 'TV Shows', provider: kindSampleProvider(StreamKind.series));
+        return _ContentRow(title: 'TV Shows', provider: kindSampleProvider(StreamKind.series));
       case 'trakt_watchlist':
         return const _TraktRow();
       default:
@@ -94,105 +74,172 @@ class HomeFeedScreen extends ConsumerWidget {
   }
 }
 
-/// Hero carousel of featured posters.
-class _Banner extends StatefulWidget {
-  const _Banner({required this.items});
-  final List<StreamItem> items;
+/// Full-bleed cinematic hero with Play + favorite, like Netflix's billboard.
+class _Hero extends ConsumerWidget {
+  const _Hero({required this.item});
+  final StreamItem item;
 
   @override
-  State<_Banner> createState() => _BannerState();
-}
+  Widget build(BuildContext context, WidgetRef ref) {
+    final h = (MediaQuery.of(context).size.height * 0.5).clamp(300.0, 460.0);
+    final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
+    final isFav = item.id != null && favs.contains(item.id);
 
-class _BannerState extends State<_Banner> {
-  final _controller = PageController(viewportFraction: 0.92);
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final items = widget.items;
     return SizedBox(
-      height: 230,
-      child: PageView.builder(
-        controller: _controller,
-        itemCount: items.length,
-        itemBuilder: (context, i) {
-          final it = items[i];
-          return Consumer(builder: (context, ref, _) {
-            return GestureDetector(
-              onTap: () => openItem(context, ref, it),
-              child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                clipBehavior: Clip.antiAlias,
+      height: h,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          LogoImage(url: item.logo, size: 1400, height: h, radius: 0, fallbackText: item.name),
+          // Cinematic gradients: darken bottom + left for legible text.
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.bottomCenter,
+                end: Alignment.topCenter,
+                colors: [Color(0xFF0A0B0F), Colors.transparent],
+                stops: [0.02, 0.7],
+              ),
+            ),
+          ),
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [Color(0xCC0A0B0F), Colors.transparent],
+                stops: [0.0, 0.6],
+              ),
+            ),
+          ),
+          Positioned(
+            top: 10,
+            right: 12,
+            child: FocusableItem(
+              borderRadius: 24,
+              onActivate: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => const HomeCustomizeScreen())),
+              builder: (context, focused) => Container(
+                padding: const EdgeInsets.all(9),
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(22),
-                  color: LumenTheme.surface,
+                    color: Colors.black.withValues(alpha: 0.4), shape: BoxShape.circle),
+                child: const Icon(Icons.tune, size: 20, color: Colors.white),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 24,
+            right: 24,
+            bottom: 22,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: LumenTheme.accent,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    item.kind == StreamKind.series ? 'FEATURED SERIES' : 'FEATURED',
+                    style: const TextStyle(
+                        color: Color(0xFF0A0B0F),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.5),
+                  ),
                 ),
-                child: Stack(
-                  fit: StackFit.expand,
+                const SizedBox(height: 12),
+                Text(
+                  item.name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w900,
+                      height: 1.05,
+                      color: Colors.white,
+                      letterSpacing: -1),
+                ),
+                if (item.rating != null && item.rating! > 0) ...[
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    const Icon(Icons.star_rounded, size: 16, color: LumenTheme.accentWarm),
+                    const SizedBox(width: 4),
+                    Text(item.rating!.toStringAsFixed(1),
+                        style: const TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.w600)),
+                  ]),
+                ],
+                const SizedBox(height: 16),
+                Row(
                   children: [
-                    LogoImage(
-                        url: it.logo,
-                        size: 600,
-                        height: 230,
-                        radius: 22,
-                        fallbackText: it.name),
-                    const DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [Colors.transparent, Color(0xCC0A0B0F)],
-                          stops: [0.45, 1],
+                    FocusableItem(
+                      autofocus: true,
+                      borderRadius: 12,
+                      onActivate: () => openItem(context, ref, item),
+                      builder: (context, focused) => Container(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 26, vertical: 13),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
                         ),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.play_arrow_rounded, color: Color(0xFF0A0B0F)),
+                          SizedBox(width: 6),
+                          Text('Play',
+                              style: TextStyle(
+                                  color: Color(0xFF0A0B0F),
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 15)),
+                        ]),
                       ),
                     ),
-                    Positioned(
-                      left: 18,
-                      right: 18,
-                      bottom: 16,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: LumenTheme.accent,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              it.kind == StreamKind.series ? 'SERIES' : 'FEATURED',
-                              style: const TextStyle(
-                                  color: Color(0xFF0A0B0F),
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w800),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(it.name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontSize: 19,
-                                  fontWeight: FontWeight.w800,
-                                  color: Colors.white)),
-                        ],
+                    const SizedBox(width: 12),
+                    FocusableItem(
+                      borderRadius: 12,
+                      onActivate: () async {
+                        if (item.id == null) return;
+                        final repo = await ref.read(repositoryProvider.future);
+                        await repo.toggleFavorite(item.id!, !isFav);
+                        ref.invalidate(favoriteIdsProvider);
+                        ref.invalidate(favoritesListProvider);
+                      },
+                      builder: (context, focused) => Container(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(isFav ? Icons.check : Icons.add, color: Colors.white, size: 20),
+                          const SizedBox(width: 6),
+                          const Text('My List',
+                              style: TextStyle(
+                                  color: Colors.white, fontWeight: FontWeight.w700)),
+                        ]),
                       ),
                     ),
                   ],
                 ),
-              ),
-            );
-          });
-        },
+              ],
+            ),
+          ),
+        ],
       ),
     );
+  }
+}
+
+class _HeroSkeleton extends StatelessWidget {
+  const _HeroSkeleton();
+  @override
+  Widget build(BuildContext context) {
+    final h = (MediaQuery.of(context).size.height * 0.5).clamp(300.0, 460.0);
+    return Container(height: h, color: LumenTheme.surface);
   }
 }
 
@@ -212,18 +259,17 @@ class _ContentRow extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+              padding: const EdgeInsets.fromLTRB(20, 18, 16, 10),
               child: Text(title,
-                  style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w700)),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
             ),
             SizedBox(
-              height: 214,
+              height: 218,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.symmetric(horizontal: 20),
                 itemCount: items.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 12),
+                separatorBuilder: (_, __) => const SizedBox(width: 14),
                 itemBuilder: (_, i) => PosterCard(
                   item: items[i],
                   onTap: () => openItem(context, ref, items[i]),
@@ -252,19 +298,19 @@ class _TraktRow extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Padding(
-              padding: EdgeInsets.fromLTRB(16, 14, 16, 8),
+              padding: EdgeInsets.fromLTRB(20, 18, 16, 10),
               child: Row(children: [
                 Icon(Icons.check_circle, color: Color(0xFFED1C24), size: 18),
                 SizedBox(width: 6),
                 Text('Trakt Watchlist',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
               ]),
             ),
             SizedBox(
               height: 92,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.symmetric(horizontal: 20),
                 itemCount: items.length,
                 separatorBuilder: (_, __) => const SizedBox(width: 12),
                 itemBuilder: (_, i) => _TraktChip(item: items[i]),
@@ -284,9 +330,9 @@ class _TraktChip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return GestureDetector(
-      onTap: () async {
-        // Find this Trakt title inside the IPTV library and play it.
+    return FocusableItem(
+      borderRadius: 14,
+      onActivate: () async {
         final repo = await ref.read(repositoryProvider.future);
         final pl = ref.read(activePlaylistProvider);
         if (pl?.id == null) return;
@@ -299,7 +345,7 @@ class _TraktChip extends ConsumerWidget {
               SnackBar(content: Text('"${item.title}" not found in your library.')));
         }
       },
-      child: Container(
+      builder: (context, focused) => Container(
         width: 160,
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(

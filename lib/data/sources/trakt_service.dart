@@ -17,17 +17,36 @@ class TraktService {
   TraktService(this._repo);
   final LibraryRepository _repo;
 
+  // Kodi-style embedded credentials. Fill these in (from a single Trakt API app
+  // you register once at trakt.tv/oauth/applications) and every user — you and
+  // your friends — connects with just a code, no per-user app registration.
+  // Leave empty to fall back to in-app credential entry.
+  static const _embeddedClientId = '';
+  static const _embeddedClientSecret = '';
+
   static const _api = 'https://api.trakt.tv';
   final _dio = Dio(BaseOptions(
     headers: {'Content-Type': 'application/json', 'trakt-api-version': '2'},
     validateStatus: (s) => s != null && s < 500,
   ));
 
-  Future<String?> _clientId() => _repo.getSetting('trakt_client_id');
-  Future<String?> _clientSecret() => _repo.getSetting('trakt_client_secret');
+  Future<String?> _clientId() async {
+    if (_embeddedClientId.isNotEmpty) return _embeddedClientId;
+    return _repo.getSetting('trakt_client_id');
+  }
+
+  Future<String?> _clientSecret() async {
+    if (_embeddedClientSecret.isNotEmpty) return _embeddedClientSecret;
+    return _repo.getSetting('trakt_client_secret');
+  }
+
   Future<String?> token() => _repo.getSetting('trakt_access_token');
 
   Future<bool> isConnected() async => (await token()) != null;
+
+  /// True when credentials are baked in — the UI can then skip the setup form
+  /// and offer a single "Connect with Trakt" button (Kodi-style).
+  bool get hasEmbeddedCredentials => _embeddedClientId.isNotEmpty;
 
   /// Exposes the saved client id for prefilling the settings form.
   Future<String?> getClientIdForUi() => _clientId();

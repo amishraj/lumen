@@ -23,9 +23,12 @@ class LogoImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final placeholder =
+    // Lettered fallback only when there's genuinely no art (missing/failed).
+    final lettered =
         _Fallback(width: size, height: height, radius: radius, text: fallbackText);
-    if (url == null || url!.isEmpty) return placeholder;
+    // While loading we show a calm neutral tile — never the big "A"/"1" letter.
+    final loading = _LoadingTile(width: size, height: height, radius: radius);
+    if (url == null || url!.isEmpty) return lettered;
 
     final dpr = MediaQuery.of(context).devicePixelRatio;
 
@@ -40,9 +43,33 @@ class LogoImage extends StatelessWidget {
         memCacheWidth: (size * dpr).round(),
         memCacheHeight: (height * dpr).round(),
         fadeInDuration: const Duration(milliseconds: 180),
-        placeholder: (_, __) => placeholder,
-        errorWidget: (_, __, ___) => placeholder,
+        placeholder: (_, __) => loading,
+        errorWidget: (_, __, ___) => lettered,
       ),
+    );
+  }
+}
+
+/// Neutral tile shown while artwork is loading — no text, just a soft surface.
+class _LoadingTile extends StatelessWidget {
+  const _LoadingTile(
+      {required this.width, required this.height, required this.radius});
+  final double width;
+  final double height;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        color: LumenTheme.surfaceHi,
+      ),
+      alignment: Alignment.center,
+      child: Icon(Icons.image_outlined,
+          size: width * 0.26, color: const Color(0xFF2A2E3A)),
     );
   }
 }

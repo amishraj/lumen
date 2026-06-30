@@ -364,6 +364,24 @@ class AppDatabase {
     return rows.map(StreamItem.fromRow).toList();
   }
 
+  /// Search within a single category (LIKE over a small shard — cheap).
+  Future<List<StreamItem>> searchInCategory({
+    required int playlistId,
+    required StreamKind kind,
+    required String groupTitle,
+    required String query,
+    int limit = 300,
+  }) async {
+    final rows = await db.query(
+      'streams',
+      where: 'playlist_id=? AND kind=? AND group_title=? AND name LIKE ?',
+      whereArgs: [playlistId, kind.name, groupTitle, '%$query%'],
+      orderBy: 'num IS NULL, num, name COLLATE NOCASE',
+      limit: limit,
+    );
+    return rows.map(StreamItem.fromRow).toList();
+  }
+
   /// FTS search — instant substring/prefix match across all names.
   Future<List<StreamItem>> search({
     required int playlistId,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/models/models.dart';
 import '../theme/lumen_theme.dart';
+import 'focusable_item.dart';
 import 'logo_image.dart';
 
 /// A Netflix-style poster tile used in horizontal home rows. Lightweight: fixed
@@ -24,9 +25,9 @@ class PosterCard extends StatelessWidget {
     final isPoster = item.kind != StreamKind.live;
     final height = isPoster ? width * 1.5 : width;
 
-    return GestureDetector(
-      onTap: onTap,
-      child: SizedBox(
+    return FocusableItem(
+      onActivate: onTap,
+      builder: (context, focused) => SizedBox(
         width: width,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

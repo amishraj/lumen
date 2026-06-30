@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../data/sources/trakt_service.dart';
 import '../../theme/lumen_theme.dart';
@@ -19,6 +22,7 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
   TraktDeviceCode? _code;
   String? _status;
   bool _polling = false;
+  bool _embedded = false;
 
   @override
   void initState() {
@@ -29,7 +33,9 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
   Future<void> _prefill() async {
     final svc = await ref.read(traktServiceProvider.future);
     final id = await svc.getClientIdForUi();
-    if (mounted && id != null) _idCtl.text = id;
+    if (!mounted) return;
+    setState(() => _embedded = svc.hasEmbeddedCredentials);
+    if (id != null && !_embedded) _idCtl.text = id;
   }
 
   @override
@@ -41,7 +47,9 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
 
   Future<void> _connect() async {
     final svc = await ref.read(traktServiceProvider.future);
-    await svc.saveCredentials(_idCtl.text, _secretCtl.text);
+    if (!_embedded) {
+      await svc.saveCredentials(_idCtl.text, _secretCtl.text);
+    }
     try {
       final code = await svc.requestDeviceCode();
       setState(() {
@@ -49,6 +57,11 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
         _status = 'Enter the code at ${code.verificationUrl}';
         _polling = true;
       });
+      // Kodi-style: pop the activation page straight into the browser.
+      final uri = Uri.tryParse(code.verificationUrl);
+      if (uri != null) {
+        unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+      }
       _poll(svc, code);
     } catch (e) {
       setState(() => _status = '$e');
@@ -125,27 +138,33 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
         const Text('Connect Trakt',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
         const SizedBox(height: 8),
-        const Text(
-          'Create a free API app at trakt.tv/oauth/applications (redirect URI: '
-          'urn:ietf:wg:oauth:2.0:oob), then paste its Client ID & Secret below.',
-          style: TextStyle(color: Color(0xFF9AA0B0), fontSize: 13, height: 1.4),
+        Text(
+          _embedded
+              ? 'Tap Connect — we\'ll open trakt.tv/activate in your browser. '
+                'Enter the code shown here and you\'re done.'
+              : 'Create a free API app at trakt.tv/oauth/applications (redirect '
+                'URI: urn:ietf:wg:oauth:2.0:oob), then paste its Client ID & '
+                'Secret below.',
+          style: const TextStyle(color: Color(0xFF9AA0B0), fontSize: 13, height: 1.4),
         ),
         const SizedBox(height: 16),
-        TextField(
-          controller: _idCtl,
-          decoration: const InputDecoration(
-              hintText: 'Trakt Client ID', prefixIcon: Icon(Icons.key)),
-          autocorrect: false,
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _secretCtl,
-          decoration: const InputDecoration(
-              hintText: 'Trakt Client Secret', prefixIcon: Icon(Icons.lock_outline)),
-          autocorrect: false,
-          obscureText: true,
-        ),
-        const SizedBox(height: 18),
+        if (!_embedded) ...[
+          TextField(
+            controller: _idCtl,
+            decoration: const InputDecoration(
+                hintText: 'Trakt Client ID', prefixIcon: Icon(Icons.key)),
+            autocorrect: false,
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _secretCtl,
+            decoration: const InputDecoration(
+                hintText: 'Trakt Client Secret', prefixIcon: Icon(Icons.lock_outline)),
+            autocorrect: false,
+            obscureText: true,
+          ),
+          const SizedBox(height: 18),
+        ],
         if (_code != null) _DeviceCodeCard(code: _code!),
         if (_status != null)
           Padding(
@@ -162,9 +181,10 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
                       style: const TextStyle(color: Color(0xFF9AA0B0)))),
             ]),
           ),
-        FilledButton(
+        FilledButton.icon(
           onPressed: _polling ? null : _connect,
-          child: Text(_polling ? 'Waiting for authorization…' : 'Connect'),
+          icon: Icon(_polling ? Icons.hourglass_top : Icons.link),
+          label: Text(_polling ? 'Waiting for authorization…' : 'Connect with Trakt'),
         ),
       ],
     );

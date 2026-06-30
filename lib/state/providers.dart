@@ -56,6 +56,58 @@ final orderedCategoriesProvider =
   return [...pinnedList, ...rest];
 });
 
+/// Persisted, resizable Live-TV sidebar width.
+class SidebarWidthNotifier extends StateNotifier<double> {
+  SidebarWidthNotifier(this.ref) : super(248) {
+    _load();
+  }
+  final Ref ref;
+  static const minW = 170.0;
+  static const maxW = 560.0;
+
+  Future<void> _load() async {
+    final repo = await ref.read(repositoryProvider.future);
+    final v = double.tryParse(await repo.getSetting('sidebar_width') ?? '');
+    if (v != null) state = v.clamp(minW, maxW);
+  }
+
+  void update(double w) => state = w.clamp(minW, maxW);
+
+  Future<void> persist() async {
+    final repo = await ref.read(repositoryProvider.future);
+    await repo.setSetting('sidebar_width', state.toStringAsFixed(0));
+  }
+}
+
+final sidebarWidthProvider =
+    StateNotifierProvider<SidebarWidthNotifier, double>(
+        (ref) => SidebarWidthNotifier(ref));
+
+/// Master-search results grouped by kind (live first). Drives the global search.
+class GroupedResults {
+  final List<StreamItem> live;
+  final List<StreamItem> movies;
+  final List<StreamItem> series;
+  const GroupedResults(this.live, this.movies, this.series);
+  bool get isEmpty => live.isEmpty && movies.isEmpty && series.isEmpty;
+}
+
+final groupedSearchProvider =
+    FutureProvider.autoDispose<GroupedResults>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  final q = ref.watch(searchQueryProvider).trim();
+  if (pl?.id == null || q.length < 2) {
+    return const GroupedResults([], [], []);
+  }
+  final all = await repo.search(playlistId: pl!.id!, query: q);
+  return GroupedResults(
+    all.where((e) => e.kind == StreamKind.live).toList(),
+    all.where((e) => e.kind == StreamKind.movie).toList(),
+    all.where((e) => e.kind == StreamKind.series).toList(),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Home feed
 // ---------------------------------------------------------------------------

@@ -1,83 +1,108 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../data/models/models.dart';
 import '../../../state/providers.dart';
 import '../../navigation.dart';
-import '../../widgets/channel_tile.dart';
+import '../../theme/lumen_theme.dart';
+import '../../widgets/poster_card.dart';
 
-/// Instant search across the whole library via the FTS5 index. Debounced so we
-/// query at most a few times per second even while typing fast.
-class SearchScreen extends ConsumerStatefulWidget {
+/// Master search results, grouped by kind (Live TV first, then Movies, TV
+/// Shows). The query is driven by the always-present search bar in the app bar.
+class SearchScreen extends ConsumerWidget {
   const SearchScreen({super.key});
 
   @override
-  ConsumerState<SearchScreen> createState() => _SearchScreenState();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final q = ref.watch(searchQueryProvider).trim();
+    final grouped = ref.watch(groupedSearchProvider);
+
+    if (q.length < 2) {
+      return const _Hint(icon: Icons.search, text: 'Search movies, shows & channels');
+    }
+
+    return grouped.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => Center(child: Text('$e')),
+      data: (g) {
+        if (g.isEmpty) {
+          return _Hint(icon: Icons.search_off, text: 'No results for "$q"');
+        }
+        return ListView(
+          padding: const EdgeInsets.only(top: 8, bottom: 24),
+          children: [
+            _Section(title: 'Live TV', icon: Icons.live_tv, items: g.live),
+            _Section(title: 'Movies', icon: Icons.movie_outlined, items: g.movies),
+            _Section(title: 'TV Shows', icon: Icons.tv, items: g.series),
+          ],
+        );
+      },
+    );
+  }
 }
 
-class _SearchScreenState extends ConsumerState<SearchScreen> {
-  final _ctl = TextEditingController();
-  Timer? _debounce;
+class _Section extends ConsumerWidget {
+  const _Section({required this.title, required this.icon, required this.items});
+  final String title;
+  final IconData icon;
+  final List<StreamItem> items;
 
   @override
-  void dispose() {
-    _debounce?.cancel();
-    _ctl.dispose();
-    super.dispose();
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (items.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+          child: Row(children: [
+            Icon(icon, size: 18, color: LumenTheme.accent),
+            const SizedBox(width: 8),
+            Text(title,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+              decoration: BoxDecoration(
+                color: LumenTheme.surfaceHi,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text('${items.length}',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF9AA0B0))),
+            ),
+          ]),
+        ),
+        SizedBox(
+          height: 214,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (_, i) => PosterCard(
+              item: items[i],
+              onTap: () => openItem(context, ref, items[i]),
+            ),
+          ),
+        ),
+      ],
+    );
   }
+}
 
-  void _onChanged(String v) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 220), () {
-      ref.read(searchQueryProvider.notifier).state = v;
-    });
-  }
-
+class _Hint extends StatelessWidget {
+  const _Hint({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
   @override
   Widget build(BuildContext context) {
-    final results = ref.watch(searchResultsProvider);
-    final q = ref.watch(searchQueryProvider);
-
-    return SafeArea(
+    return Center(
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: TextField(
-              controller: _ctl,
-              autofocus: true,
-              onChanged: _onChanged,
-              decoration: const InputDecoration(
-                hintText: 'Search channels & movies…',
-                prefixIcon: Icon(Icons.search),
-              ),
-            ),
-          ),
-          Expanded(
-            child: results.when(
-              data: (items) {
-                if (q.trim().length < 2) {
-                  return const Center(
-                      child: Text('Type at least 2 characters.'));
-                }
-                if (items.isEmpty) {
-                  return Center(child: Text('No matches for "$q".'));
-                }
-                return ListView.builder(
-                  itemExtent: 68,
-                  itemCount: items.length,
-                  itemBuilder: (_, i) => ChannelTile(
-                    item: items[i],
-                    onTap: () => openItem(context, ref, items[i]),
-                  ),
-                );
-              },
-              loading: () =>
-                  const Center(child: CircularProgressIndicator()),
-              error: (e, _) => Center(child: Text('$e')),
-            ),
-          ),
+          Icon(icon, size: 48, color: const Color(0xFF3A3E4A)),
+          const SizedBox(height: 12),
+          Text(text, style: const TextStyle(color: Color(0xFF6B7080))),
         ],
       ),
     );

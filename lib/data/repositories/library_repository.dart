@@ -96,6 +96,15 @@ class LibraryRepository {
   }) =>
       db.search(playlistId: playlistId, kind: kind, query: query);
 
+  Future<List<StreamItem>> searchInCategory({
+    required int playlistId,
+    required StreamKind kind,
+    required String groupTitle,
+    required String query,
+  }) =>
+      db.searchInCategory(
+          playlistId: playlistId, kind: kind, groupTitle: groupTitle, query: query);
+
   Future<Set<int>> favoriteIds() => db.favoriteIds();
   Future<void> toggleFavorite(int id, bool fav) => db.toggleFavorite(id, fav);
   Future<List<StreamItem>> favorites() => db.favorites();

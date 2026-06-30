@@ -1,7 +1,7 @@
 name: lumen
 description: "Lumen — a buttery-smooth personal IPTV player for Android, Google TV, iOS & macOS."
 publish_to: "none"
-version: 1.0.4+5
+version: 1.0.5+6
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -31,6 +31,9 @@ dependencies:
 
   # Misc UI
   shimmer: ^3.0.0
+
+  # Open the Trakt activation page in the browser (Kodi-style device auth)
+  url_launcher: ^6.3.1
 
   cupertino_icons: ^1.0.8
 
