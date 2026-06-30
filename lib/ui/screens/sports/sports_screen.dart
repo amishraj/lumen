@@ -57,12 +57,27 @@ class SportsScreen extends ConsumerWidget {
           for (final e in events) {
             grouped.putIfAbsent(_sportOf(e), () => []).add(e);
           }
+          // Soccer first, then NBA (Basketball), then the rest; Other last.
+          const order = [
+            'Soccer',
+            'Basketball',
+            'American Football',
+            'Ice Hockey',
+            'Tennis',
+            'Combat',
+            'Motorsport',
+            'Cricket',
+            'Rugby',
+            'Olympics',
+            'Other Events',
+          ];
+          int rank(String s) {
+            final i = order.indexOf(s);
+            return i < 0 ? order.length : i;
+          }
+
           final sports = grouped.keys.toList()
-            ..sort((a, b) {
-              if (a == 'Other Events') return 1;
-              if (b == 'Other Events') return -1;
-              return a.compareTo(b);
-            });
+            ..sort((a, b) => rank(a).compareTo(rank(b)));
 
           return CustomScrollView(
             slivers: [

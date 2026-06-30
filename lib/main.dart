@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'ui/input_mode.dart';
 import 'ui/screens/home/home_screen.dart';
 import 'ui/theme/lumen_theme.dart';
 
@@ -10,6 +11,8 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   // Initialise the libmpv backend used by the player.
   MediaKit.ensureInitialized();
+  // Track keyboard/remote vs pointer so focus highlights only show for the former.
+  InputMode.install();
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
@@ -30,16 +33,22 @@ class LumenApp extends StatelessWidget {
       // fields (which would otherwise eat the arrows for cursor movement). This
       // Shortcuts sits below DefaultTextEditingShortcuts so it wins. Left/Right
       // are left alone so desktop keyboard users can still move the cursor.
-      builder: (context, child) => Shortcuts(
-        shortcuts: const <ShortcutActivator, Intent>{
-          SingleActivator(LogicalKeyboardKey.arrowUp):
-              DirectionalFocusIntent(TraversalDirection.up),
-          SingleActivator(LogicalKeyboardKey.arrowDown):
-              DirectionalFocusIntent(TraversalDirection.down),
-          SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
-          SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
-        },
-        child: child!,
+      builder: (context, child) => Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerHover: (_) => InputMode.pointerActive(),
+        onPointerDown: (_) => InputMode.pointerActive(),
+        onPointerSignal: (_) => InputMode.pointerActive(),
+        child: Shortcuts(
+          shortcuts: const <ShortcutActivator, Intent>{
+            SingleActivator(LogicalKeyboardKey.arrowUp):
+                DirectionalFocusIntent(TraversalDirection.up),
+            SingleActivator(LogicalKeyboardKey.arrowDown):
+                DirectionalFocusIntent(TraversalDirection.down),
+            SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+            SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
+          },
+          child: child!,
+        ),
       ),
       home: const HomeScreen(),
     );
