@@ -47,6 +47,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   String? _error;
   bool _scrobbled = false;
   bool _sought = false;
+  bool _reconnecting = false;
+  int _liveRetries = 0;
   double? _resume;
   int _lastPosMs = 0;
   int _lastDurMs = 0;
@@ -54,31 +56,99 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
-    // One position listener for the player's lifetime; it reads _current.
+    // Listeners for the player's lifetime; they read _current.
     _player.stream.position.listen(_onPosition);
-    _openAt(_index);
+    _player.stream.completed.listen(_onCompleted);
+    _init();
+  }
+
+  Future<void> _init() async {
+    await _configureMpv();
+    await _openAt(_index);
+  }
+
+  /// Tune libmpv for flaky / slow IPTV networks: bigger caches, hardware
+  /// decode where safe, and FFmpeg-level auto-reconnect on dropped sockets.
+  Future<void> _configureMpv() async {
+    final p = _player.platform;
+    if (p is! NativePlayer) return;
+    Future<void> set(String k, String v) async {
+      try {
+        await p.setProperty(k, v);
+      } catch (_) {/* property may not exist on this build */}
+    }
+
+    await set('hwdec', 'auto-safe'); // offload decode on weak TV boxes
+    await set('cache', 'yes');
+    await set('cache-secs', '30');
+    await set('demuxer-max-bytes', '${96 * 1024 * 1024}');
+    await set('demuxer-max-back-bytes', '${48 * 1024 * 1024}');
+    await set('demuxer-readahead-secs', '20');
+    await set('network-timeout', '60'); // be patient on slow links
+    // Reconnect transparently when a live HTTP/HLS socket drops mid-stream.
+    await set('stream-lavf-o',
+        'reconnect=1,reconnect_streamed=1,reconnect_delay_max=10,reconnect_on_network_error=1');
   }
 
   Future<void> _openAt(int i) async {
     setState(() {
       _index = i.clamp(0, _queue.length - 1);
       _error = null;
+      _reconnecting = false;
+      _liveRetries = 0;
       _scrobbled = false;
       _sought = false;
       _resume = null;
       _lastPosMs = 0;
       _lastDurMs = 0;
     });
+    await _load();
+  }
+
+  Future<void> _load() async {
     try {
       await _player.open(Media(_current.url), play: true);
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      // Live: keep trying. VOD: surface the error.
+      if (_current.kind == StreamKind.live) {
+        _scheduleLiveReconnect();
+      } else if (mounted) {
+        setState(() => _error = '$e');
+      }
       return;
     }
+    if (mounted) setState(() => _reconnecting = false);
+    _liveRetries = 0;
     if (_current.kind == StreamKind.live) return;
     final svc = ref.read(traktServiceProvider).valueOrNull;
     _resume = await svc?.resumeProgress(_current.name,
         isShow: _current.kind == StreamKind.series);
+  }
+
+  /// Live streams have no real "end" — if libmpv reports completion (the server
+  /// closed the socket, a segment ran out), reconnect with backoff instead of
+  /// sitting paused. VOD at the end auto-advances to the next episode.
+  void _onCompleted(bool done) {
+    if (!done || !mounted) return;
+    if (_current.kind == StreamKind.live) {
+      _scheduleLiveReconnect();
+    } else if (_index < _queue.length - 1) {
+      _skip(1);
+    }
+  }
+
+  void _scheduleLiveReconnect() {
+    if (_reconnecting || !mounted) return;
+    setState(() {
+      _reconnecting = true;
+      _liveRetries++;
+    });
+    final secs = (2 * _liveRetries).clamp(2, 10);
+    Future.delayed(Duration(seconds: secs), () async {
+      if (!mounted) return;
+      _reconnecting = false;
+      await _load();
+    });
   }
 
   Future<void> _onPosition(Duration pos) async {
@@ -231,6 +301,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     fit: BoxFit.contain,
                   ),
           ),
+          if (_reconnecting)
+            const ColoredBox(
+              color: Colors.black54,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(color: LumenTheme.accent),
+                    SizedBox(height: 14),
+                    Text('Reconnecting to live stream…',
+                        style: TextStyle(color: Colors.white, fontSize: 13)),
+                  ],
+                ),
+              ),
+            ),
           SafeArea(
             child: Row(
               children: [
