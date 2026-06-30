@@ -4,5 +4,8 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- Required for the sandboxed app to reach IPTV servers (M3U / Xtream). -->
+	<key>com.apple.security.network.client</key>
+	<true/>
 </dict>
 </plist>
