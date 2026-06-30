@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/models.dart';
@@ -8,35 +10,72 @@ import '../models/models.dart';
 /// Talks to an Xtream Codes panel (player_api.php) and normalises everything
 /// into [StreamItem]s. Heavy JSON→model transforms run in a background isolate.
 class XtreamClient {
-  XtreamClient(this.playlist) : _dio = Dio(BaseOptions(
-          connectTimeout: const Duration(seconds: 20),
-          receiveTimeout: const Duration(seconds: 60),
+  XtreamClient(this.playlist)
+      : _dio = Dio(BaseOptions(
+          connectTimeout: const Duration(seconds: 25),
+          receiveTimeout: const Duration(seconds: 90),
           headers: {'User-Agent': 'Lumen/1.0'},
-        ));
+        )) {
+    // IPTV panels are often on self-signed / mismatched HTTPS certs. This is
+    // the user's own provider, so tolerate cert problems rather than failing.
+    _dio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () => HttpClient()
+        ..badCertificateCallback = (cert, host, port) => true,
+    );
+  }
 
   final Playlist playlist;
   final Dio _dio;
 
-  String get _base => playlist.url.replaceAll(RegExp(r'/+$'), '');
+  /// Normalised portal base: trims trailing slashes and adds http:// if the
+  /// user typed just `host:port`.
+  String get _base {
+    var u = playlist.url.trim().replaceAll(RegExp(r'/+$'), '');
+    if (!RegExp(r'^https?://', caseSensitive: false).hasMatch(u)) {
+      u = 'http://$u';
+    }
+    return u;
+  }
+
+  String _apiUrl(String action) {
+    final q = 'username=${Uri.encodeComponent(playlist.username ?? '')}'
+        '&password=${Uri.encodeComponent(playlist.password ?? '')}';
+    return action.isEmpty
+        ? '$_base/player_api.php?$q'
+        : '$_base/player_api.php?$q&action=$action';
+  }
 
   Future<String> _get(String action) async {
-    final res = await _dio.get(playlist.xtreamApi(action),
+    final res = await _dio.get(_apiUrl(action),
         options: Options(responseType: ResponseType.plain));
     return res.data as String;
   }
 
-  /// Validate credentials; returns the account/server info or throws.
+  /// Validate credentials; returns the account/server info or throws a clear,
+  /// human-readable error.
   Future<Map<String, dynamic>> authenticate() async {
-    final body = await _get('');
-    final json = jsonDecode(body) as Map<String, dynamic>;
-    final auth = (json['user_info']?['auth']);
-    if (auth != 0 && auth != true && auth != '1' && auth != 1) {
-      // Some panels omit auth on success; only fail on explicit 0.
-      if (auth == 0 || auth == '0') {
-        throw Exception('Xtream authentication failed — check credentials.');
-      }
+    final String body;
+    try {
+      body = await _get('');
+    } on DioException catch (e) {
+      throw Exception('Could not reach the portal — check the URL/port. ($e)');
     }
-    return json;
+    dynamic json;
+    try {
+      json = jsonDecode(body);
+    } catch (_) {
+      throw Exception('Portal did not return valid data — is the URL correct?');
+    }
+    if (json is! Map || json['user_info'] == null) {
+      throw Exception('Login failed — check username and password.');
+    }
+    final auth = json['user_info']['auth'];
+    // Panels signal success with auth==1; only treat an explicit 0/false as a
+    // failure (some omit the field entirely on success).
+    if (auth == 0 || auth == '0' || auth == false) {
+      throw Exception('Login failed — check username and password.');
+    }
+    return Map<String, dynamic>.from(json);
   }
 
   /// Fetch live + VOD streams and return them ready to persist.

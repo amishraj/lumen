@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/foundation.dart' hide Category;
 
 import '../db/app_database.dart';
@@ -38,6 +41,10 @@ class LibraryRepository {
         receiveTimeout: const Duration(seconds: 120),
         headers: {'User-Agent': 'Lumen/1.0'},
       ));
+      dio.httpClientAdapter = IOHttpClientAdapter(
+        createHttpClient: () => HttpClient()
+          ..badCertificateCallback = (cert, host, port) => true,
+      );
       final res = await dio.get(pl.url,
           options: Options(responseType: ResponseType.plain));
       yield const SyncProgress('Parsing channels…');
