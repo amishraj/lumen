@@ -20,7 +20,10 @@ class AppDatabase {
       path,
       version: 1,
       onConfigure: (db) async {
-        await db.execute('PRAGMA journal_mode=WAL');
+        // journal_mode returns a row ("wal"); on sqflite_darwin (iOS/macOS)
+        // running it via execute() throws "not an error" — must use rawQuery.
+        // synchronous and foreign_keys return nothing, so execute() is fine.
+        await db.rawQuery('PRAGMA journal_mode=WAL');
         await db.execute('PRAGMA synchronous=NORMAL');
         await db.execute('PRAGMA foreign_keys=ON');
       },
