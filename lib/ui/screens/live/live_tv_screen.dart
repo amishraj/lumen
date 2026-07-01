@@ -233,62 +233,69 @@ class _CategoryRow extends ConsumerWidget {
   final bool selected;
   final bool pinned;
 
+  Future<void> _togglePin(WidgetRef ref) async {
+    final repo = await ref.read(repositoryProvider.future);
+    final pl = ref.read(activePlaylistProvider);
+    final kind = ref.read(selectedKindProvider);
+    if (pl?.id == null) return;
+    await repo.setPinned(pl!.id!, kind, category.name, !pinned);
+    ref.invalidate(pinnedCategoriesProvider);
+    ref.invalidate(orderedCategoriesProvider);
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return FocusableItem(
-      borderRadius: 10,
-      onActivate: () =>
-          ref.read(selectedCategoryProvider.notifier).state = category,
-      builder: (context, focused) => Container(
-        margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        padding: const EdgeInsets.only(left: 10, right: 2),
-        decoration: BoxDecoration(
-          color: selected ? LumenTheme.accent.withValues(alpha: 0.16) : Colors.transparent,
-          borderRadius: BorderRadius.circular(10),
-          border: Border(
-            left: BorderSide(
-                color: selected ? LumenTheme.accent : Colors.transparent, width: 3),
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      padding: const EdgeInsets.only(left: 2, right: 2),
+      decoration: BoxDecoration(
+        color: selected ? LumenTheme.accent.withValues(alpha: 0.16) : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        border: Border(
+          left: BorderSide(
+              color: selected ? LumenTheme.accent : Colors.transparent, width: 3),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: FocusableItem(
+              borderRadius: 8,
+              onActivate: () =>
+                  ref.read(selectedCategoryProvider.notifier).state = category,
+              // From the name, Right goes straight to the pin toggle.
+              onRight: () => FocusScope.of(context).nextFocus(),
+              builder: (context, focused) => Padding(
+                padding: const EdgeInsets.only(left: 8, top: 4, bottom: 4),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(category.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                            color: selected ? Colors.white : const Color(0xFFC7CBD6))),
+                    Text('${category.count}',
+                        style: const TextStyle(fontSize: 10.5, color: Color(0xFF6B7080))),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(category.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                          color: selected ? Colors.white : const Color(0xFFC7CBD6))),
-                  Text('${category.count}',
-                      style: const TextStyle(fontSize: 10.5, color: Color(0xFF6B7080))),
-                ],
-              ),
+          FocusableItem(
+            borderRadius: 18,
+            onActivate: () => _togglePin(ref),
+            builder: (context, focused) => Padding(
+              padding: const EdgeInsets.all(6),
+              child: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                  size: 15,
+                  color: pinned ? LumenTheme.accentWarm : const Color(0xFF5B6072)),
             ),
-            InkResponse(
-              radius: 18,
-              onTap: () async {
-                final repo = await ref.read(repositoryProvider.future);
-                final pl = ref.read(activePlaylistProvider);
-                final kind = ref.read(selectedKindProvider);
-                if (pl?.id == null) return;
-                await repo.setPinned(pl!.id!, kind, category.name, !pinned);
-                ref.invalidate(pinnedCategoriesProvider);
-                ref.invalidate(orderedCategoriesProvider);
-              },
-              child: Padding(
-                padding: const EdgeInsets.all(6),
-                child: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                    size: 15,
-                    color: pinned ? LumenTheme.accentWarm : const Color(0xFF5B6072)),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

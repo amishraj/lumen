@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../../widgets/focusable_item.dart';
 
 /// Lets the user choose which home rows appear and in what order.
 class HomeCustomizeScreen extends ConsumerStatefulWidget {
@@ -34,6 +35,18 @@ class _State extends ConsumerState<HomeCustomizeScreen> {
 
   String _label(String id) =>
       kAllHomeRows.firstWhere((r) => r.id == id).label;
+
+  // Remote/keyboard has no drag gesture, so Up/Down buttons are the only way
+  // to reorder without a pointer.
+  void _move(int i, int delta) {
+    final j = i + delta;
+    if (j < 0 || j >= _order.length) return;
+    setState(() {
+      final id = _order.removeAt(i);
+      _order.insert(j, id);
+    });
+    _save();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -73,27 +86,84 @@ class _State extends ConsumerState<HomeCustomizeScreen> {
                     return Card(
                       key: ValueKey(id),
                       margin: const EdgeInsets.symmetric(vertical: 5),
-                      child: ListTile(
-                        leading: ReorderableDragStartListener(
-                          index: i,
-                          child: const Icon(Icons.drag_handle,
-                              color: Color(0xFF6B7080)),
-                        ),
-                        title: Text(_label(id),
-                            style: const TextStyle(fontWeight: FontWeight.w600)),
-                        trailing: Switch(
-                          value: on,
-                          activeColor: LumenTheme.accent,
-                          onChanged: (v) {
-                            setState(() {
-                              if (v) {
-                                _enabled.add(id);
-                              } else {
-                                _enabled.remove(id);
-                              }
-                            });
-                            _save();
-                          },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        child: Row(
+                          children: [
+                            ReorderableDragStartListener(
+                              index: i,
+                              child: const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: Icon(Icons.drag_handle, color: Color(0xFF6B7080)),
+                              ),
+                            ),
+                            // Up/down move buttons — the remote/keyboard
+                            // equivalent of the drag handle above.
+                            FocusableItem(
+                              borderRadius: 10,
+                              onActivate: () => _move(i, -1),
+                              builder: (context, focused) => Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: Icon(Icons.keyboard_arrow_up,
+                                    size: 20,
+                                    color: i == 0
+                                        ? const Color(0xFF3A3E4A)
+                                        : const Color(0xFF9AA0B0)),
+                              ),
+                            ),
+                            FocusableItem(
+                              borderRadius: 10,
+                              onActivate: () => _move(i, 1),
+                              builder: (context, focused) => Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: Icon(Icons.keyboard_arrow_down,
+                                    size: 20,
+                                    color: i == _order.length - 1
+                                        ? const Color(0xFF3A3E4A)
+                                        : const Color(0xFF9AA0B0)),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(_label(id),
+                                  style: const TextStyle(fontWeight: FontWeight.w600)),
+                            ),
+                            FocusableItem(
+                              borderRadius: 18,
+                              onActivate: () {
+                                setState(() {
+                                  if (on) {
+                                    _enabled.remove(id);
+                                  } else {
+                                    _enabled.add(id);
+                                  }
+                                });
+                                _save();
+                              },
+                              builder: (context, focused) => Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 150),
+                                  width: 40,
+                                  height: 24,
+                                  padding: const EdgeInsets.all(3),
+                                  alignment: on ? Alignment.centerRight : Alignment.centerLeft,
+                                  decoration: BoxDecoration(
+                                    color: on
+                                        ? LumenTheme.accent
+                                        : const Color(0xFF3A3E4A),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Container(
+                                    width: 18,
+                                    height: 18,
+                                    decoration: const BoxDecoration(
+                                        color: Colors.white, shape: BoxShape.circle),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     );

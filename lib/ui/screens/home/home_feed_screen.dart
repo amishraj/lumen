@@ -18,8 +18,11 @@ class HomeFeedScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final featured = ref.watch(featuredProvider);
-    final config = ref.watch(homeConfigProvider);
+    // .valueOrNull keeps the last-known list visible while a watched provider
+    // refetches, instead of the row (and any focus inside it) disappearing
+    // for a frame — see _ContentRow below for why that matters for remote nav.
+    final featured = ref.watch(featuredProvider).valueOrNull;
+    final rows = ref.watch(homeConfigProvider).valueOrNull;
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -32,21 +35,19 @@ class HomeFeedScreen extends ConsumerWidget {
       child: CustomScrollView(
         slivers: [
           SliverToBoxAdapter(
-            child: featured.maybeWhen(
-              data: (items) =>
-                  items.isEmpty ? const SizedBox(height: 8) : _HeroCarousel(items: items),
-              orElse: () => const _HeroSkeleton(),
-            ),
+            child: featured == null
+                ? const _HeroSkeleton()
+                : featured.isEmpty
+                    ? const SizedBox(height: 8)
+                    : _HeroCarousel(items: featured),
           ),
-          config.maybeWhen(
-            data: (rows) => SliverList(
+          if (rows != null)
+            SliverList(
               delegate: SliverChildBuilderDelegate(
                 (context, i) => _rowFor(rows[i]),
                 childCount: rows.length,
               ),
             ),
-            orElse: () => const SliverToBoxAdapter(child: SizedBox.shrink()),
-          ),
           // The user's custom Trakt lists, one row each.
           SliverToBoxAdapter(
             child: Consumer(builder: (context, ref, _) {
@@ -336,36 +337,35 @@ class _ContentRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final async = ref.watch(provider);
-    return async.maybeWhen(
-      data: (items) {
-        if (items.isEmpty) return const SizedBox.shrink();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 16, 10),
-              child: Text(title,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+    // Use the last-known value (Riverpod keeps it during a refetch) instead of
+    // a strict data-only match — otherwise this row (and its focused item)
+    // vanishes for a frame on every invalidate (e.g. toggling a favorite),
+    // which drops keyboard/remote focus and makes Down/Up feel "reset".
+    final items = ref.watch(provider).valueOrNull;
+    if (items == null || items.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 16, 10),
+          child: Text(title,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+        ),
+        SizedBox(
+          height: 250,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            clipBehavior: Clip.none, // don't clip the focus glow / scale
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 14),
+            itemBuilder: (_, i) => PosterCard(
+              item: items[i],
+              onTap: () => openItem(context, ref, items[i]),
             ),
-            SizedBox(
-              height: 250,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                clipBehavior: Clip.none, // don't clip the focus glow / scale
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-                itemCount: items.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 14),
-                itemBuilder: (_, i) => PosterCard(
-                  item: items[i],
-                  onTap: () => openItem(context, ref, items[i]),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-      orElse: () => const SizedBox.shrink(),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -376,36 +376,31 @@ class _TraktRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final async = ref.watch(traktWatchlistProvider);
-    return async.maybeWhen(
-      data: (items) {
-        if (items.isEmpty) return const SizedBox.shrink();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 18, 16, 10),
-              child: Row(children: [
-                Icon(Icons.check_circle, color: Color(0xFFED1C24), size: 18),
-                SizedBox(width: 6),
-                Text('Trakt Watchlist',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-              ]),
-            ),
-            SizedBox(
-              height: 92,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                itemCount: items.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 12),
-                itemBuilder: (_, i) => _TraktChip(item: items[i]),
-              ),
-            ),
-          ],
-        );
-      },
-      orElse: () => const SizedBox.shrink(),
+    final items = ref.watch(traktWatchlistProvider).valueOrNull;
+    if (items == null || items.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 18, 16, 10),
+          child: Row(children: [
+            Icon(Icons.check_circle, color: Color(0xFFED1C24), size: 18),
+            SizedBox(width: 6),
+            Text('Trakt Watchlist',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          ]),
+        ),
+        SizedBox(
+          height: 92,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (_, i) => _TraktChip(item: items[i]),
+          ),
+        ),
+      ],
     );
   }
 }

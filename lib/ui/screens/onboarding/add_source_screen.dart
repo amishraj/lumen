@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../data/models/models.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../../widgets/tv_text_field.dart';
 
 /// Add an M3U playlist or Xtream Codes account, then run the first sync with
 /// live progress. This is the only "heavy" moment — everything after is instant.
@@ -175,7 +176,8 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
 
   Widget _m3uForm() => ListView(
         children: [
-          _field(_nameCtl, 'Name (optional)', Icons.label_outline),
+          _field(_nameCtl, 'Name (optional)', Icons.label_outline,
+              autofocus: true),
           const SizedBox(height: 12),
           _field(_urlCtl, 'http://provider.com/get.php?...', Icons.link,
               keyboard: TextInputType.url),
@@ -188,7 +190,8 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
 
   Widget _xtreamForm() => ListView(
         children: [
-          _field(_nameCtl, 'Name (optional)', Icons.label_outline),
+          _field(_nameCtl, 'Name (optional)', Icons.label_outline,
+              autofocus: true),
           const SizedBox(height: 12),
           _field(_portalCtl, 'http://host:port', Icons.dns_outlined,
               keyboard: TextInputType.url),
@@ -203,18 +206,17 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
         ],
       );
 
+  // Navigable tile that opens for editing only when selected/clicked — so the
+  // D-pad can always move between fields (see TvTextField).
   Widget _field(TextEditingController c, String hint, IconData icon,
-      {bool obscure = false, TextInputType? keyboard}) {
-    return TextField(
+      {bool obscure = false, TextInputType? keyboard, bool autofocus = false}) {
+    return TvTextField(
       controller: c,
-      obscureText: obscure,
-      keyboardType: keyboard,
-      autocorrect: false,
-      enableSuggestions: false,
-      decoration: InputDecoration(
-        hintText: hint,
-        prefixIcon: Icon(icon, size: 20),
-      ),
+      hint: hint,
+      icon: icon,
+      obscure: obscure,
+      keyboard: keyboard,
+      autofocus: autofocus,
     );
   }
 }
