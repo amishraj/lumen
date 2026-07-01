@@ -1,0 +1,442 @@
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../models/models.dart';
+import '../repositories/library_repository.dart';
+import '../../state/providers.dart';
+
+/// The Movie Database (TMDB) — richer artwork (posters/backdrops), overviews,
+/// genres, cast, and discovery lists (popular / trending / by-genre /
+/// recommendations). Optional: nothing is fetched until the user pastes their
+/// own free key in Settings → Metadata.
+///
+/// Get a free key at https://www.themoviedb.org/settings/api. Both the classic
+/// v3 API key and a v4 read-access token are accepted.
+class TmdbService {
+  TmdbService(this._repo);
+  final LibraryRepository _repo;
+
+  static const _api = 'https://api.themoviedb.org/3';
+  static const _img = 'https://image.tmdb.org/t/p';
+
+  final _dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 12),
+    receiveTimeout: const Duration(seconds: 12),
+    validateStatus: (s) => s != null && s < 500,
+  ));
+
+  Future<String?> key() async => _repo.getSetting('tmdb_key');
+
+  Future<bool> get enabled async => (await key())?.isNotEmpty ?? false;
+
+  Future<void> saveKey(String k) => _repo.setSetting('tmdb_key', k.trim());
+
+  /// TMDB accepts either a v3 key (as the `api_key` query param) or a v4 read
+  /// token (as a Bearer header). v4 tokens are long JWTs starting with `eyJ`.
+  Future<(Map<String, dynamic>, Options)> _auth() async {
+    final k = (await key()) ?? '';
+    if (k.startsWith('eyJ')) {
+      return (
+        <String, dynamic>{},
+        Options(headers: {'Authorization': 'Bearer $k'})
+      );
+    }
+    return (<String, dynamic>{'api_key': k}, Options());
+  }
+
+  static String? posterUrl(String? path, {String size = 'w500'}) =>
+      (path == null || path.isEmpty) ? null : '$_img/$size$path';
+  static String? backdropUrl(String? path, {String size = 'w1280'}) =>
+      (path == null || path.isEmpty) ? null : '$_img/$size$path';
+
+  /// Cached GET. List endpoints get a TTL so home rows refresh occasionally;
+  /// pass ttl: null for permanent caching (per-title detail lookups).
+  Future<dynamic> _cachedGet(
+    String cacheKey,
+    String path, {
+    Map<String, dynamic> query = const {},
+    Duration? ttl,
+  }) async {
+    final k = await key();
+    if (k == null || k.isEmpty) return null;
+
+    final cached = await _repo.getSetting(cacheKey);
+    if (cached != null && cached.isNotEmpty) {
+      try {
+        final wrap = jsonDecode(cached) as Map<String, dynamic>;
+        final at = wrap['at'] as int? ?? 0;
+        final fresh = ttl == null ||
+            DateTime.now().millisecondsSinceEpoch - at < ttl.inMilliseconds;
+        if (fresh) return wrap['v'];
+      } catch (_) {/* corrupt cache — refetch */}
+    }
+
+    try {
+      final (q, opts) = await _auth();
+      final res = await _dio.get('$_api$path',
+          queryParameters: {...q, ...query}, options: opts);
+      if (res.statusCode == 200) {
+        final data = res.data is String ? jsonDecode(res.data) : res.data;
+        await _repo.setSetting(
+            cacheKey,
+            jsonEncode(
+                {'at': DateTime.now().millisecondsSinceEpoch, 'v': data}));
+        return data;
+      }
+    } catch (_) {/* network hiccup — don't cache */}
+    return null;
+  }
+
+  List<TmdbItem> _parseResults(dynamic data, {bool? forceShow}) {
+    final results = data is Map ? data['results'] : null;
+    final out = <TmdbItem>[];
+    if (results is List) {
+      for (final r in results) {
+        if (r is! Map) continue;
+        final isShow =
+            forceShow ?? (r['media_type'] == 'tv' || r['name'] != null);
+        final title =
+            '${(isShow ? r['name'] : r['title']) ?? r['title'] ?? r['name'] ?? ''}';
+        if (title.isEmpty) continue;
+        final date =
+            '${(isShow ? r['first_air_date'] : r['release_date']) ?? ''}';
+        out.add(TmdbItem(
+          tmdbId: (r['id'] as num?)?.toInt(),
+          title: title,
+          year: date.length >= 4 ? int.tryParse(date.substring(0, 4)) : null,
+          isShow: isShow,
+          poster: posterUrl(r['poster_path'] as String?),
+          backdrop: backdropUrl(r['backdrop_path'] as String?),
+          rating: (r['vote_average'] as num?)?.toDouble(),
+        ));
+      }
+    }
+    return out;
+  }
+
+  /// Popular titles right now.
+  Future<List<TmdbItem>> popular({bool show = false, int limit = 20}) async {
+    final data = await _cachedGet('tmdb:popular:${show ? 'tv' : 'movie'}',
+        '/${show ? 'tv' : 'movie'}/popular',
+        ttl: const Duration(hours: 12));
+    return _parseResults(data, forceShow: show).take(limit).toList();
+  }
+
+  /// Trending across the week (mixed movies + shows).
+  Future<List<TmdbItem>> trending({int limit = 20}) async {
+    final data = await _cachedGet('tmdb:trending:all', '/trending/all/week',
+        ttl: const Duration(hours: 12));
+    return _parseResults(data).take(limit).toList();
+  }
+
+  /// The TMDB genre catalogue for movies (id → name).
+  Future<List<TmdbGenre>> genres({bool show = false}) async {
+    final data = await _cachedGet('tmdb:genres:${show ? 'tv' : 'movie'}',
+        '/genre/${show ? 'tv' : 'movie'}/list',
+        ttl: const Duration(days: 30));
+    final list = data is Map ? data['genres'] : null;
+    final out = <TmdbGenre>[];
+    if (list is List) {
+      for (final g in list) {
+        if (g is Map && g['id'] != null && g['name'] != null) {
+          out.add(TmdbGenre((g['id'] as num).toInt(), '${g['name']}', show));
+        }
+      }
+    }
+    return out;
+  }
+
+  /// Discover titles in a genre, most-popular first.
+  Future<List<TmdbItem>> byGenre(int genreId,
+      {bool show = false, int limit = 20}) async {
+    final data = await _cachedGet(
+        'tmdb:genre:${show ? 'tv' : 'movie'}:$genreId',
+        '/discover/${show ? 'tv' : 'movie'}',
+        query: {'with_genres': '$genreId', 'sort_by': 'popularity.desc'},
+        ttl: const Duration(hours: 24));
+    return _parseResults(data, forceShow: show).take(limit).toList();
+  }
+
+  /// "Because you watched X" — TMDB's own recommendations for a title. Resolves
+  /// the title to a TMDB id first (cached), then fetches recommendations.
+  Future<List<TmdbItem>> recommendationsFor(String title,
+      {bool show = false, int limit = 20}) async {
+    final info = await lookup(title, isShow: show);
+    if (info?.tmdbId == null) return [];
+    final data = await _cachedGet(
+        'tmdb:recs:${show ? 'tv' : 'movie'}:${info!.tmdbId}',
+        '/${show ? 'tv' : 'movie'}/${info.tmdbId}/recommendations',
+        ttl: const Duration(hours: 24));
+    return _parseResults(data, forceShow: show).take(limit).toList();
+  }
+
+  /// Full detail for a title (overview, genres, runtime, cast, art). Cached
+  /// permanently per title so each is fetched at most once.
+  Future<TmdbInfo?> lookup(String rawTitle, {bool isShow = false}) async {
+    final k = await key();
+    if (k == null || k.isEmpty) return null;
+    final (title, year) = _clean(rawTitle);
+    if (title.isEmpty) return null;
+
+    final type = isShow ? 'tv' : 'movie';
+    final cacheKey = 'tmdb:detail:$type:${title.toLowerCase()}|${year ?? ''}';
+    final cached = await _repo.getSetting(cacheKey);
+    if (cached != null) {
+      if (cached == '0') return null; // cached miss
+      try {
+        return TmdbInfo.fromJson(
+            jsonDecode(cached) as Map<String, dynamic>, isShow);
+      } catch (_) {/* refetch */}
+    }
+
+    try {
+      final (q, opts) = await _auth();
+      final search = await _dio.get('$_api/search/$type',
+          queryParameters: {
+            ...q,
+            'query': title,
+            if (year != null)
+              (isShow ? 'first_air_date_year' : 'year'): '$year',
+          },
+          options: opts);
+      final sd = search.data is String ? jsonDecode(search.data) : search.data;
+      final results = sd is Map ? sd['results'] : null;
+      if (results is! List || results.isEmpty) {
+        await _repo.setSetting(cacheKey, '0');
+        return null;
+      }
+      final id = (results.first as Map)['id'];
+      // Detail call with credits appended so we get cast in one round-trip.
+      final det = await _dio.get('$_api/$type/$id',
+          queryParameters: {...q, 'append_to_response': 'credits'},
+          options: opts);
+      final dd = det.data is String ? jsonDecode(det.data) : det.data;
+      if (dd is Map && dd['id'] != null) {
+        await _repo.setSetting(cacheKey, jsonEncode(dd));
+        return TmdbInfo.fromJson(Map<String, dynamic>.from(dd), isShow);
+      }
+      await _repo.setSetting(cacheKey, '0');
+    } catch (_) {/* network hiccup — don't cache */}
+    return null;
+  }
+
+  /// Strip provider noise (leading numbering, quality tags) and pull a year.
+  (String, int?) _clean(String raw) {
+    var s = raw.trim();
+    int? year;
+    final ym = RegExp(r'\((19|20)\d{2}\)').firstMatch(s);
+    if (ym != null) {
+      year = int.tryParse(ym.group(0)!.replaceAll(RegExp(r'[()]'), ''));
+    }
+    s = s
+        .replaceAll(RegExp(r'^\s*\d{1,4}\s*[-.]\s*'), '')
+        .replaceAll(RegExp(r'^[A-Z]{2,3}\s*[|:-]\s*'), '')
+        .replaceAll(RegExp(r'\((19|20)\d{2}\)'), '')
+        .replaceAll(RegExp(r'\[[^\]]*\]'), '')
+        .replaceAll(
+            RegExp(r'\b(4k|uhd|fhd|hd|sd|hevc|x265|1080p|720p|multi|vip)\b',
+                caseSensitive: false),
+            '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return (s, year);
+  }
+}
+
+/// A lightweight discovery item from a TMDB list (poster + title + year).
+class TmdbItem {
+  final int? tmdbId;
+  final String title;
+  final int? year;
+  final bool isShow;
+  final String? poster;
+  final String? backdrop;
+  final double? rating;
+  const TmdbItem({
+    this.tmdbId,
+    required this.title,
+    this.year,
+    this.isShow = false,
+    this.poster,
+    this.backdrop,
+    this.rating,
+  });
+}
+
+class TmdbGenre {
+  final int id;
+  final String name;
+  final bool isShow;
+  const TmdbGenre(this.id, this.name, this.isShow);
+}
+
+/// Full metadata for a title's detail screen.
+class TmdbInfo {
+  final int? tmdbId;
+  final String title;
+  final String? overview;
+  final List<String> genres;
+  final int? runtimeMins;
+  final double? rating;
+  final String? poster;
+  final String? backdrop;
+  final String? releaseDate;
+  final List<String> cast;
+
+  const TmdbInfo({
+    this.tmdbId,
+    required this.title,
+    this.overview,
+    this.genres = const [],
+    this.runtimeMins,
+    this.rating,
+    this.poster,
+    this.backdrop,
+    this.releaseDate,
+    this.cast = const [],
+  });
+
+  factory TmdbInfo.fromJson(Map<String, dynamic> d, bool isShow) {
+    final genreList = <String>[];
+    if (d['genres'] is List) {
+      for (final g in d['genres']) {
+        if (g is Map && g['name'] != null) genreList.add('${g['name']}');
+      }
+    }
+    // Movies expose `runtime`; shows expose `episode_run_time: [mins]`.
+    int? runtime = (d['runtime'] as num?)?.toInt();
+    if (runtime == null &&
+        d['episode_run_time'] is List &&
+        (d['episode_run_time'] as List).isNotEmpty) {
+      runtime = ((d['episode_run_time'] as List).first as num?)?.toInt();
+    }
+    final cast = <String>[];
+    final credits = d['credits'];
+    if (credits is Map && credits['cast'] is List) {
+      for (final c in (credits['cast'] as List).take(8)) {
+        if (c is Map && c['name'] != null) cast.add('${c['name']}');
+      }
+    }
+    return TmdbInfo(
+      tmdbId: (d['id'] as num?)?.toInt(),
+      title:
+          '${(isShow ? d['name'] : d['title']) ?? d['title'] ?? d['name'] ?? ''}',
+      overview:
+          (d['overview'] is String && (d['overview'] as String).isNotEmpty)
+              ? d['overview'] as String
+              : null,
+      genres: genreList,
+      runtimeMins: runtime,
+      rating: (d['vote_average'] as num?)?.toDouble(),
+      poster: TmdbService.posterUrl(d['poster_path'] as String?),
+      backdrop: TmdbService.backdropUrl(d['backdrop_path'] as String?),
+      releaseDate:
+          '${(isShow ? d['first_air_date'] : d['release_date']) ?? ''}',
+      cast: cast,
+    );
+  }
+}
+
+final tmdbServiceProvider = FutureProvider<TmdbService>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  return TmdbService(repo);
+});
+
+/// True when the user has entered a TMDB key — gates all TMDB UI.
+final tmdbEnabledProvider = FutureProvider.autoDispose<bool>((ref) async {
+  final svc = await ref.watch(tmdbServiceProvider.future);
+  // Also re-runs when the key setting changes via invalidation.
+  ref.watch(tmdbKeyRevProvider);
+  return svc.enabled;
+});
+
+/// Bumped whenever the key is saved so dependent providers recompute.
+final tmdbKeyRevProvider = StateProvider<int>((ref) => 0);
+
+/// Lazily resolved TMDB metadata for a title's detail screen.
+final tmdbDetailProvider = FutureProvider.autoDispose
+    .family<TmdbInfo?, ({String title, bool isShow})>((ref, args) async {
+  final svc = await ref.watch(tmdbServiceProvider.future);
+  return svc.lookup(args.title, isShow: args.isShow);
+});
+
+// ---------------------------------------------------------------------------
+// TMDB-driven home rows. Each resolves a TMDB discovery list to items that
+// actually exist in the user's library (so they're playable), overlaying the
+// TMDB poster + rating for richer art. Rows silently vanish when no key is set.
+// ---------------------------------------------------------------------------
+
+Future<List<StreamItem>> _matchToLibrary(
+    LibraryRepository repo, int plId, List<TmdbItem> items) async {
+  final out = <StreamItem>[];
+  final seen = <int>{};
+  for (final t in items) {
+    final kind = t.isShow ? StreamKind.series : StreamKind.movie;
+    final hits =
+        await repo.search(playlistId: plId, kind: kind, query: t.title);
+    if (hits.isNotEmpty && hits.first.id != null && seen.add(hits.first.id!)) {
+      out.add(hits.first.copyWith(logo: t.poster, rating: t.rating));
+    }
+  }
+  return out;
+}
+
+final tmdbPopularProvider =
+    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+  if (!await ref.watch(tmdbEnabledProvider.future)) return [];
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  final svc = await ref.watch(tmdbServiceProvider.future);
+  return _matchToLibrary(repo, pl!.id!, await svc.popular());
+});
+
+final tmdbTrendingProvider =
+    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+  if (!await ref.watch(tmdbEnabledProvider.future)) return [];
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  final svc = await ref.watch(tmdbServiceProvider.future);
+  return _matchToLibrary(repo, pl!.id!, await svc.trending());
+});
+
+/// TMDB movie genres available to browse.
+final tmdbGenresProvider =
+    FutureProvider.autoDispose<List<TmdbGenre>>((ref) async {
+  if (!await ref.watch(tmdbEnabledProvider.future)) return [];
+  final svc = await ref.watch(tmdbServiceProvider.future);
+  return svc.genres();
+});
+
+/// Library items for a given TMDB genre id.
+final tmdbGenreRowProvider = FutureProvider.autoDispose
+    .family<List<StreamItem>, int>((ref, genreId) async {
+  if (!await ref.watch(tmdbEnabledProvider.future)) return [];
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  final svc = await ref.watch(tmdbServiceProvider.future);
+  return _matchToLibrary(repo, pl!.id!, await svc.byGenre(genreId));
+});
+
+/// "Because you watched X" — recommendations off the most recent watch.
+final tmdbBecauseYouWatchedProvider =
+    FutureProvider.autoDispose<({String? seed, List<StreamItem> items})>(
+        (ref) async {
+  if (!await ref.watch(tmdbEnabledProvider.future)) {
+    return (seed: null, items: <StreamItem>[]);
+  }
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return (seed: null, items: <StreamItem>[]);
+  final recent = await repo.recentlyWatched(pl!.id!);
+  if (recent.isEmpty) return (seed: null, items: <StreamItem>[]);
+  final seed = recent.first;
+  final svc = await ref.watch(tmdbServiceProvider.future);
+  final recs = await svc.recommendationsFor(seed.name,
+      show: seed.kind == StreamKind.series);
+  return (seed: seed.name, items: await _matchToLibrary(repo, pl.id!, recs));
+});

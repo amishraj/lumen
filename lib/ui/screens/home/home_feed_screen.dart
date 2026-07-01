@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/sources/tmdb_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../navigation.dart';
@@ -9,6 +10,7 @@ import '../../theme/lumen_theme.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/logo_image.dart';
 import '../../widgets/poster_card.dart';
+import 'genre_browse_screen.dart';
 import 'home_customize_screen.dart';
 
 /// Netflix/Kodi-style landing: one cinematic hero, then clean customizable
@@ -48,10 +50,13 @@ class HomeFeedScreen extends ConsumerWidget {
                 childCount: rows.length,
               ),
             ),
+          // TMDB discovery rows (only when the user has added a key).
+          const SliverToBoxAdapter(child: _TmdbSection()),
           // The user's custom Trakt lists, one row each.
           SliverToBoxAdapter(
             child: Consumer(builder: (context, ref, _) {
-              final lists = ref.watch(traktListsProvider).valueOrNull ?? const [];
+              final lists =
+                  ref.watch(traktListsProvider).valueOrNull ?? const [];
               if (lists.isEmpty) return const SizedBox.shrink();
               return Column(
                 children: [for (final l in lists) _TraktListRow(list: l)],
@@ -67,16 +72,21 @@ class HomeFeedScreen extends ConsumerWidget {
   Widget _rowFor(String id) {
     switch (id) {
       case 'continue':
-        return _ContentRow(title: 'Continue Watching', provider: continueWatchingProvider);
+        return _ContentRow(
+            title: 'Continue Watching', provider: continueWatchingProvider);
       case 'favorites':
-        return _ContentRow(title: 'My Favorites', provider: favoritesListProvider);
+        return _ContentRow(
+            title: 'My Favorites', provider: favoritesListProvider);
       case 'recent':
-        return _ContentRow(title: 'Recently Watched', provider: recentlyWatchedProvider);
+        return _ContentRow(
+            title: 'Recently Watched', provider: recentlyWatchedProvider);
       case 'movies':
         return _ContentRow(
-            title: 'Movies for You', provider: kindSampleProvider(StreamKind.movie));
+            title: 'Movies for You',
+            provider: kindSampleProvider(StreamKind.movie));
       case 'series':
-        return _ContentRow(title: 'TV Shows', provider: kindSampleProvider(StreamKind.series));
+        return _ContentRow(
+            title: 'TV Shows', provider: kindSampleProvider(StreamKind.series));
       case 'trakt_watchlist':
         return const _TraktRow();
       default:
@@ -97,11 +107,17 @@ class _HeroCarousel extends StatefulWidget {
 
 class _HeroCarouselState extends State<_HeroCarousel> {
   final _controller = PageController();
+  // Single focus target that always follows the visible hero's Play button.
+  // Autofocus alone can't do this: it only fires on first mount, so paging
+  // (Right/Left) left focus orphaned and it fell back to the search bar or the
+  // row below. We re-request this node every time the page changes instead.
+  final _playFocus = FocusNode(debugLabel: 'hero-play');
   int _page = 0;
 
   @override
   void dispose() {
     _controller.dispose();
+    _playFocus.dispose();
     super.dispose();
   }
 
@@ -110,6 +126,15 @@ class _HeroCarouselState extends State<_HeroCarousel> {
     if (next == _page) return;
     _controller.animateToPage(next,
         duration: const Duration(milliseconds: 280), curve: Curves.easeOut);
+  }
+
+  void _onPageChanged(int i) {
+    setState(() => _page = i);
+    // After the new page builds, pull focus onto its Play button so remote
+    // navigation stays on the hero instead of jumping away.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _playFocus.requestFocus();
+    });
   }
 
   @override
@@ -121,10 +146,14 @@ class _HeroCarouselState extends State<_HeroCarousel> {
         children: [
           PageView.builder(
             controller: _controller,
-            onPageChanged: (i) => setState(() => _page = i),
+            onPageChanged: _onPageChanged,
             itemCount: widget.items.length,
             itemBuilder: (context, i) => _HeroBillboard(
               item: widget.items[i],
+              // Only the visible page owns the shared focus node (a node can
+              // attach to one widget at a time); it autofocuses on first open.
+              playFocus: i == _page ? _playFocus : null,
+              autofocusPlay: i == 0,
               onPrev: i > 0 ? () => _go(-1) : null,
               onNext: i < widget.items.length - 1 ? () => _go(1) : null,
             ),
@@ -143,7 +172,9 @@ class _HeroCarouselState extends State<_HeroCarousel> {
                     width: i == _page ? 18 : 6,
                     height: 6,
                     decoration: BoxDecoration(
-                      color: i == _page ? LumenTheme.accent : const Color(0x66FFFFFF),
+                      color: i == _page
+                          ? LumenTheme.accent
+                          : const Color(0x66FFFFFF),
                       borderRadius: BorderRadius.circular(3),
                     ),
                   ),
@@ -158,23 +189,42 @@ class _HeroCarouselState extends State<_HeroCarousel> {
 
 /// Full-bleed cinematic hero with Play + My List, like Netflix's billboard.
 class _HeroBillboard extends ConsumerWidget {
-  const _HeroBillboard({required this.item, this.onPrev, this.onNext});
+  const _HeroBillboard({
+    required this.item,
+    this.onPrev,
+    this.onNext,
+    this.playFocus,
+    this.autofocusPlay = false,
+  });
   final StreamItem item;
   final VoidCallback? onPrev;
   final VoidCallback? onNext;
+  final FocusNode? playFocus;
+  final bool autofocusPlay;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final h = (MediaQuery.of(context).size.height * 0.5).clamp(300.0, 460.0);
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = item.id != null && favs.contains(item.id);
+    // Prefer a wide TMDB backdrop for the cinematic hero when available.
+    final tmdb = ref
+        .watch(tmdbDetailProvider(
+            (title: item.name, isShow: item.kind == StreamKind.series)))
+        .valueOrNull;
+    final heroArt = tmdb?.backdrop ?? item.logo;
 
     return SizedBox(
       height: h,
       child: Stack(
         fit: StackFit.expand,
         children: [
-          LogoImage(url: item.logo, size: 1400, height: h, radius: 0, fallbackText: item.name),
+          LogoImage(
+              url: heroArt,
+              size: 1400,
+              height: h,
+              radius: 0,
+              fallbackText: item.name),
           // Cinematic gradients: darken bottom + left for legible text.
           const DecoratedBox(
             decoration: BoxDecoration(
@@ -206,7 +256,8 @@ class _HeroBillboard extends ConsumerWidget {
               builder: (context, focused) => Container(
                 padding: const EdgeInsets.all(9),
                 decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.4), shape: BoxShape.circle),
+                    color: Colors.black.withValues(alpha: 0.4),
+                    shape: BoxShape.circle),
                 child: const Icon(Icons.tune, size: 20, color: Colors.white),
               ),
             ),
@@ -220,13 +271,16 @@ class _HeroBillboard extends ConsumerWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                   decoration: BoxDecoration(
                     color: LumenTheme.accent,
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    item.kind == StreamKind.series ? 'FEATURED SERIES' : 'FEATURED',
+                    item.kind == StreamKind.series
+                        ? 'FEATURED SERIES'
+                        : 'FEATURED',
                     style: const TextStyle(
                         color: Color(0xFF0A0B0F),
                         fontSize: 10,
@@ -249,7 +303,8 @@ class _HeroBillboard extends ConsumerWidget {
                 if (item.rating != null && item.rating! > 0) ...[
                   const SizedBox(height: 8),
                   Row(children: [
-                    const Icon(Icons.star_rounded, size: 16, color: LumenTheme.accentWarm),
+                    const Icon(Icons.star_rounded,
+                        size: 16, color: LumenTheme.accentWarm),
                     const SizedBox(width: 4),
                     Text(item.rating!.toStringAsFixed(1),
                         style: const TextStyle(
@@ -260,26 +315,30 @@ class _HeroBillboard extends ConsumerWidget {
                 Row(
                   children: [
                     FocusableItem(
-                      autofocus: true,
+                      focusNode: playFocus,
+                      autofocus: autofocusPlay,
                       borderRadius: 12,
                       onLeft: onPrev,
                       onActivate: () => openItem(context, ref, item),
                       builder: (context, focused) => Container(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 26, vertical: 13),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 26, vertical: 13),
                         decoration: BoxDecoration(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(Icons.play_arrow_rounded, color: Color(0xFF0A0B0F)),
-                          SizedBox(width: 6),
-                          Text('Play',
-                              style: TextStyle(
-                                  color: Color(0xFF0A0B0F),
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 15)),
-                        ]),
+                        child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.play_arrow_rounded,
+                                  color: Color(0xFF0A0B0F)),
+                              SizedBox(width: 6),
+                              Text('Play',
+                                  style: TextStyle(
+                                      color: Color(0xFF0A0B0F),
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 15)),
+                            ]),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -294,18 +353,20 @@ class _HeroBillboard extends ConsumerWidget {
                         ref.invalidate(favoritesListProvider);
                       },
                       builder: (context, focused) => Container(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 13),
                         decoration: BoxDecoration(
                           color: Colors.white.withValues(alpha: 0.18),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Row(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(isFav ? Icons.check : Icons.add, color: Colors.white, size: 20),
+                          Icon(isFav ? Icons.check : Icons.add,
+                              color: Colors.white, size: 20),
                           const SizedBox(width: 6),
                           const Text('My List',
                               style: TextStyle(
-                                  color: Colors.white, fontWeight: FontWeight.w700)),
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700)),
                         ]),
                       ),
                     ),
@@ -349,13 +410,128 @@ class _ContentRow extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 18, 16, 10),
           child: Text(title,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
         ),
         SizedBox(
           height: 250,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             clipBehavior: Clip.none, // don't clip the focus glow / scale
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 14),
+            itemBuilder: (_, i) => PosterCard(
+              item: items[i],
+              onTap: () => openItem(context, ref, items[i]),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// TMDB-powered discovery: genre shortcuts + Popular / Trending / genre rows
+/// and a "Because you watched…" strip. Hidden entirely until a key is set.
+class _TmdbSection extends ConsumerWidget {
+  const _TmdbSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final enabled = ref.watch(tmdbEnabledProvider).valueOrNull ?? false;
+    if (!enabled) return const SizedBox.shrink();
+    final genres = ref.watch(tmdbGenresProvider).valueOrNull ?? const [];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (genres.isNotEmpty) _GenreChips(genres: genres),
+        _ContentRow(title: 'Popular Now', provider: tmdbPopularProvider),
+        _ContentRow(
+            title: 'Trending This Week', provider: tmdbTrendingProvider),
+        const _BecauseYouWatchedRow(),
+        // A few genre rows inline; full catalogue via the chips above.
+        for (final g in genres.take(3))
+          _ContentRow(title: g.name, provider: tmdbGenreRowProvider(g.id)),
+      ],
+    );
+  }
+}
+
+/// Horizontal strip of tappable genre chips → full genre browse screen.
+class _GenreChips extends StatelessWidget {
+  const _GenreChips({required this.genres});
+  final List<TmdbGenre> genres;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 18, 16, 10),
+          child: Text('Browse by Genre',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+        ),
+        SizedBox(
+          height: 44,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            clipBehavior: Clip.none,
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            itemCount: genres.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (context, i) => FocusableItem(
+              borderRadius: 22,
+              onActivate: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => GenreBrowseScreen(genre: genres[i]))),
+              builder: (context, focused) => Container(
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                decoration: BoxDecoration(
+                  color: LumenTheme.surface,
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: Text(genres[i].name,
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// "Because you watched X" recommendations, matched to the library.
+class _BecauseYouWatchedRow extends ConsumerWidget {
+  const _BecauseYouWatchedRow();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final data = ref.watch(tmdbBecauseYouWatchedProvider).valueOrNull;
+    if (data == null || data.seed == null || data.items.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final items = data.items;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 16, 10),
+          child: Text('Because you watched ${data.seed}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+        ),
+        SizedBox(
+          height: 250,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            clipBehavior: Clip.none,
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
             itemCount: items.length,
             separatorBuilder: (_, __) => const SizedBox(width: 14),
@@ -412,7 +588,8 @@ class _TraktListRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final items = ref.watch(traktListItemsProvider(list.id)).valueOrNull ?? const [];
+    final items =
+        ref.watch(traktListItemsProvider(list.id)).valueOrNull ?? const [];
     if (items.isEmpty) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -423,7 +600,8 @@ class _TraktListRow extends ConsumerWidget {
             const Icon(Icons.bookmark, color: Color(0xFFED1C24), size: 18),
             const SizedBox(width: 6),
             Text(list.name,
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
           ]),
         ),
         SizedBox(
@@ -458,8 +636,8 @@ class _TraktChip extends ConsumerWidget {
         if (hits.isNotEmpty) {
           openItem(context, ref, hits.first);
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('"${item.title}" not found in your library.')));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('"${item.title}" not found in your library.')));
         }
       },
       builder: (context, focused) => Container(
@@ -476,7 +654,8 @@ class _TraktChip extends ConsumerWidget {
             Text(item.title,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                style:
+                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
             const SizedBox(height: 4),
             Text(
                 '${item.type == 'show' ? 'TV' : 'Movie'}'

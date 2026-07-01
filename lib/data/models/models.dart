@@ -152,6 +152,19 @@ class StreamItem {
         num: r['num'] as int?,
         rating: (r['rating'] as double?),
       );
+
+  StreamItem copyWith({String? logo, double? rating}) => StreamItem(
+        id: id,
+        playlistId: playlistId,
+        kind: kind,
+        name: name,
+        logo: logo ?? this.logo,
+        url: url,
+        groupTitle: groupTitle,
+        tvgId: tvgId,
+        num: num,
+        rating: rating ?? this.rating,
+      );
 }
 
 /// One episode of a series (resolved on demand from Xtream get_series_info).

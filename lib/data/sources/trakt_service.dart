@@ -126,10 +126,59 @@ class TraktService {
     };
   }
 
+  /// Exchange the saved refresh token for a fresh access token. Trakt access
+  /// tokens expire (3 months), and without this every authenticated call
+  /// silently 401s and returns nothing — which reads as "all my Trakt content
+  /// disappeared". Returns true if a new token was obtained.
+  Future<bool> _refreshToken() async {
+    final refresh = await _repo.getSetting('trakt_refresh_token');
+    final clientId = await _clientId();
+    final clientSecret = await _clientSecret();
+    if (refresh == null ||
+        refresh.isEmpty ||
+        clientId == null ||
+        clientSecret == null) {
+      return false;
+    }
+    try {
+      final res = await _dio.post('$_api/oauth/token',
+          data: jsonEncode({
+            'refresh_token': refresh,
+            'client_id': clientId,
+            'client_secret': clientSecret,
+            'grant_type': 'refresh_token',
+          }));
+      if (res.statusCode == 200) {
+        final d = res.data is String ? jsonDecode(res.data) : res.data;
+        await _repo.setSetting('trakt_access_token', d['access_token']);
+        await _repo.setSetting('trakt_refresh_token', d['refresh_token']);
+        return true;
+      }
+      // Refresh token itself is dead — clear so the UI stops claiming
+      // "Connected" and the user can re-auth.
+      if (res.statusCode == 401) await disconnect();
+    } catch (_) {/* network hiccup — keep the token, try again later */}
+    return false;
+  }
+
+  /// Authenticated GET that transparently refreshes an expired access token
+  /// once and retries. All read endpoints go through here so a stale token
+  /// self-heals instead of blanking the user's Trakt rows.
+  Future<Response<dynamic>> _authGet(String url,
+      {Map<String, dynamic>? queryParameters}) async {
+    Future<Response<dynamic>> go() async => _dio.get(url,
+        queryParameters: queryParameters,
+        options: Options(headers: await _authHeaders()));
+    var res = await go();
+    if (res.statusCode == 401 && await _refreshToken()) {
+      res = await go();
+    }
+    return res;
+  }
+
   Future<void> _fetchUsername() async {
     try {
-      final res = await _dio.get('$_api/users/settings',
-          options: Options(headers: await _authHeaders()));
+      final res = await _authGet('$_api/users/settings');
       final d = res.data is String ? jsonDecode(res.data) : res.data;
       final name = d['user']?['username'] ?? d['user']?['name'];
       if (name != null) await _repo.setSetting('trakt_username', '$name');
@@ -170,8 +219,7 @@ class TraktService {
   Future<List<TraktItem>> watchedMovies() async {
     if (!await isConnected()) return [];
     try {
-      final res = await _dio.get('$_api/sync/watched/movies',
-          options: Options(headers: await _authHeaders()));
+      final res = await _authGet('$_api/sync/watched/movies');
       final list = res.data is String ? jsonDecode(res.data) : res.data;
       final out = <TraktItem>[];
       if (list is List) {
@@ -195,8 +243,7 @@ class TraktService {
   Future<List<TraktList>> lists() async {
     if (!await isConnected()) return [];
     try {
-      final res = await _dio.get('$_api/users/me/lists',
-          options: Options(headers: await _authHeaders()));
+      final res = await _authGet('$_api/users/me/lists');
       final list = res.data is String ? jsonDecode(res.data) : res.data;
       final out = <TraktList>[];
       if (list is List) {
@@ -222,8 +269,7 @@ class TraktService {
   Future<List<TraktPlayback>> playback() async {
     if (!await isConnected()) return [];
     try {
-      final res = await _dio.get('$_api/sync/playback',
-          options: Options(headers: await _authHeaders()));
+      final res = await _authGet('$_api/sync/playback');
       final list = res.data is String ? jsonDecode(res.data) : res.data;
       final out = <TraktPlayback>[];
       if (list is List) {
@@ -252,8 +298,7 @@ class TraktService {
   Future<List<TraktItem>> _itemsFrom(String url) async {
     if (!await isConnected()) return [];
     try {
-      final res =
-          await _dio.get(url, options: Options(headers: await _authHeaders()));
+      final res = await _authGet(url);
       if (res.statusCode != 200) return [];
       final list = res.data is String ? jsonDecode(res.data) : res.data;
       final out = <TraktItem>[];
@@ -283,8 +328,7 @@ class TraktService {
     if (!await isConnected()) return null;
     try {
       final type = isShow ? 'episodes' : 'movies';
-      final res = await _dio.get('$_api/sync/playback/$type',
-          options: Options(headers: await _authHeaders()));
+      final res = await _authGet('$_api/sync/playback/$type');
       final list = res.data is String ? jsonDecode(res.data) : res.data;
       if (list is! List) return null;
       final needle = title.toLowerCase();
@@ -312,26 +356,32 @@ class TraktService {
       final search = await _dio.get('$_api/search/$type',
           queryParameters: {'query': title, if (year != null) 'years': '$year'},
           options: Options(headers: await _authHeaders()));
-      final list = search.data is String ? jsonDecode(search.data) : search.data;
+      final list =
+          search.data is String ? jsonDecode(search.data) : search.data;
       if (list is! List || list.isEmpty) return;
       final node = (list.first as Map)[type];
       if (node is! Map) return;
       await _dio.post('$_api/scrobble/pause',
-          data: jsonEncode({type: {'ids': node['ids']}, 'progress': progressPct}),
+          data: jsonEncode({
+            type: {'ids': node['ids']},
+            'progress': progressPct
+          }),
           options: Options(headers: await _authHeaders()));
     } catch (_) {/* best effort */}
   }
 
   /// Best-effort: mark a title watched on Trakt by searching for it first.
   /// IPTV items aren't tied to Trakt ids, so we match on title/year.
-  Future<void> markWatched(String title, {int? year, bool isShow = false}) async {
+  Future<void> markWatched(String title,
+      {int? year, bool isShow = false}) async {
     if (!await isConnected()) return;
     try {
       final type = isShow ? 'show' : 'movie';
       final search = await _dio.get('$_api/search/$type',
           queryParameters: {'query': title, if (year != null) 'years': '$year'},
           options: Options(headers: await _authHeaders()));
-      final list = search.data is String ? jsonDecode(search.data) : search.data;
+      final list =
+          search.data is String ? jsonDecode(search.data) : search.data;
       if (list is! List || list.isEmpty) return;
       final node = (list.first as Map)[type];
       if (node is! Map) return;
@@ -408,15 +458,16 @@ final traktWatchlistProvider =
   return svc.watchlist();
 });
 
-final traktListsProvider = FutureProvider.autoDispose<List<TraktList>>((ref) async {
+final traktListsProvider =
+    FutureProvider.autoDispose<List<TraktList>>((ref) async {
   final connected = await ref.watch(traktConnectedProvider.future);
   if (!connected) return [];
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.lists();
 });
 
-final traktListItemsProvider =
-    FutureProvider.autoDispose.family<List<TraktItem>, String>((ref, listId) async {
+final traktListItemsProvider = FutureProvider.autoDispose
+    .family<List<TraktItem>, String>((ref, listId) async {
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.listItems(listId);
 });

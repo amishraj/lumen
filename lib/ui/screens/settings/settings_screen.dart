@@ -3,12 +3,53 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
 import '../../../data/sources/omdb_service.dart';
+import '../../../data/sources/tmdb_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../home/home_customize_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import 'trakt_screen.dart';
+
+Future<void> _editTmdbKey(BuildContext context, WidgetRef ref) async {
+  final svc = await ref.read(tmdbServiceProvider.future);
+  final ctl = TextEditingController(text: await svc.key() ?? '');
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('TMDB API key'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+              'Free key from themoviedb.org/settings/api — enables richer '
+              'posters, overviews, cast, and Popular/Trending/genre rows. '
+              'A v3 key or v4 read token both work.',
+              style: TextStyle(fontSize: 12.5, color: Color(0xFF9AA0B0))),
+          const SizedBox(height: 12),
+          TextField(
+              controller: ctl,
+              decoration: const InputDecoration(hintText: 'API key or token')),
+        ],
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () async {
+            await svc.saveKey(ctl.text);
+            // Nudge dependent providers to recompute now the key exists.
+            ref.read(tmdbKeyRevProvider.notifier).state++;
+            ref.invalidate(tmdbEnabledProvider);
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
 
 Future<void> _editOmdbKey(BuildContext context, WidgetRef ref) async {
   final svc = await ref.read(omdbServiceProvider.future);
@@ -26,11 +67,14 @@ Future<void> _editOmdbKey(BuildContext context, WidgetRef ref) async {
               'Tomatoes & Metacritic ratings.',
               style: TextStyle(fontSize: 12.5, color: Color(0xFF9AA0B0))),
           const SizedBox(height: 12),
-          TextField(controller: ctl, decoration: const InputDecoration(hintText: 'API key')),
+          TextField(
+              controller: ctl,
+              decoration: const InputDecoration(hintText: 'API key')),
         ],
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        TextButton(
+            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
         FilledButton(
           onPressed: () async {
             await svc.saveKey(ctl.text);
@@ -123,8 +167,8 @@ class SettingsScreen extends ConsumerWidget {
                 return Text(connected == true ? 'Connected' : 'Not connected');
               }),
               trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const TraktScreen())),
+              onTap: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const TraktScreen())),
             ),
           ),
           Card(
@@ -134,6 +178,20 @@ class SettingsScreen extends ConsumerWidget {
               subtitle: const Text('IMDb / Rotten Tomatoes / Metacritic key'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _editOmdbKey(context, ref),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.movie_filter, color: Color(0xFF01B4E4)),
+              title: const Text('Metadata (TMDB)'),
+              subtitle: Consumer(builder: (context, ref, _) {
+                final on = ref.watch(tmdbEnabledProvider).valueOrNull ?? false;
+                return Text(on
+                    ? 'Posters, overviews, Popular/Trending & genre rows'
+                    : 'Add a key for richer art & discovery rows');
+              }),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _editTmdbKey(context, ref),
             ),
           ),
         ],
@@ -182,7 +240,8 @@ class _SourceCard extends StatelessWidget {
             if (isActive)
               const Padding(
                 padding: EdgeInsets.only(right: 4),
-                child: Icon(Icons.check_circle, color: LumenTheme.accent, size: 20),
+                child: Icon(Icons.check_circle,
+                    color: LumenTheme.accent, size: 20),
               )
             else
               TextButton(onPressed: onActivate, child: const Text('Use')),
