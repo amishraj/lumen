@@ -8,23 +8,33 @@ import 'focusable_item.dart';
 /// field never traps the arrow keys. Selecting/clicking it switches to an
 /// editable [TextField] (opening the keyboard); finishing returns to the tile
 /// so navigation resumes. This is the reliable pattern for 10-foot UIs.
+///
+/// Supports live [onChanged] (so it can back search-as-you-type fields) and an
+/// optional clear affordance via [onCleared]. [dense] gives a compact height
+/// for tight spots like the app-bar search.
 class TvTextField extends StatefulWidget {
   const TvTextField({
     super.key,
     required this.controller,
     required this.hint,
-    required this.icon,
+    this.icon,
     this.obscure = false,
     this.keyboard,
     this.autofocus = false,
+    this.onChanged,
+    this.onCleared,
+    this.dense = false,
   });
 
   final TextEditingController controller;
   final String hint;
-  final IconData icon;
+  final IconData? icon;
   final bool obscure;
   final TextInputType? keyboard;
   final bool autofocus;
+  final ValueChanged<String>? onChanged;
+  final VoidCallback? onCleared;
+  final bool dense;
 
   @override
   State<TvTextField> createState() => _TvTextFieldState();
@@ -65,7 +75,8 @@ class _TvTextFieldState extends State<TvTextField> {
 
   void _startEditing() {
     setState(() => _editing = true);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _fieldFocus.requestFocus());
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _fieldFocus.requestFocus());
   }
 
   void _finishEditing() {
@@ -75,24 +86,39 @@ class _TvTextFieldState extends State<TvTextField> {
     });
   }
 
+  void _clear() {
+    widget.controller.clear();
+    widget.onChanged?.call('');
+    widget.onCleared?.call();
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
+    final height = widget.dense ? 44.0 : 56.0;
     if (_editing) {
-      return TextField(
-        controller: widget.controller,
-        focusNode: _fieldFocus,
-        obscureText: widget.obscure,
-        keyboardType: widget.keyboard,
-        autocorrect: false,
-        enableSuggestions: false,
-        textInputAction: TextInputAction.done,
-        onSubmitted: (_) => _finishEditing(),
-        decoration: InputDecoration(
-          hintText: widget.hint,
-          prefixIcon: Icon(widget.icon, size: 20),
-          suffixIcon: IconButton(
-            icon: const Icon(Icons.check, size: 20),
-            onPressed: _finishEditing,
+      return SizedBox(
+        height: height,
+        child: TextField(
+          controller: widget.controller,
+          focusNode: _fieldFocus,
+          obscureText: widget.obscure,
+          keyboardType: widget.keyboard,
+          autocorrect: false,
+          enableSuggestions: false,
+          style: TextStyle(fontSize: widget.dense ? 14 : 15),
+          textInputAction: TextInputAction.done,
+          onChanged: widget.onChanged,
+          onSubmitted: (_) => _finishEditing(),
+          decoration: InputDecoration(
+            isDense: widget.dense,
+            hintText: widget.hint,
+            prefixIcon:
+                widget.icon == null ? null : Icon(widget.icon, size: 20),
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.check, size: 20),
+              onPressed: _finishEditing,
+            ),
           ),
         ),
       );
@@ -103,6 +129,7 @@ class _TvTextFieldState extends State<TvTextField> {
     final display = empty
         ? widget.hint
         : (widget.obscure ? '•' * value.length.clamp(1, 16) : value);
+    final showClear = !empty && widget.onCleared != null;
 
     return FocusableItem(
       focusNode: _tileFocus,
@@ -110,8 +137,8 @@ class _TvTextFieldState extends State<TvTextField> {
       borderRadius: 14,
       onActivate: _startEditing,
       builder: (context, focused) => Container(
-        height: 56,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        height: height,
+        padding: EdgeInsets.symmetric(horizontal: widget.dense ? 12 : 14),
         decoration: BoxDecoration(
           color: LumenTheme.surface,
           borderRadius: BorderRadius.circular(14),
@@ -119,8 +146,9 @@ class _TvTextFieldState extends State<TvTextField> {
         ),
         child: Row(
           children: [
-            Icon(widget.icon, size: 20, color: const Color(0xFF9AA0B0)),
-            const SizedBox(width: 12),
+            Icon(widget.icon ?? Icons.search,
+                size: widget.dense ? 18 : 20, color: const Color(0xFF9AA0B0)),
+            const SizedBox(width: 10),
             Expanded(
               child: Text(
                 display,
@@ -128,11 +156,22 @@ class _TvTextFieldState extends State<TvTextField> {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: empty ? const Color(0xFF6B7080) : Colors.white,
-                  fontSize: 15,
+                  fontSize: widget.dense ? 14 : 15,
                 ),
               ),
             ),
-            const Icon(Icons.edit, size: 16, color: Color(0xFF6B7080)),
+            if (showClear)
+              GestureDetector(
+                onTap: _clear,
+                behavior: HitTestBehavior.opaque,
+                child: const Padding(
+                  padding: EdgeInsets.only(left: 6),
+                  child: Icon(Icons.close, size: 17, color: Color(0xFF9AA0B0)),
+                ),
+              )
+            else
+              Icon(Icons.edit,
+                  size: widget.dense ? 14 : 16, color: const Color(0xFF6B7080)),
           ],
         ),
       ),

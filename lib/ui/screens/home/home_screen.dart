@@ -10,6 +10,7 @@ import '../../../state/service_status.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/nav_rail.dart';
 import '../../widgets/service_status_view.dart';
+import '../../widgets/tv_text_field.dart';
 import '../live/live_tv_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import '../search/search_screen.dart';
@@ -216,37 +217,21 @@ class _PlaylistChip extends ConsumerWidget {
   }
 }
 
-class _MasterSearchBar extends ConsumerWidget {
+class _MasterSearchBar extends StatelessWidget {
   const _MasterSearchBar({required this.controller, required this.onChanged});
   final TextEditingController controller;
   final ValueChanged<String> onChanged;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final q = ref.watch(searchQueryProvider);
-    return SizedBox(
-      height: 40,
-      child: TextField(
-        controller: controller,
-        onChanged: onChanged,
-        textInputAction: TextInputAction.search,
-        style: const TextStyle(fontSize: 14),
-        decoration: InputDecoration(
-          isDense: true,
-          hintText: 'Search movies, shows & channels',
-          prefixIcon: const Icon(Icons.search, size: 19),
-          contentPadding: const EdgeInsets.symmetric(vertical: 0),
-          suffixIcon: q.isEmpty
-              ? null
-              : IconButton(
-                  icon: const Icon(Icons.close, size: 17),
-                  onPressed: () {
-                    controller.clear();
-                    onChanged('');
-                  },
-                ),
-        ),
-      ),
+  Widget build(BuildContext context) {
+    // Click-to-type tile so the D-pad never gets trapped in the search box.
+    return TvTextField(
+      controller: controller,
+      hint: 'Search movies, shows & channels',
+      icon: Icons.search,
+      dense: true,
+      onChanged: onChanged,
+      onCleared: () => onChanged(''),
     );
   }
 }

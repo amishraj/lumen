@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../data/sources/trakt_service.dart';
 import '../../theme/lumen_theme.dart';
+import '../../widgets/tv_text_field.dart';
 
 /// Connect a Trakt account via the OAuth device flow.
 class TraktScreen extends ConsumerStatefulWidget {
@@ -159,21 +160,14 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
         ),
         const SizedBox(height: 16),
         if (!_embedded) ...[
-          TextField(
-            controller: _idCtl,
-            decoration: const InputDecoration(
-                hintText: 'Trakt Client ID', prefixIcon: Icon(Icons.key)),
-            autocorrect: false,
-          ),
+          TvTextField(
+              controller: _idCtl, hint: 'Trakt Client ID', icon: Icons.key),
           const SizedBox(height: 12),
-          TextField(
-            controller: _secretCtl,
-            decoration: const InputDecoration(
-                hintText: 'Trakt Client Secret',
-                prefixIcon: Icon(Icons.lock_outline)),
-            autocorrect: false,
-            obscureText: true,
-          ),
+          TvTextField(
+              controller: _secretCtl,
+              hint: 'Trakt Client Secret',
+              icon: Icons.lock_outline,
+              obscure: true),
           const SizedBox(height: 18),
         ],
         if (_code != null) _DeviceCodeCard(code: _code!),

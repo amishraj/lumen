@@ -55,7 +55,8 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
     );
 
     if (pl.url.isEmpty) {
-      setState(() => _status = 'Please enter a ${isXtream ? "portal URL" : "playlist URL"}.');
+      setState(() => _status =
+          'Please enter a ${isXtream ? "portal URL" : "playlist URL"}.');
       return;
     }
 
@@ -68,9 +69,8 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
       final saved = await repo.addPlaylist(pl);
       await for (final p in repo.sync(saved)) {
         if (!mounted) return;
-        setState(() => _status = p.written > 0
-            ? '${p.stage}  (${p.written} items)'
-            : p.stage);
+        setState(() => _status =
+            p.written > 0 ? '${p.stage}  (${p.written} items)' : p.stage);
       }
       // Set the active source first, then refresh the list. When onboarding is
       // the root screen (first run) there's no route to pop — invalidating
@@ -93,80 +93,137 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
 
   @override
   Widget build(BuildContext context) {
+    final pushed = Navigator.of(context).canPop();
     return Scaffold(
       body: DecoratedBox(
         decoration: const BoxDecoration(gradient: LumenTheme.heroGradient),
         child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
+          child: Center(
+            child: ConstrainedBox(
+              // Keep the form comfortably narrow on tablets / TV / desktop.
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Icon(Icons.bolt, color: LumenTheme.accent, size: 30),
-                    const SizedBox(width: 8),
-                    Text('Add a source',
-                        style: Theme.of(context).textTheme.headlineSmall),
-                    const Spacer(),
-                    if (Navigator.of(context).canPop())
-                      IconButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        icon: const Icon(Icons.close),
+                    if (pushed)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: IconButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: const Icon(Icons.close),
+                        ),
                       ),
+                    // Branded header.
+                    Container(
+                      width: 64,
+                      height: 64,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: LumenTheme.accent.withValues(alpha: 0.16),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Icon(Icons.bolt,
+                          color: LumenTheme.accent, size: 34),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(pushed ? 'Add a source' : 'Welcome to Lumen',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 26, fontWeight: FontWeight.w900)),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Connect your IPTV provider to start watching. Your '
+                      'playlist stays private on your device.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: Color(0xFF9AA0B0),
+                          fontSize: 13.5,
+                          height: 1.4),
+                    ),
+                    const SizedBox(height: 22),
+                    // Segmented source-type switch.
+                    Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: LumenTheme.surface,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: TabBar(
+                        controller: _tab,
+                        dividerColor: Colors.transparent,
+                        indicatorSize: TabBarIndicatorSize.tab,
+                        indicator: BoxDecoration(
+                          color: LumenTheme.accent.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        labelColor: LumenTheme.accent,
+                        unselectedLabelColor: const Color(0xFF8A8F9E),
+                        labelStyle: const TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 13.5),
+                        tabs: const [
+                          Tab(text: 'M3U URL'),
+                          Tab(text: 'Xtream Codes'),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Expanded(
+                      child: TabBarView(
+                        controller: _tab,
+                        physics:
+                            _busy ? const NeverScrollableScrollPhysics() : null,
+                        children: [_m3uForm(), _xtreamForm()],
+                      ),
+                    ),
+                    if (_status != null) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: LumenTheme.surface,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            if (_busy)
+                              const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            else
+                              Icon(
+                                  _status!.startsWith('Failed')
+                                      ? Icons.error_outline
+                                      : Icons.info_outline,
+                                  size: 18,
+                                  color: _status!.startsWith('Failed')
+                                      ? LumenTheme.accentWarm
+                                      : LumenTheme.accent),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(_status!,
+                                  style: const TextStyle(
+                                      color: Color(0xFFC7CBD6), fontSize: 13)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    SizedBox(
+                      height: 52,
+                      child: FilledButton(
+                        onPressed: _busy ? null : _save,
+                        child: Text(_busy ? 'Syncing…' : 'Add & sync'),
+                      ),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 16),
-                Container(
-                  decoration: BoxDecoration(
-                    color: LumenTheme.surface,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: TabBar(
-                    controller: _tab,
-                    dividerColor: Colors.transparent,
-                    indicator: BoxDecoration(
-                      color: LumenTheme.accent.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    labelColor: LumenTheme.accent,
-                    unselectedLabelColor: const Color(0xFF8A8F9E),
-                    tabs: const [Tab(text: 'M3U URL'), Tab(text: 'Xtream Codes')],
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Expanded(
-                  child: TabBarView(
-                    controller: _tab,
-                    physics: _busy
-                        ? const NeverScrollableScrollPhysics()
-                        : null,
-                    children: [_m3uForm(), _xtreamForm()],
-                  ),
-                ),
-                if (_status != null) ...[
-                  Row(
-                    children: [
-                      if (_busy)
-                        const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      if (_busy) const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(_status!,
-                            style: const TextStyle(color: Color(0xFF9AA0B0))),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                FilledButton(
-                  onPressed: _busy ? null : _save,
-                  child: Text(_busy ? 'Syncing…' : 'Add & sync'),
-                ),
-              ],
+              ),
             ),
           ),
         ),

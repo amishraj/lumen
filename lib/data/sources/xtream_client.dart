@@ -19,8 +19,8 @@ class XtreamClient {
     // IPTV panels are often on self-signed / mismatched HTTPS certs. This is
     // the user's own provider, so tolerate cert problems rather than failing.
     _dio.httpClientAdapter = IOHttpClientAdapter(
-      createHttpClient: () => HttpClient()
-        ..badCertificateCallback = (cert, host, port) => true,
+      createHttpClient: () =>
+          HttpClient()..badCertificateCallback = (cert, host, port) => true,
     );
   }
 
@@ -46,8 +46,14 @@ class XtreamClient {
   }
 
   Future<String> _get(String action) async {
-    final res = await _dio.get(_apiUrl(action),
-        options: Options(responseType: ResponseType.plain));
+    // Dio's receiveTimeout only fires on inter-chunk stalls; a very large
+    // response that trickles in slowly could otherwise run forever. This hard
+    // per-request deadline is a generous backstop so a stuck phase fails
+    // cleanly (surfaced in the UI) instead of hanging on "loading".
+    final res = await _dio
+        .get(_apiUrl(action),
+            options: Options(responseType: ResponseType.plain))
+        .timeout(const Duration(minutes: 4));
     return res.data as String;
   }
 
@@ -83,9 +89,16 @@ class XtreamClient {
     void Function(String stage)? onStage,
   }) async {
     onStage?.call('Loading live categories…');
-    final liveCats = await _get('get_live_categories');
+    final liveCats = await _safe(() => _get('get_live_categories')) ?? '[]';
     onStage?.call('Loading live channels…');
-    final liveStreams = await _get('get_live_streams');
+    final String liveStreams;
+    try {
+      liveStreams = await _get('get_live_streams');
+    } catch (e) {
+      throw Exception(
+          'Timed out loading channels from the portal. It may be slow or the '
+          'account may be over its connection limit — try again. ($e)');
+    }
 
     onStage?.call('Loading movie categories…');
     final vodCats = await _safe(() => _get('get_vod_categories'));
@@ -128,22 +141,26 @@ class XtreamClient {
         for (final e in list) {
           if (e is! Map) continue;
           final id = '${e['id']}';
-          final ext = _nullIfEmpty('${e['container_extension'] ?? ''}') ?? 'mp4';
+          final ext =
+              _nullIfEmpty('${e['container_extension'] ?? ''}') ?? 'mp4';
           final info = e['info'];
           out.add(Episode(
             id: id,
-            title: '${e['title'] ?? 'Episode ${e['episode_num'] ?? ''}'}'.trim(),
+            title:
+                '${e['title'] ?? 'Episode ${e['episode_num'] ?? ''}'}'.trim(),
             season: int.tryParse('$seasonKey') ??
                 int.tryParse('${e['season'] ?? 0}') ??
                 0,
             episode: int.tryParse('${e['episode_num'] ?? 0}') ?? 0,
-            url: '$_base/series/${playlist.username}/${playlist.password}/$id.$ext',
+            url:
+                '$_base/series/${playlist.username}/${playlist.password}/$id.$ext',
             plot: info is Map ? _nullIfEmpty('${info['plot'] ?? ''}') : null,
             still: info is Map
                 ? _nullIfEmpty('${info['movie_image'] ?? ''}')
                 : null,
-            durationSecs:
-                info is Map ? int.tryParse('${info['duration_secs'] ?? ''}') : null,
+            durationSecs: info is Map
+                ? int.tryParse('${info['duration_secs'] ?? ''}')
+                : null,
           ));
         }
       });

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -52,9 +53,22 @@ class LibraryRepository {
       items = await compute(parseM3u, M3uParseArgs(pl.id!, res.data as String));
     } else {
       final client = XtreamClient(pl);
+      yield const SyncProgress('Connecting to portal…');
+      // Surfaces a clear "check username/password/URL" error if login fails.
       await client.authenticate();
-      final stages = <String>[];
-      items = await client.fetchAll(onStage: stages.add);
+      // Bridge the client's per-phase callbacks into yielded progress so the
+      // UI shows "Loading movies…", "Indexing…", etc. instead of sitting on a
+      // frozen "Starting…" for the whole (often multi-minute) fetch — the main
+      // reason Xtream syncs looked hung while M3U (which already yielded) didn't.
+      final progress = StreamController<SyncProgress>();
+      late List<StreamItem> fetched;
+      final job = client
+          .fetchAll(onStage: (s) => progress.add(SyncProgress(s)))
+          .then((v) => fetched = v)
+          .whenComplete(progress.close);
+      yield* progress.stream;
+      await job; // rethrows a clear error if a phase failed/timed out
+      items = fetched;
     }
 
     yield SyncProgress('Saving ${items.length} items…');

@@ -8,6 +8,7 @@ import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/service_status_view.dart';
+import '../../widgets/tv_text_field.dart';
 import '../home/home_customize_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import 'trakt_screen.dart';
@@ -29,9 +30,8 @@ Future<void> _editTmdbKey(BuildContext context, WidgetRef ref) async {
               'A v3 key or v4 read token both work.',
               style: TextStyle(fontSize: 12.5, color: Color(0xFF9AA0B0))),
           const SizedBox(height: 12),
-          TextField(
-              controller: ctl,
-              decoration: const InputDecoration(hintText: 'API key or token')),
+          TvTextField(
+              controller: ctl, hint: 'API key or token', icon: Icons.vpn_key),
         ],
       ),
       actions: [
@@ -68,9 +68,7 @@ Future<void> _editOmdbKey(BuildContext context, WidgetRef ref) async {
               'Tomatoes & Metacritic ratings.',
               style: TextStyle(fontSize: 12.5, color: Color(0xFF9AA0B0))),
           const SizedBox(height: 12),
-          TextField(
-              controller: ctl,
-              decoration: const InputDecoration(hintText: 'API key')),
+          TvTextField(controller: ctl, hint: 'API key', icon: Icons.vpn_key),
         ],
       ),
       actions: [

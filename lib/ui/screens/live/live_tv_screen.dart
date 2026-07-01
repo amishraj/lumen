@@ -8,6 +8,7 @@ import '../../theme/lumen_theme.dart';
 import '../../widgets/channel_tile.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/poster_card.dart';
+import '../../widgets/tv_text_field.dart';
 
 /// Browsing with a **resizable** vertical category sidebar (with its own
 /// category search + pinning) on the left, and a lazily-paged, virtualized
@@ -59,17 +60,22 @@ class _KindSelector extends ConsumerWidget {
             margin: const EdgeInsets.symmetric(horizontal: 4),
             padding: const EdgeInsets.symmetric(vertical: 9),
             decoration: BoxDecoration(
-              color: sel ? LumenTheme.accent.withValues(alpha: 0.18) : Colors.transparent,
+              color: sel
+                  ? LumenTheme.accent.withValues(alpha: 0.18)
+                  : Colors.transparent,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(icon, size: 17, color: sel ? LumenTheme.accent : const Color(0xFF8A8F9E)),
+                Icon(icon,
+                    size: 17,
+                    color: sel ? LumenTheme.accent : const Color(0xFF8A8F9E)),
                 const SizedBox(width: 6),
                 Text(label,
                     style: TextStyle(
-                        color: sel ? LumenTheme.accent : const Color(0xFF8A8F9E),
+                        color:
+                            sel ? LumenTheme.accent : const Color(0xFF8A8F9E),
                         fontWeight: FontWeight.w600,
                         fontSize: 13)),
               ],
@@ -153,7 +159,8 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     final width = ref.watch(sidebarWidthProvider);
     final catsAsync = ref.watch(orderedCategoriesProvider);
     final selected = ref.watch(selectedCategoryProvider);
-    final pinned = ref.watch(pinnedCategoriesProvider).valueOrNull ?? const <String>{};
+    final pinned =
+        ref.watch(pinnedCategoriesProvider).valueOrNull ?? const <String>{};
 
     return Container(
       width: width,
@@ -162,25 +169,13 @@ class _SidebarState extends ConsumerState<_Sidebar> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
-            child: TextField(
+            child: TvTextField(
               controller: _filter,
+              hint: 'Search categories',
+              icon: Icons.search,
+              dense: true,
               onChanged: (v) => setState(() => _query = v.toLowerCase()),
-              style: const TextStyle(fontSize: 13),
-              decoration: InputDecoration(
-                isDense: true,
-                hintText: 'Search categories',
-                prefixIcon: const Icon(Icons.search, size: 18),
-                contentPadding: const EdgeInsets.symmetric(vertical: 6),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.close, size: 16),
-                        onPressed: () {
-                          _filter.clear();
-                          setState(() => _query = '');
-                        },
-                      ),
-              ),
+              onCleared: () => setState(() => _query = ''),
             ),
           ),
           Expanded(
@@ -194,7 +189,8 @@ class _SidebarState extends ConsumerState<_Sidebar> {
                 if (list.isEmpty) {
                   return const Center(
                       child: Text('No categories',
-                          style: TextStyle(color: Color(0xFF6B7080), fontSize: 12)));
+                          style: TextStyle(
+                              color: Color(0xFF6B7080), fontSize: 12)));
                 }
                 final sel = selected ?? (cats.isNotEmpty ? cats.first : null);
                 return ListView.builder(
@@ -213,7 +209,9 @@ class _SidebarState extends ConsumerState<_Sidebar> {
               },
               loading: () => const Center(
                   child: SizedBox(
-                      width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))),
               error: (e, _) => Center(child: Text('$e')),
             ),
           ),
@@ -249,11 +247,14 @@ class _CategoryRow extends ConsumerWidget {
       margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       padding: const EdgeInsets.only(left: 2, right: 2),
       decoration: BoxDecoration(
-        color: selected ? LumenTheme.accent.withValues(alpha: 0.16) : Colors.transparent,
+        color: selected
+            ? LumenTheme.accent.withValues(alpha: 0.16)
+            : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         border: Border(
           left: BorderSide(
-              color: selected ? LumenTheme.accent : Colors.transparent, width: 3),
+              color: selected ? LumenTheme.accent : Colors.transparent,
+              width: 3),
         ),
       ),
       child: Row(
@@ -276,10 +277,14 @@ class _CategoryRow extends ConsumerWidget {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                             fontSize: 13,
-                            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                            color: selected ? Colors.white : const Color(0xFFC7CBD6))),
+                            fontWeight:
+                                selected ? FontWeight.w700 : FontWeight.w500,
+                            color: selected
+                                ? Colors.white
+                                : const Color(0xFFC7CBD6))),
                     Text('${category.count}',
-                        style: const TextStyle(fontSize: 10.5, color: Color(0xFF6B7080))),
+                        style: const TextStyle(
+                            fontSize: 10.5, color: Color(0xFF6B7080))),
                   ],
                 ),
               ),
@@ -292,7 +297,8 @@ class _CategoryRow extends ConsumerWidget {
               padding: const EdgeInsets.all(6),
               child: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined,
                   size: 15,
-                  color: pinned ? LumenTheme.accentWarm : const Color(0xFF5B6072)),
+                  color:
+                      pinned ? LumenTheme.accentWarm : const Color(0xFF5B6072)),
             ),
           ),
         ],
@@ -314,7 +320,8 @@ class _ContentArea extends ConsumerWidget {
       data: (cats) {
         if (cats.isEmpty) return const Center(child: Text('Nothing here yet.'));
         final selected = ref.watch(selectedCategoryProvider) ?? cats.first;
-        final current = cats.any((c) => c.name == selected.name) ? selected : cats.first;
+        final current =
+            cats.any((c) => c.name == selected.name) ? selected : cats.first;
         return _ContentPane(
           key: ValueKey('${pl!.id}-${kind.name}-${current.name}'),
           playlistId: pl.id!,
@@ -369,12 +376,14 @@ class _ContentPaneState extends ConsumerState<_ContentPane> {
       _search = q.trim();
       _searchFuture = _search.isEmpty
           ? null
-          : ref.read(repositoryProvider.future).then((repo) => repo.searchInCategory(
-                playlistId: widget.playlistId,
-                kind: widget.kind,
-                groupTitle: widget.group,
-                query: _search,
-              ));
+          : ref
+              .read(repositoryProvider.future)
+              .then((repo) => repo.searchInCategory(
+                    playlistId: widget.playlistId,
+                    kind: widget.kind,
+                    groupTitle: widget.group,
+                    query: _search,
+                  ));
     });
   }
 
@@ -391,25 +400,13 @@ class _ContentPaneState extends ConsumerState<_ContentPane> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
-          child: TextField(
+          child: TvTextField(
             controller: _searchCtl,
+            hint: 'Search in ${widget.group}',
+            icon: Icons.search,
+            dense: true,
             onChanged: _runSearch,
-            style: const TextStyle(fontSize: 13),
-            decoration: InputDecoration(
-              isDense: true,
-              hintText: 'Search in ${widget.group}',
-              prefixIcon: const Icon(Icons.search, size: 18),
-              contentPadding: const EdgeInsets.symmetric(vertical: 8),
-              suffixIcon: _search.isEmpty
-                  ? null
-                  : IconButton(
-                      icon: const Icon(Icons.close, size: 16),
-                      onPressed: () {
-                        _searchCtl.clear();
-                        _runSearch('');
-                      },
-                    ),
-            ),
+            onCleared: () => _runSearch(''),
           ),
         ),
         Expanded(
@@ -438,7 +435,9 @@ class _ContentPaneState extends ConsumerState<_ContentPane> {
   Widget _pagedView() {
     final state = ref.watch(channelPagerProvider(_key));
     if (state.items.isEmpty && state.loading) return const _SkeletonList();
-    if (state.items.isEmpty) return const Center(child: Text('Empty category.'));
+    if (state.items.isEmpty) {
+      return const Center(child: Text('Empty category.'));
+    }
     return _buildList(state.items, reachedEnd: state.reachedEnd);
   }
 
@@ -503,7 +502,9 @@ class _Loader extends StatelessWidget {
         padding: EdgeInsets.all(16),
         child: Center(
             child: SizedBox(
-                width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2))),
       );
 }
 
@@ -521,14 +522,16 @@ class _SkeletonList extends StatelessWidget {
             width: 52,
             height: 52,
             decoration: BoxDecoration(
-                color: LumenTheme.surfaceHi, borderRadius: BorderRadius.circular(12)),
+                color: LumenTheme.surfaceHi,
+                borderRadius: BorderRadius.circular(12)),
           ),
           const SizedBox(width: 14),
           Container(
             width: 160,
             height: 14,
             decoration: BoxDecoration(
-                color: LumenTheme.surfaceHi, borderRadius: BorderRadius.circular(7)),
+                color: LumenTheme.surfaceHi,
+                borderRadius: BorderRadius.circular(7)),
           ),
         ]),
       ),
