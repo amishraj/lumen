@@ -107,8 +107,29 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _subs.add(_player.stream.duration.listen((d) {
       if (mounted) setState(() => _duration = d);
     }));
+    // Default to the English audio track for movies/shows when the source
+    // carries several languages; fall back to whatever libmpv picked otherwise.
+    _subs.add(
+        _player.stream.tracks.listen((t) => _maybePickEnglishAudio(t.audio)));
     _init();
     _resetHideTimer();
+  }
+
+  bool _autoAudioPicked = false;
+
+  void _maybePickEnglishAudio(List<AudioTrack> tracks) {
+    if (_autoAudioPicked || _current.kind == StreamKind.live) return;
+    final en = tracks.firstWhere(
+      (t) =>
+          t != AudioTrack.no() &&
+          t != AudioTrack.auto() &&
+          (t.language ?? '').toLowerCase().startsWith('en'),
+      orElse: () => AudioTrack.no(),
+    );
+    if (en != AudioTrack.no()) {
+      _autoAudioPicked = true;
+      _player.setAudioTrack(en);
+    }
   }
 
   void _showControls({bool focusFirst = true}) {
@@ -191,6 +212,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _resume = null;
       _lastPosMs = 0;
       _lastDurMs = 0;
+      _autoAudioPicked = false; // re-pick English audio for the new item
     });
     await _load();
   }
@@ -289,7 +311,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
     _rootFocus.dispose();
     _firstControlFocus.dispose();
-    _player.dispose();
+    // Tear the player down deterministically. Player.dispose() is async and,
+    // on Android in particular, the currently-buffered audio can keep playing
+    // after the route is gone if we only fire-and-forget dispose(). Stopping
+    // first halts the audio output immediately; dispose() then frees libmpv.
+    final player = _player;
+    () async {
+      try {
+        await player.stop();
+      } catch (_) {/* ignore — we're tearing down anyway */}
+      await player.dispose();
+    }();
     super.dispose();
   }
 

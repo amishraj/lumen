@@ -190,6 +190,37 @@ class TraktService {
 
   Future<String?> username() => _repo.getSetting('trakt_username');
 
+  /// Fast health probe for the top-bar/Sources status: is the account linked
+  /// and actually serving data (refreshing the token if needed)?
+  Future<({bool configured, bool ok, String detail})> ping() async {
+    final tok = await token();
+    if (tok == null || tok.isEmpty) {
+      return (configured: false, ok: false, detail: 'Not connected');
+    }
+    try {
+      final res = await _authGet('$_api/users/settings');
+      if (res.statusCode == 200) {
+        final d = res.data is String ? jsonDecode(res.data) : res.data;
+        final name =
+            d is Map ? (d['user']?['username'] ?? d['user']?['name']) : null;
+        return (
+          configured: true,
+          ok: true,
+          detail: name != null ? '@$name' : 'Connected'
+        );
+      }
+      return (
+        configured: true,
+        ok: false,
+        detail: res.statusCode == 401
+            ? 'Token expired — reconnect'
+            : 'HTTP ${res.statusCode}'
+      );
+    } catch (_) {
+      return (configured: true, ok: false, detail: 'Unreachable');
+    }
+  }
+
   /// Currently-popular movies (Trakt trending). Public endpoint — needs only
   /// the app's api key, so it works even before the user connects.
   Future<List<TraktItem>> trendingMovies({int limit = 30}) async {

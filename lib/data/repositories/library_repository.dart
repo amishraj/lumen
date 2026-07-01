@@ -42,8 +42,8 @@ class LibraryRepository {
         headers: {'User-Agent': 'Lumen/1.0'},
       ));
       dio.httpClientAdapter = IOHttpClientAdapter(
-        createHttpClient: () => HttpClient()
-          ..badCertificateCallback = (cert, host, port) => true,
+        createHttpClient: () =>
+            HttpClient()..badCertificateCallback = (cert, host, port) => true,
       );
       final res = await dio.get(pl.url,
           options: Options(responseType: ResponseType.plain));
@@ -103,7 +103,10 @@ class LibraryRepository {
     required String query,
   }) =>
       db.searchInCategory(
-          playlistId: playlistId, kind: kind, groupTitle: groupTitle, query: query);
+          playlistId: playlistId,
+          kind: kind,
+          groupTitle: groupTitle,
+          query: query);
 
   Future<Set<int>> favoriteIds() => db.favoriteIds();
   Future<void> toggleFavorite(int id, bool fav) => db.toggleFavorite(id, fav);
@@ -111,14 +114,31 @@ class LibraryRepository {
   Future<void> markWatched(int id) => db.markWatched(id);
   Future<Set<int>> watchedIds(int playlistId) => db.watchedIds(playlistId);
 
-  /// First movie/series in the library matching a title (for Trakt matching).
+  /// Providers often carry the same movie/show in several languages, prefixed
+  /// like "EN | Title", "EN - Title", "ENGLISH: Title". When we pick a title
+  /// match to play (Trakt / TMDB / discovery), prefer the English-labelled one
+  /// and only fall back to another language if there's no English entry.
+  static final _enLabel =
+      RegExp(r'^\s*(en|eng|english)\b', caseSensitive: false);
+
+  static StreamItem? preferEnglish(List<StreamItem> hits) {
+    if (hits.isEmpty) return null;
+    for (final h in hits) {
+      if (_enLabel.hasMatch(h.name)) return h;
+    }
+    return hits.first;
+  }
+
+  /// First movie/series in the library matching a title (for Trakt matching),
+  /// preferring the English-labelled entry.
   Future<StreamItem?> findByTitle(int playlistId, String title) async {
     final hits = await db.search(playlistId: playlistId, query: title);
-    for (final h in hits) {
-      if (h.kind == StreamKind.movie || h.kind == StreamKind.series) return h;
-    }
-    return hits.isEmpty ? null : hits.first;
+    final typed = hits
+        .where((h) => h.kind == StreamKind.movie || h.kind == StreamKind.series)
+        .toList();
+    return preferEnglish(typed.isNotEmpty ? typed : hits);
   }
+
   Future<List<StreamItem>> sportsEvents(int playlistId) =>
       db.sportsEvents(playlistId);
   Future<EpgEntry?> nowPlaying(String channelId) =>
@@ -137,7 +157,8 @@ class LibraryRepository {
   // Pinned categories.
   Future<List<String>> pinnedCategories(int playlistId, StreamKind kind) =>
       db.pinnedCategories(playlistId, kind);
-  Future<void> setPinned(int playlistId, StreamKind kind, String name, bool p) =>
+  Future<void> setPinned(
+          int playlistId, StreamKind kind, String name, bool p) =>
       db.setPinned(playlistId, kind, name, p);
 
   // Settings.

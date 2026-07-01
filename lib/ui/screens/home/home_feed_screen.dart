@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/repositories/library_repository.dart';
+import '../../../data/sources/omdb_service.dart';
 import '../../../data/sources/tmdb_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
@@ -10,6 +12,7 @@ import '../../theme/lumen_theme.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/logo_image.dart';
 import '../../widgets/poster_card.dart';
+import '../../widgets/rating_badges.dart';
 import 'genre_browse_screen.dart';
 import 'home_customize_screen.dart';
 
@@ -144,7 +147,7 @@ class _HeroCarouselState extends State<_HeroCarousel> {
 
   @override
   Widget build(BuildContext context) {
-    final h = (MediaQuery.of(context).size.height * 0.5).clamp(300.0, 460.0);
+    final h = (MediaQuery.of(context).size.height * 0.62).clamp(380.0, 560.0);
     return SizedBox(
       height: h,
       child: Stack(
@@ -209,7 +212,7 @@ class _HeroBillboard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final h = (MediaQuery.of(context).size.height * 0.5).clamp(300.0, 460.0);
+    final h = (MediaQuery.of(context).size.height * 0.62).clamp(380.0, 560.0);
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = item.id != null && favs.contains(item.id);
     // Prefer a wide TMDB backdrop for the cinematic hero when available.
@@ -217,7 +220,9 @@ class _HeroBillboard extends ConsumerWidget {
         .watch(tmdbDetailProvider(
             (title: item.name, isShow: item.kind == StreamKind.series)))
         .valueOrNull;
+    final omdb = ref.watch(omdbProvider(item.name)).valueOrNull;
     final heroArt = tmdb?.backdrop ?? item.logo;
+    final synopsis = omdb?.plot ?? tmdb?.overview;
 
     return SizedBox(
       height: h,
@@ -305,16 +310,32 @@ class _HeroBillboard extends ConsumerWidget {
                       color: Colors.white,
                       letterSpacing: -1),
                 ),
-                if (item.rating != null && item.rating! > 0) ...[
+                // IMDb / Rotten Tomatoes (OMDb) badges, with a TMDB star as a
+                // fallback so the hero always shows a rating level.
+                if (omdb != null &&
+                    (omdb.imdb != null || omdb.rotten != null)) ...[
+                  const SizedBox(height: 10),
+                  RatingBadges(info: omdb),
+                ] else if ((item.rating ?? tmdb?.rating ?? 0) > 0) ...[
                   const SizedBox(height: 8),
                   Row(children: [
                     const Icon(Icons.star_rounded,
                         size: 16, color: LumenTheme.accentWarm),
                     const SizedBox(width: 4),
-                    Text(item.rating!.toStringAsFixed(1),
+                    Text((item.rating ?? tmdb!.rating!).toStringAsFixed(1),
                         style: const TextStyle(
                             color: Colors.white, fontWeight: FontWeight.w600)),
                   ]),
+                ],
+                if (synopsis != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    synopsis,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Color(0xFFC7CBD6), fontSize: 13.5, height: 1.45),
+                  ),
                 ],
                 const SizedBox(height: 16),
                 Row(
@@ -390,7 +411,7 @@ class _HeroSkeleton extends StatelessWidget {
   const _HeroSkeleton();
   @override
   Widget build(BuildContext context) {
-    final h = (MediaQuery.of(context).size.height * 0.5).clamp(300.0, 460.0);
+    final h = (MediaQuery.of(context).size.height * 0.62).clamp(380.0, 560.0);
     return Container(height: h, color: LumenTheme.surface);
   }
 }
@@ -637,9 +658,10 @@ class _TraktChip extends ConsumerWidget {
         final pl = ref.read(activePlaylistProvider);
         if (pl?.id == null) return;
         final hits = await repo.search(playlistId: pl!.id!, query: item.title);
+        final hit = LibraryRepository.preferEnglish(hits);
         if (!context.mounted) return;
-        if (hits.isNotEmpty) {
-          openItem(context, ref, hits.first);
+        if (hit != null) {
+          openItem(context, ref, hit);
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text('"${item.title}" not found in your library.')));

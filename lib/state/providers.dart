@@ -129,8 +129,8 @@ final featuredProvider =
     for (final t in trending) {
       final hits = await repo.search(
           playlistId: pl!.id!, kind: StreamKind.movie, query: t.title);
-      if (hits.isNotEmpty) {
-        final m = hits.first;
+      final m = LibraryRepository.preferEnglish(hits);
+      if (m != null) {
         if (m.id != null && seen.add(m.id!) && (m.logo?.isNotEmpty ?? false)) {
           picks.add(m);
           if (picks.length >= 8) break;

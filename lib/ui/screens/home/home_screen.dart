@@ -4,9 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../data/models/models.dart';
 import '../../../state/providers.dart';
+import '../../../state/service_status.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/nav_rail.dart';
+import '../../widgets/service_status_view.dart';
 import '../live/live_tv_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import '../search/search_screen.dart';
@@ -30,6 +33,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final _searchCtl = TextEditingController();
   Timer? _debounce;
   DateTime? _lastBack;
+  bool _kickedOffSync = false;
 
   @override
   void dispose() {
@@ -38,12 +42,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     super.dispose();
   }
 
+  /// Switch tabs. Navigating anywhere other than Search clears the master
+  /// search box + query, so tapping Home after a search starts clean.
+  void _selectTab(int i) {
+    if (i != _searchTab) _clearSearch();
+    setState(() => _index = i);
+  }
+
+  void _clearSearch() {
+    _debounce?.cancel();
+    if (_searchCtl.text.isNotEmpty) _searchCtl.clear();
+    if (ref.read(searchQueryProvider) != '') {
+      ref.read(searchQueryProvider.notifier).state = '';
+    }
+  }
+
   /// Root back handling so a stray Back / remote-Back doesn't drop the user
   /// out of the app: first bounce to the Home tab, then require a second Back
   /// within 2s to actually exit.
   void _onBack() {
     if (_index != 0) {
-      setState(() => _index = 0);
+      _selectTab(0);
       return;
     }
     final now = DateTime.now();
@@ -89,6 +108,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             ref.read(activePlaylistProvider.notifier).state = list.first;
           });
+        } else if (!_kickedOffSync) {
+          // Refresh the active source in the background on first load so the
+          // library is current, without blocking the UI.
+          _kickedOffSync = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            ref.read(syncControllerProvider.notifier).resync(active);
+          });
         }
 
         const pages = [
@@ -116,22 +142,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Expanded(
                       child: _MasterSearchBar(
                           controller: _searchCtl, onChanged: _onSearch)),
-                  const SizedBox(width: 12),
-                  if (active != null)
-                    Container(
-                      constraints: const BoxConstraints(maxWidth: 120),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: LumenTheme.surface,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(active.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 12.5, fontWeight: FontWeight.w600)),
-                    ),
+                  const SizedBox(width: 8),
+                  const ServiceHealthChip(),
+                  const SizedBox(width: 8),
+                  if (active != null) _PlaylistChip(active: active),
                 ],
               ),
             ),
@@ -139,7 +153,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               children: [
                 NavRail(
                   selectedIndex: _index,
-                  onSelect: (i) => setState(() => _index = i),
+                  onSelect: _selectTab,
                   items: const [
                     NavRailItem(Icons.home_outlined, Icons.home, 'Home'),
                     NavRailItem(Icons.live_tv_outlined, Icons.live_tv, 'Watch'),
@@ -155,6 +169,49 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+/// Active-source name with a live spinner while a background re-sync runs.
+class _PlaylistChip extends ConsumerWidget {
+  const _PlaylistChip({required this.active});
+  final Playlist active;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sync = ref.watch(syncControllerProvider);
+    final syncing = sync.running && sync.playlistId == active.id;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 150),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: LumenTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (syncing) ...[
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: LumenTheme.accent),
+            ),
+            const SizedBox(width: 8),
+          ],
+          Flexible(
+            child: Text(
+              syncing ? (sync.stage ?? 'Refreshing…') : active.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style:
+                  const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

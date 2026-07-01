@@ -33,6 +33,29 @@ class TmdbService {
 
   Future<void> saveKey(String k) => _repo.setSetting('tmdb_key', k.trim());
 
+  /// Fast health probe: does the saved key authenticate against TMDB?
+  Future<({bool configured, bool ok, String detail})> ping() async {
+    final k = await key();
+    if (k == null || k.isEmpty) {
+      return (configured: false, ok: false, detail: 'No key set');
+    }
+    try {
+      final (q, opts) = await _auth();
+      final res = await _dio.get('$_api/configuration',
+          queryParameters: q, options: opts);
+      if (res.statusCode == 200) {
+        return (configured: true, ok: true, detail: 'OK');
+      }
+      return (
+        configured: true,
+        ok: false,
+        detail: res.statusCode == 401 ? 'Invalid key' : 'HTTP ${res.statusCode}'
+      );
+    } catch (_) {
+      return (configured: true, ok: false, detail: 'Unreachable');
+    }
+  }
+
   /// TMDB accepts either a v3 key (as the `api_key` query param) or a v4 read
   /// token (as a Bearer header). v4 tokens are long JWTs starting with `eyJ`.
   Future<(Map<String, dynamic>, Options)> _auth() async {
@@ -193,17 +216,28 @@ class TmdbService {
 
     try {
       final (q, opts) = await _auth();
-      final search = await _dio.get('$_api/search/$type',
-          queryParameters: {
-            ...q,
-            'query': title,
-            if (year != null)
-              (isShow ? 'first_air_date_year' : 'year'): '$year',
-          },
-          options: opts);
-      final sd = search.data is String ? jsonDecode(search.data) : search.data;
-      final results = sd is Map ? sd['results'] : null;
-      if (results is! List || results.isEmpty) {
+      Future<List?> runSearch({required bool withYear}) async {
+        final res = await _dio.get('$_api/search/$type',
+            queryParameters: {
+              ...q,
+              'query': title,
+              if (withYear && year != null)
+                (isShow ? 'first_air_date_year' : 'year'): '$year',
+            },
+            options: opts);
+        final sd = res.data is String ? jsonDecode(res.data) : res.data;
+        final r = sd is Map ? sd['results'] : null;
+        return r is List ? r : null;
+      }
+
+      // Year-filtered first for precision, then retry without it — a wrong /
+      // missing provider year is a common reason a title comes back with no
+      // metadata even though TMDB has it.
+      var results = await runSearch(withYear: true);
+      if ((results == null || results.isEmpty) && year != null) {
+        results = await runSearch(withYear: false);
+      }
+      if (results == null || results.isEmpty) {
         await _repo.setSetting(cacheKey, '0');
         return null;
       }
@@ -376,8 +410,10 @@ Future<List<StreamItem>> _matchToLibrary(
     final kind = t.isShow ? StreamKind.series : StreamKind.movie;
     final hits =
         await repo.search(playlistId: plId, kind: kind, query: t.title);
-    if (hits.isNotEmpty && hits.first.id != null && seen.add(hits.first.id!)) {
-      out.add(hits.first.copyWith(logo: t.poster, rating: t.rating));
+    // Prefer the English-labelled entry when a title exists in many languages.
+    final hit = LibraryRepository.preferEnglish(hits);
+    if (hit != null && hit.id != null && seen.add(hit.id!)) {
+      out.add(hit.copyWith(logo: t.poster, rating: t.rating));
     }
   }
   return out;

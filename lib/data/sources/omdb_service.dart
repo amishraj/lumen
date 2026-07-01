@@ -32,6 +32,29 @@ class OmdbService {
 
   Future<void> saveKey(String k) => _repo.setSetting('omdb_key', k.trim());
 
+  /// Fast health probe: does the saved key authenticate against OMDb?
+  Future<({bool configured, bool ok, String detail})> ping() async {
+    final k = await key();
+    if (k == null || k.isEmpty) {
+      return (configured: false, ok: false, detail: 'No key set');
+    }
+    try {
+      final res = await _dio.get('https://www.omdbapi.com/',
+          queryParameters: {'apikey': k, 't': 'Batman'});
+      final d = res.data is String ? jsonDecode(res.data) : res.data;
+      if (d is Map && d['Response'] == 'True') {
+        return (configured: true, ok: true, detail: 'OK');
+      }
+      return (
+        configured: true,
+        ok: false,
+        detail: '${d is Map ? (d['Error'] ?? 'Invalid key') : 'Invalid key'}'
+      );
+    } catch (_) {
+      return (configured: true, ok: false, detail: 'Unreachable');
+    }
+  }
+
   Future<OmdbInfo?> lookup(String rawTitle) async {
     final k = await key();
     if (k == null || k.isEmpty) return null;
@@ -69,7 +92,9 @@ class OmdbService {
     var s = raw.trim();
     int? year;
     final ym = RegExp(r'\((19|20)\d{2}\)').firstMatch(s);
-    if (ym != null) year = int.tryParse(ym.group(0)!.replaceAll(RegExp(r'[()]'), ''));
+    if (ym != null) {
+      year = int.tryParse(ym.group(0)!.replaceAll(RegExp(r'[()]'), ''));
+    }
     s = s
         .replaceAll(RegExp(r'^\s*\d{1,4}\s*[-.]\s*'), '') // "07 - "
         .replaceAll(RegExp(r'^[A-Z]{2,3}\s*[|:-]\s*'), '') // "EN| ", "VIP| "

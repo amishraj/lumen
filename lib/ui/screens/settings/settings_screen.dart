@@ -7,6 +7,7 @@ import '../../../data/sources/tmdb_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../../widgets/service_status_view.dart';
 import '../home/home_customize_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import 'trakt_screen.dart';
@@ -144,6 +145,10 @@ class SettingsScreen extends ConsumerWidget {
             icon: const Icon(Icons.add),
             label: const Text('Add source'),
           ),
+          const SizedBox(height: 20),
+          // Live health of the metadata/account services the home screen uses,
+          // with a Retry to re-probe if something is down.
+          const Card(child: ServiceStatusList()),
           const SizedBox(height: 28),
           const Text('Personalize',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
