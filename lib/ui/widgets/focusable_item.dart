@@ -43,11 +43,13 @@ class _FocusableItemState extends State<FocusableItem> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
-    if (event.logicalKey == LogicalKeyboardKey.arrowLeft && widget.onLeft != null) {
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+        widget.onLeft != null) {
       widget.onLeft!();
       return KeyEventResult.handled;
     }
-    if (event.logicalKey == LogicalKeyboardKey.arrowRight && widget.onRight != null) {
+    if (event.logicalKey == LogicalKeyboardKey.arrowRight &&
+        widget.onRight != null) {
       widget.onRight!();
       return KeyEventResult.handled;
     }

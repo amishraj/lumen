@@ -104,7 +104,9 @@ class _RailButton extends StatelessWidget {
               Icon(
                 selected ? item.selectedIcon : item.icon,
                 size: 22,
-                color: selected || focused ? LumenTheme.accent : const Color(0xFFC7CBD6),
+                color: selected || focused
+                    ? LumenTheme.accent
+                    : const Color(0xFFC7CBD6),
               ),
               if (expanded) ...[
                 const SizedBox(width: 14),

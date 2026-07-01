@@ -11,21 +11,34 @@ import 'screens/series/series_detail_screen.dart';
 /// - series → episode browser (resolved on demand)
 /// - movie  → detail page (ratings/plot, then Play)
 /// - live   → play immediately (no detail screen for channels)
+///
+/// When the pushed route pops we refresh only the *watch-activity* providers
+/// (continue watching / recently watched / seen-marks). Everything else on the
+/// home screen is session-cached and must NOT refetch here — that's what made
+/// Trakt content reload on every scroll before.
 void openItem(BuildContext context, WidgetRef ref, StreamItem item) {
+  Future<void> route;
   switch (item.kind) {
     case StreamKind.series:
       final pl = ref.read(activePlaylistProvider);
       if (pl == null) return;
-      Navigator.of(context).push(MaterialPageRoute(
+      route = Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => SeriesDetailScreen(playlist: pl, series: item),
       ));
     case StreamKind.movie:
-      Navigator.of(context).push(MaterialPageRoute(
+      route = Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => ContentDetailScreen(item: item),
       ));
     case StreamKind.live:
-      Navigator.of(context).push(MaterialPageRoute(
+      route = Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => PlayerScreen(item: item),
       ));
   }
+  route.then((_) {
+    try {
+      ref.invalidate(continueWatchingProvider);
+      ref.invalidate(recentlyWatchedProvider);
+      ref.invalidate(watchedIdsProvider);
+    } catch (_) {/* ref disposed with the screen — nothing to refresh */}
+  });
 }

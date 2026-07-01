@@ -58,6 +58,13 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
         item: queue[index],
         queue: queue,
         startIndex: index < 0 ? 0 : index,
+        // Structured identity so the in-player source switch can look up
+        // Real-Debrid streams for the exact episode.
+        debrid: DebridContext(
+          title: widget.series.name,
+          isShow: true,
+          episodes: [for (final e in all) (e.season, e.episode)],
+        ),
       ),
     ));
   }
@@ -98,7 +105,8 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
           ),
           SliverToBoxAdapter(
             child: Consumer(builder: (context, ref, _) {
-              final info = ref.watch(omdbProvider(widget.series.name)).valueOrNull;
+              final info =
+                  ref.watch(omdbProvider(widget.series.name)).valueOrNull;
               if (info == null) return const SizedBox(height: 8);
               return Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -110,7 +118,9 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
                       const SizedBox(height: 12),
                       Text(info.plot!,
                           style: const TextStyle(
-                              fontSize: 13.5, height: 1.5, color: Color(0xFFC7CBD6))),
+                              fontSize: 13.5,
+                              height: 1.5,
+                              color: Color(0xFFC7CBD6))),
                     ],
                   ],
                 ),
@@ -140,10 +150,10 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
                     child: Text('No episodes found for this series.'),
                   );
                 }
-                final seasons = eps.map((e) => e.season).toSet().toList()..sort();
+                final seasons = eps.map((e) => e.season).toSet().toList()
+                  ..sort();
                 if (!seasons.contains(_season)) _season = seasons.first;
-                final inSeason =
-                    eps.where((e) => e.season == _season).toList();
+                final inSeason = eps.where((e) => e.season == _season).toList();
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

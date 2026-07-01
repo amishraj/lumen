@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/sources/realdebrid_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../../widgets/focusable_item.dart';
 import '../../widgets/tv_text_field.dart';
 
 /// Add an M3U playlist or Xtream Codes account, then run the first sync with
@@ -24,9 +26,15 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
   final _userCtl = TextEditingController();
   final _passCtl = TextEditingController();
   final _portalCtl = TextEditingController();
+  final _rdTokenCtl = TextEditingController();
 
   String? _status;
   bool _busy = false;
+
+  /// First-run journey: null = show the "how will you watch?" chooser,
+  /// false = IPTV only, true = IPTV + Real-Debrid. When this screen is pushed
+  /// from Settings the chooser is skipped entirely.
+  bool? _withDebrid;
 
   @override
   void dispose() {
@@ -36,6 +44,7 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
     _userCtl.dispose();
     _passCtl.dispose();
     _portalCtl.dispose();
+    _rdTokenCtl.dispose();
     super.dispose();
   }
 
@@ -66,6 +75,14 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
     });
 
     try {
+      // Save the Real-Debrid token first if the user opted in during setup.
+      if (_withDebrid == true && _rdTokenCtl.text.trim().isNotEmpty) {
+        final rd = await ref.read(realDebridServiceProvider.future);
+        await rd.saveToken(_rdTokenCtl.text);
+        await rd.setEnabled(true);
+        ref.read(rdRevProvider.notifier).state++;
+        ref.invalidate(rdEnabledProvider);
+      }
       final saved = await repo.addPlaylist(pl);
       await for (final p in repo.sync(saved)) {
         if (!mounted) return;
@@ -89,6 +106,90 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
         });
       }
     }
+  }
+
+  /// First-run "how will you watch?" chooser.
+  Widget _modeChooser() {
+    Widget option({
+      required IconData icon,
+      required String title,
+      required String subtitle,
+      required bool debrid,
+      bool autofocus = false,
+    }) {
+      return FocusableItem(
+        autofocus: autofocus,
+        borderRadius: 18,
+        onActivate: () => setState(() => _withDebrid = debrid),
+        builder: (context, focused) => Container(
+          padding: const EdgeInsets.all(18),
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(
+            color: LumenTheme.surface,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+                color: focused ? LumenTheme.accent : const Color(0xFF2A2E3A)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: LumenTheme.accent.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: LumenTheme.accent, size: 24),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w800, fontSize: 15.5)),
+                    const SizedBox(height: 3),
+                    Text(subtitle,
+                        style: const TextStyle(
+                            color: Color(0xFF9AA0B0),
+                            fontSize: 12.5,
+                            height: 1.35)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: Color(0xFF6B7080)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 6),
+        const Text('How will you watch?',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 14),
+        option(
+          icon: Icons.live_tv,
+          title: 'My IPTV provider',
+          subtitle: 'Live TV, movies & shows from your M3U or Xtream account.',
+          debrid: false,
+          autofocus: true,
+        ),
+        option(
+          icon: Icons.cloud_outlined,
+          title: 'IPTV + Real-Debrid',
+          subtitle: 'Everything above, plus premium on-demand streams via your '
+              'Real-Debrid subscription.',
+          debrid: true,
+        ),
+      ],
+    );
   }
 
   @override
@@ -143,40 +244,56 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                           height: 1.4),
                     ),
                     const SizedBox(height: 22),
-                    // Segmented source-type switch.
-                    Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: LumenTheme.surface,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: TabBar(
-                        controller: _tab,
-                        dividerColor: Colors.transparent,
-                        indicatorSize: TabBarIndicatorSize.tab,
-                        indicator: BoxDecoration(
-                          color: LumenTheme.accent.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(11),
+                    // First run: choose the watching mode before the form.
+                    if (!pushed && _withDebrid == null)
+                      Expanded(child: _modeChooser())
+                    else ...[
+                      // Segmented source-type switch.
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: LumenTheme.surface,
+                          borderRadius: BorderRadius.circular(14),
                         ),
-                        labelColor: LumenTheme.accent,
-                        unselectedLabelColor: const Color(0xFF8A8F9E),
-                        labelStyle: const TextStyle(
-                            fontWeight: FontWeight.w700, fontSize: 13.5),
-                        tabs: const [
-                          Tab(text: 'M3U URL'),
-                          Tab(text: 'Xtream Codes'),
-                        ],
+                        child: TabBar(
+                          controller: _tab,
+                          dividerColor: Colors.transparent,
+                          indicatorSize: TabBarIndicatorSize.tab,
+                          indicator: BoxDecoration(
+                            color: LumenTheme.accent.withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(11),
+                          ),
+                          labelColor: LumenTheme.accent,
+                          unselectedLabelColor: const Color(0xFF8A8F9E),
+                          labelStyle: const TextStyle(
+                              fontWeight: FontWeight.w700, fontSize: 13.5),
+                          tabs: const [
+                            Tab(text: 'M3U URL'),
+                            Tab(text: 'Xtream Codes'),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 18),
-                    Expanded(
-                      child: TabBarView(
-                        controller: _tab,
-                        physics:
-                            _busy ? const NeverScrollableScrollPhysics() : null,
-                        children: [_m3uForm(), _xtreamForm()],
+                      const SizedBox(height: 18),
+                      Expanded(
+                        child: TabBarView(
+                          controller: _tab,
+                          physics: _busy
+                              ? const NeverScrollableScrollPhysics()
+                              : null,
+                          children: [_m3uForm(), _xtreamForm()],
+                        ),
                       ),
-                    ),
+                      if (_withDebrid == true) ...[
+                        TvTextField(
+                          controller: _rdTokenCtl,
+                          hint:
+                              'Real-Debrid API token (real-debrid.com/apitoken)',
+                          icon: Icons.cloud_outlined,
+                          obscure: true,
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                    ],
                     if (_status != null) ...[
                       Container(
                         padding: const EdgeInsets.symmetric(
@@ -214,13 +331,14 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                       ),
                       const SizedBox(height: 12),
                     ],
-                    SizedBox(
-                      height: 52,
-                      child: FilledButton(
-                        onPressed: _busy ? null : _save,
-                        child: Text(_busy ? 'Syncing…' : 'Add & sync'),
+                    if (pushed || _withDebrid != null)
+                      SizedBox(
+                        height: 52,
+                        child: FilledButton(
+                          onPressed: _busy ? null : _save,
+                          child: Text(_busy ? 'Syncing…' : 'Add & sync'),
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),

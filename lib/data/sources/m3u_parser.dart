@@ -8,7 +8,8 @@ class M3uParseArgs {
 }
 
 final _attrRe = RegExp(r'([\w-]+)="([^"]*)"');
-final _vodExtRe = RegExp(r'\.(mp4|mkv|avi|mov|m4v)(\?|$)', caseSensitive: false);
+final _vodExtRe =
+    RegExp(r'\.(mp4|mkv|avi|mov|m4v)(\?|$)', caseSensitive: false);
 
 /// Top-level so it can run in a background isolate via `compute`.
 /// Parses a full M3U/M3U8 body into stream items without blocking the UI.

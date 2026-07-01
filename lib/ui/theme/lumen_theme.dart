@@ -85,8 +85,8 @@ class LumenTheme {
           foregroundColor: const Color(0xFF0A0B0F),
           padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
           textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         ),
       ),
     );

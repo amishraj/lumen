@@ -18,7 +18,8 @@ class SearchScreen extends ConsumerWidget {
     final grouped = ref.watch(groupedSearchProvider);
 
     if (q.length < 2) {
-      return const _Hint(icon: Icons.search, text: 'Search movies, shows & channels');
+      return const _Hint(
+          icon: Icons.search, text: 'Search movies, shows & channels');
     }
 
     return grouped.when(
@@ -32,7 +33,8 @@ class SearchScreen extends ConsumerWidget {
           padding: const EdgeInsets.only(top: 8, bottom: 24),
           children: [
             _Section(title: 'Live TV', icon: Icons.live_tv, items: g.live),
-            _Section(title: 'Movies', icon: Icons.movie_outlined, items: g.movies),
+            _Section(
+                title: 'Movies', icon: Icons.movie_outlined, items: g.movies),
             _Section(title: 'TV Shows', icon: Icons.tv, items: g.series),
           ],
         );
@@ -42,7 +44,8 @@ class SearchScreen extends ConsumerWidget {
 }
 
 class _Section extends ConsumerWidget {
-  const _Section({required this.title, required this.icon, required this.items});
+  const _Section(
+      {required this.title, required this.icon, required this.items});
   final String title;
   final IconData icon;
   final List<StreamItem> items;
@@ -59,7 +62,8 @@ class _Section extends ConsumerWidget {
             Icon(icon, size: 18, color: LumenTheme.accent),
             const SizedBox(width: 8),
             Text(title,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
             const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
@@ -68,7 +72,8 @@ class _Section extends ConsumerWidget {
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text('${items.length}',
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF9AA0B0))),
+                  style:
+                      const TextStyle(fontSize: 11, color: Color(0xFF9AA0B0))),
             ),
           ]),
         ),

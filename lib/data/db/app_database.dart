@@ -122,7 +122,8 @@ class AppDatabase {
         watched INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
       )''');
-    await db.execute('CREATE INDEX idx_progress_updated ON progress(updated_at)');
+    await db
+        .execute('CREATE INDEX idx_progress_updated ON progress(updated_at)');
   }
 
   /// v2: key/value settings (home layout, Trakt tokens) + pinned categories.
@@ -148,8 +149,8 @@ class AppDatabase {
   // ---- Settings (key/value) ------------------------------------------------
 
   Future<String?> getSetting(String key) async {
-    final rows =
-        await db.query('app_settings', where: 'key=?', whereArgs: [key], limit: 1);
+    final rows = await db.query('app_settings',
+        where: 'key=?', whereArgs: [key], limit: 1);
     return rows.isEmpty ? null : rows.first['value'] as String?;
   }
 
@@ -272,7 +273,10 @@ class AppDatabase {
   Future<void> markSynced(int playlistId, int count) async {
     await db.update(
       'playlists',
-      {'last_synced_at': DateTime.now().millisecondsSinceEpoch, 'stream_count': count},
+      {
+        'last_synced_at': DateTime.now().millisecondsSinceEpoch,
+        'stream_count': count
+      },
       where: 'id=?',
       whereArgs: [playlistId],
     );
@@ -411,7 +415,8 @@ class AppDatabase {
   /// Event-style live channels for the Sports tab: "TEAM vs TEAM" names plus
   /// anything in a sports-flavoured category. (LIKE is case-insensitive for
   /// ASCII, so "% vs %" also catches "VS".)
-  Future<List<StreamItem>> sportsEvents(int playlistId, {int limit = 1200}) async {
+  Future<List<StreamItem>> sportsEvents(int playlistId,
+      {int limit = 1200}) async {
     final rows = await db.rawQuery(
       "SELECT * FROM streams WHERE playlist_id=? AND kind='live' AND ("
       "  name LIKE '% vs %' OR name LIKE '% v %'"
@@ -439,11 +444,8 @@ class AppDatabase {
     required String query,
     int limit = 200,
   }) async {
-    final rawTokens = query
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((t) => t.isNotEmpty)
-        .toList();
+    final rawTokens =
+        query.trim().split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
     if (rawTokens.isEmpty) return [];
 
     if (!ftsAvailable) {
@@ -491,7 +493,10 @@ class AppDatabase {
     if (fav) {
       await db.insert(
         'favorites',
-        {'stream_id': streamId, 'added_at': DateTime.now().millisecondsSinceEpoch},
+        {
+          'stream_id': streamId,
+          'added_at': DateTime.now().millisecondsSinceEpoch
+        },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     } else {
@@ -508,6 +513,18 @@ class AppDatabase {
     final rows = await db.rawQuery(
       'SELECT s.* FROM favorites fv JOIN streams s ON s.id=fv.stream_id '
       'ORDER BY fv.added_at DESC',
+    );
+    return rows.map(StreamItem.fromRow).toList();
+  }
+
+  /// Favorites of one kind in one playlist — backs the "My Favorites"
+  /// pseudo-category in the Live TV sidebar.
+  Future<List<StreamItem>> favoritesByKind(
+      int playlistId, StreamKind kind) async {
+    final rows = await db.rawQuery(
+      'SELECT s.* FROM favorites fv JOIN streams s ON s.id=fv.stream_id '
+      'WHERE s.playlist_id=? AND s.kind=? ORDER BY fv.added_at DESC',
+      [playlistId, kind.name],
     );
     return rows.map(StreamItem.fromRow).toList();
   }

@@ -7,27 +7,45 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/sources/realdebrid_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/focusable_item.dart';
+import '../../widgets/source_picker.dart';
+
+/// Structured identity of what's playing, for Real-Debrid stream lookups.
+/// [episodes] holds (season, episode) per queue index for series.
+class DebridContext {
+  const DebridContext({
+    required this.title,
+    this.isShow = false,
+    this.episodes,
+  });
+  final String title;
+  final bool isShow;
+  final List<(int, int)>? episodes;
+}
 
 /// Full-screen player backed by libmpv (media_kit). Handles MPEG-TS, HLS and
 /// the odd codecs common in IPTV, with hardware decode where available.
 ///
 /// Optionally takes a [queue] (e.g. a season's episodes) so the user can skip
-/// to the next/previous item without leaving the player.
+/// to the next/previous item without leaving the player, and a [debrid]
+/// context so the in-player source switch can offer Real-Debrid streams.
 class PlayerScreen extends ConsumerStatefulWidget {
   const PlayerScreen({
     super.key,
     required this.item,
     this.queue,
     this.startIndex = 0,
+    this.debrid,
   });
 
   final StreamItem item;
   final List<StreamItem>? queue;
   final int startIndex;
+  final DebridContext? debrid;
 
   @override
   ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
@@ -217,9 +235,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     await _load();
   }
 
+  /// Per-queue-index URL overrides set by the in-player source switch
+  /// (e.g. the user swapped this episode to a Real-Debrid stream).
+  final Map<int, String> _urlOverrides = {};
+
   Future<void> _load() async {
     try {
-      await _player.open(Media(_current.url), play: true);
+      await _player.open(Media(_urlOverrides[_index] ?? _current.url),
+          play: true);
     } catch (e) {
       // Live: keep trying. VOD: surface the error.
       if (_current.kind == StreamKind.live) {
@@ -424,14 +447,44 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _toggleFavorite() async {
     if (_current.id == null) return;
     final favs = ref.read(favoriteIdsProvider).valueOrNull ?? const <int>{};
-    final repo = await ref.read(repositoryProvider.future);
-    await repo.toggleFavorite(_current.id!, !favs.contains(_current.id));
-    ref.invalidate(favoriteIdsProvider);
+    await setFavorite(ref, _current, !favs.contains(_current.id));
   }
 
   void _togglePlay() {
     _player.playOrPause();
     _resetHideTimer();
+  }
+
+  /// In-player source switch (IPTV ↔ Real-Debrid). Keeps the playback
+  /// position for VOD so switching quality doesn't lose your place.
+  Future<void> _pickSource() async {
+    _resetHideTimer();
+    final ctx = widget.debrid;
+    final isShow = ctx?.isShow ?? _current.kind == StreamKind.series;
+    final se = ctx?.episodes != null && _index < ctx!.episodes!.length
+        ? ctx.episodes![_index]
+        : null;
+    final picked = await showSourcePicker(
+      context,
+      ref,
+      title: ctx?.title ?? _current.name,
+      isShow: isShow,
+      season: se?.$1,
+      episode: se?.$2,
+      iptvUrl: _current.url,
+    );
+    if (picked == null || !mounted) return;
+    final resumeAt = _position;
+    _sought = true; // suppress the Trakt auto-resume; we restore manually
+    setState(() {
+      _urlOverrides[_index] = picked.url;
+      _buffering = true;
+    });
+    await _load();
+    // Restore position on VOD once the new stream is up.
+    if (_current.kind != StreamKind.live && resumeAt > Duration.zero) {
+      await _player.seek(resumeAt);
+    }
   }
 
   static String _fmt(Duration d) {
@@ -447,6 +500,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = _current.id != null && favs.contains(_current.id);
     final isLive = _current.kind == StreamKind.live;
+    final rdOn = ref.watch(rdEnabledProvider).valueOrNull ?? false;
     // Spinner while libmpv fills its buffer — without this a slow live stream
     // is just a black screen with no feedback.
     final showSpinner = _buffering && !_reconnecting && _error == null;
@@ -582,6 +636,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                       ),
                                     if (_current.id != null)
                                       const SizedBox(width: 6),
+                                    if (!isLive && rdOn) ...[
+                                      _RoundButton(
+                                        icon: Icons.swap_horiz,
+                                        tooltip:
+                                            'Change source (IPTV / Debrid)',
+                                        onTap: _pickSource,
+                                        onActivity: _resetHideTimer,
+                                      ),
+                                      const SizedBox(width: 6),
+                                    ],
                                     if (!isLive)
                                       _RoundButton(
                                         icon: Icons.closed_caption,

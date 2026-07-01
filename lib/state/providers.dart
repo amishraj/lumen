@@ -49,14 +49,37 @@ final pinnedCategoriesProvider =
   return (await repo.pinnedCategories(pl!.id!, kind)).toSet();
 });
 
-/// Categories with pinned ones floated to the top — drives the sidebar.
+/// Sentinel category that surfaces the user's favorites of the selected kind
+/// at the top of the sidebar (e.g. favorited live channels).
+const kFavoritesCategory = '★ My Favorites';
+
+/// Categories with the favorites pseudo-category first, then pinned ones,
+/// then the rest — drives the sidebar.
 final orderedCategoriesProvider =
     FutureProvider.autoDispose<List<Category>>((ref) async {
   final cats = await ref.watch(categoriesProvider.future);
   final pinned = await ref.watch(pinnedCategoriesProvider.future);
   final pinnedList = cats.where((c) => pinned.contains(c.name)).toList();
   final rest = cats.where((c) => !pinned.contains(c.name)).toList();
-  return [...pinnedList, ...rest];
+  // Favorites-of-kind pseudo-category (only when non-empty).
+  final favs = <Category>[];
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id != null) {
+    ref.watch(favoriteIdsProvider); // re-run when favorites change
+    final repo = await ref.watch(repositoryProvider.future);
+    final kind = ref.watch(selectedKindProvider);
+    final list = await repo.favoritesByKind(pl!.id!, kind);
+    if (list.isNotEmpty) {
+      favs.add(Category(
+        id: '${pl.id}:${kind.name}:$kFavoritesCategory',
+        playlistId: pl.id!,
+        kind: kind,
+        name: kFavoritesCategory,
+        count: list.length,
+      ));
+    }
+  }
+  return [...favs, ...pinnedList, ...rest];
 });
 
 /// Persisted, resizable Live-TV sidebar width.
@@ -115,8 +138,7 @@ final groupedSearchProvider =
 // Home feed
 // ---------------------------------------------------------------------------
 
-final featuredProvider =
-    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+final featuredProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
@@ -142,8 +164,7 @@ final featuredProvider =
   return repo.featured(pl!.id!);
 });
 
-final continueWatchingProvider =
-    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
@@ -169,7 +190,7 @@ final continueWatchingProvider =
 
 /// Set of library item ids the user has watched — locally and (synced once an
 /// hour) from Trakt's watched history. Drives the "seen" check on posters.
-final watchedIdsProvider = FutureProvider.autoDispose<Set<int>>((ref) async {
+final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return {};
@@ -195,24 +216,21 @@ final watchedIdsProvider = FutureProvider.autoDispose<Set<int>>((ref) async {
   return repo.watchedIds(pl!.id!);
 });
 
-final recentlyWatchedProvider =
-    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+final recentlyWatchedProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
   return repo.recentlyWatched(pl!.id!);
 });
 
-final favoritesListProvider =
-    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+final favoritesListProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   ref.watch(favoriteIdsProvider); // refresh when favorites change
   return repo.favorites();
 });
 
 /// Event-style live channels for the Sports tab.
-final sportsEventsProvider =
-    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+final sportsEventsProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
@@ -220,8 +238,8 @@ final sportsEventsProvider =
 });
 
 /// First N items of a kind (for "Movies for You" / "TV Shows" home rows).
-final kindSampleProvider = FutureProvider.autoDispose
-    .family<List<StreamItem>, StreamKind>((ref, kind) async {
+final kindSampleProvider =
+    FutureProvider.family<List<StreamItem>, StreamKind>((ref, kind) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
@@ -249,8 +267,7 @@ const kAllHomeRows = <HomeRow>[
 const _defaultHomeRows = 'continue,favorites,recent,movies,series';
 
 /// Ordered list of enabled home-row ids, persisted in settings.
-final homeConfigProvider =
-    FutureProvider.autoDispose<List<String>>((ref) async {
+final homeConfigProvider = FutureProvider<List<String>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final raw = await repo.getSetting('home_rows') ?? _defaultHomeRows;
   return raw.split(',').where((s) => s.isNotEmpty).toList();
@@ -262,10 +279,34 @@ Future<void> saveHomeConfig(WidgetRef ref, List<String> ids) async {
   ref.invalidate(homeConfigProvider);
 }
 
-final favoriteIdsProvider = FutureProvider.autoDispose<Set<int>>((ref) async {
+final favoriteIdsProvider = FutureProvider<Set<int>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   return repo.favoriteIds();
 });
+
+/// Single entry point for favoriting: toggles locally, refreshes the favorite
+/// providers, and (for movies/shows) mirrors the change onto the Trakt
+/// watchlist so "My List" and Trakt stay the same list.
+Future<void> setFavorite(WidgetRef ref, StreamItem item, bool fav) async {
+  if (item.id == null) return;
+  final repo = await ref.read(repositoryProvider.future);
+  await repo.toggleFavorite(item.id!, fav);
+  ref.invalidate(favoriteIdsProvider);
+  ref.invalidate(favoritesListProvider);
+  if (item.kind == StreamKind.movie || item.kind == StreamKind.series) {
+    // Fire-and-forget: Trakt sync must never block or fail the local toggle.
+    ref
+        .read(traktServiceProvider)
+        .valueOrNull
+        ?.setInWatchlist(item.name,
+            isShow: item.kind == StreamKind.series, inList: fav)
+        .then((_) {
+      try {
+        ref.invalidate(traktWatchlistProvider);
+      } catch (_) {/* screen gone */}
+    });
+  }
+}
 
 /// Search results (debounced query set by the search screen).
 final searchQueryProvider = StateProvider.autoDispose<String>((ref) => '');

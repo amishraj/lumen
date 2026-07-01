@@ -153,13 +153,14 @@ class StreamItem {
         rating: (r['rating'] as double?),
       );
 
-  StreamItem copyWith({String? logo, double? rating}) => StreamItem(
+  StreamItem copyWith({String? logo, double? rating, String? url}) =>
+      StreamItem(
         id: id,
         playlistId: playlistId,
         kind: kind,
         name: name,
         logo: logo ?? this.logo,
-        url: url,
+        url: url ?? this.url,
         groupTitle: groupTitle,
         tvgId: tvgId,
         num: num,

@@ -24,8 +24,8 @@ class LogoImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Lettered fallback only when there's genuinely no art (missing/failed).
-    final lettered =
-        _Fallback(width: size, height: height, radius: radius, text: fallbackText);
+    final lettered = _Fallback(
+        width: size, height: height, radius: radius, text: fallbackText);
     // While loading we show a calm neutral tile — never the big "A"/"1" letter.
     final loading = _LoadingTile(width: size, height: height, radius: radius);
     if (url == null || url!.isEmpty) return lettered;
@@ -76,7 +76,10 @@ class _LoadingTile extends StatelessWidget {
 
 class _Fallback extends StatelessWidget {
   const _Fallback(
-      {required this.width, required this.height, required this.radius, this.text});
+      {required this.width,
+      required this.height,
+      required this.radius,
+      this.text});
   final double width;
   final double height;
   final double radius;

@@ -125,6 +125,8 @@ class LibraryRepository {
   Future<Set<int>> favoriteIds() => db.favoriteIds();
   Future<void> toggleFavorite(int id, bool fav) => db.toggleFavorite(id, fav);
   Future<List<StreamItem>> favorites() => db.favorites();
+  Future<List<StreamItem>> favoritesByKind(int playlistId, StreamKind kind) =>
+      db.favoritesByKind(playlistId, kind);
   Future<void> markWatched(int id) => db.markWatched(id);
   Future<Set<int>> watchedIds(int playlistId) => db.watchedIds(playlistId);
 

@@ -244,7 +244,7 @@ class TmdbService {
       final id = (results.first as Map)['id'];
       // Detail call with credits appended so we get cast in one round-trip.
       final det = await _dio.get('$_api/$type/$id',
-          queryParameters: {...q, 'append_to_response': 'credits'},
+          queryParameters: {...q, 'append_to_response': 'credits,external_ids'},
           options: opts);
       final dd = det.data is String ? jsonDecode(det.data) : det.data;
       if (dd is Map && dd['id'] != null) {
@@ -318,6 +318,7 @@ class TmdbInfo {
   final String? backdrop;
   final String? releaseDate;
   final List<String> cast;
+  final String? imdbId;
 
   const TmdbInfo({
     this.tmdbId,
@@ -330,6 +331,7 @@ class TmdbInfo {
     this.backdrop,
     this.releaseDate,
     this.cast = const [],
+    this.imdbId,
   });
 
   factory TmdbInfo.fromJson(Map<String, dynamic> d, bool isShow) {
@@ -366,6 +368,10 @@ class TmdbInfo {
       rating: (d['vote_average'] as num?)?.toDouble(),
       poster: TmdbService.posterUrl(d['poster_path'] as String?),
       backdrop: TmdbService.backdropUrl(d['backdrop_path'] as String?),
+      imdbId: (d['external_ids'] is Map
+              ? d['external_ids']['imdb_id'] as String?
+              : null) ??
+          d['imdb_id'] as String?,
       releaseDate:
           '${(isShow ? d['first_air_date'] : d['release_date']) ?? ''}',
       cast: cast,
@@ -379,7 +385,7 @@ final tmdbServiceProvider = FutureProvider<TmdbService>((ref) async {
 });
 
 /// True when the user has entered a TMDB key — gates all TMDB UI.
-final tmdbEnabledProvider = FutureProvider.autoDispose<bool>((ref) async {
+final tmdbEnabledProvider = FutureProvider<bool>((ref) async {
   final svc = await ref.watch(tmdbServiceProvider.future);
   // Also re-runs when the key setting changes via invalidation.
   ref.watch(tmdbKeyRevProvider);
@@ -413,14 +419,14 @@ Future<List<StreamItem>> _matchToLibrary(
     // Prefer the English-labelled entry when a title exists in many languages.
     final hit = LibraryRepository.preferEnglish(hits);
     if (hit != null && hit.id != null && seen.add(hit.id!)) {
-      out.add(hit.copyWith(logo: t.poster, rating: t.rating));
+      // Backdrop first: home rows render these as wide landscape cards.
+      out.add(hit.copyWith(logo: t.backdrop ?? t.poster, rating: t.rating));
     }
   }
   return out;
 }
 
-final tmdbPopularProvider =
-    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+final tmdbPopularProvider = FutureProvider<List<StreamItem>>((ref) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) return [];
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
@@ -429,8 +435,7 @@ final tmdbPopularProvider =
   return _matchToLibrary(repo, pl!.id!, await svc.popular());
 });
 
-final tmdbTrendingProvider =
-    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+final tmdbTrendingProvider = FutureProvider<List<StreamItem>>((ref) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) return [];
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
@@ -440,16 +445,15 @@ final tmdbTrendingProvider =
 });
 
 /// TMDB movie genres available to browse.
-final tmdbGenresProvider =
-    FutureProvider.autoDispose<List<TmdbGenre>>((ref) async {
+final tmdbGenresProvider = FutureProvider<List<TmdbGenre>>((ref) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) return [];
   final svc = await ref.watch(tmdbServiceProvider.future);
   return svc.genres();
 });
 
 /// Library items for a given TMDB genre id.
-final tmdbGenreRowProvider = FutureProvider.autoDispose
-    .family<List<StreamItem>, int>((ref, genreId) async {
+final tmdbGenreRowProvider =
+    FutureProvider.family<List<StreamItem>, int>((ref, genreId) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) return [];
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
@@ -460,8 +464,7 @@ final tmdbGenreRowProvider = FutureProvider.autoDispose
 
 /// "Because you watched X" — recommendations off the most recent watch.
 final tmdbBecauseYouWatchedProvider =
-    FutureProvider.autoDispose<({String? seed, List<StreamItem> items})>(
-        (ref) async {
+    FutureProvider<({String? seed, List<StreamItem> items})>((ref) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) {
     return (seed: null, items: <StreamItem>[]);
   }

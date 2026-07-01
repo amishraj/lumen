@@ -15,8 +15,18 @@ class SportsScreen extends ConsumerWidget {
   const SportsScreen({super.key});
 
   static const _buckets = <String, List<String>>{
-    'Soccer': ['soccer', 'football', 'fifa', 'world cup', 'uefa', 'premier',
-        'la liga', 'serie a', 'bundesliga', 'champions'],
+    'Soccer': [
+      'soccer',
+      'football',
+      'fifa',
+      'world cup',
+      'uefa',
+      'premier',
+      'la liga',
+      'serie a',
+      'bundesliga',
+      'champions'
+    ],
     'American Football': ['nfl', 'super bowl', 'ncaaf'],
     'Basketball': ['nba', 'basket', 'ncaab', 'euroleague'],
     'Ice Hockey': ['nhl', 'hockey'],
@@ -88,7 +98,8 @@ class SportsScreen extends ConsumerWidget {
                     Icon(Icons.sports_soccer, color: LumenTheme.accent),
                     SizedBox(width: 8),
                     Text('Sports',
-                        style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+                        style: TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.w900)),
                   ]),
                 ),
               ),
@@ -102,7 +113,8 @@ class SportsScreen extends ConsumerWidget {
                               fontSize: 17, fontWeight: FontWeight.w800)),
                       const SizedBox(width: 8),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 1),
                         decoration: BoxDecoration(
                             color: LumenTheme.surfaceHi,
                             borderRadius: BorderRadius.circular(20)),
@@ -115,7 +127,9 @@ class SportsScreen extends ConsumerWidget {
                 ),
                 SliverList(
                   delegate: SliverChildBuilderDelegate(
-                    (context, i) => _EventTile(item: grouped[sport]![i], time: _timeOf(grouped[sport]![i].name)),
+                    (context, i) => _EventTile(
+                        item: grouped[sport]![i],
+                        time: _timeOf(grouped[sport]![i].name)),
                     childCount: grouped[sport]!.length,
                   ),
                 ),
@@ -140,8 +154,8 @@ class _EventTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
       child: FocusableItem(
         borderRadius: 14,
-        onActivate: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => PlayerScreen(item: item))),
+        onActivate: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => PlayerScreen(item: item))),
         builder: (context, focused) => Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
@@ -156,12 +170,14 @@ class _EventTile extends StatelessWidget {
                 child: Text(item.name,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 14)),
               ),
               if (time != null) ...[
                 const SizedBox(width: 10),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
                     color: LumenTheme.accent.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(8),
@@ -174,7 +190,8 @@ class _EventTile extends StatelessWidget {
                 ),
               ],
               const SizedBox(width: 8),
-              const Icon(Icons.play_circle_fill, color: LumenTheme.accent, size: 24),
+              const Icon(Icons.play_circle_fill,
+                  color: LumenTheme.accent, size: 24),
             ],
           ),
         ),

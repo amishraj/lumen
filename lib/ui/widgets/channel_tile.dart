@@ -32,7 +32,9 @@ class ChannelTile extends StatelessWidget {
             onActivate: onTap,
             borderRadius: 16,
             // From the title, Right reaches the favorite toggle (when present).
-            onRight: onFavorite == null ? null : () => FocusScope.of(context).nextFocus(),
+            onRight: onFavorite == null
+                ? null
+                : () => FocusScope.of(context).nextFocus(),
             builder: (context, focused) => Material(
               color: focused ? LumenTheme.surfaceHi : Colors.transparent,
               borderRadius: BorderRadius.circular(16),
@@ -40,10 +42,12 @@ class ChannelTile extends StatelessWidget {
                 onTap: onTap,
                 borderRadius: BorderRadius.circular(16),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   child: Row(
                     children: [
-                      LogoImage(url: item.logo, size: 52, fallbackText: item.name),
+                      LogoImage(
+                          url: item.logo, size: 52, fallbackText: item.name),
                       const SizedBox(width: 14),
                       Expanded(
                         child: Column(
@@ -96,7 +100,9 @@ class ChannelTile extends StatelessWidget {
               padding: const EdgeInsets.all(8),
               child: Icon(
                 isFavorite ? Icons.favorite : Icons.favorite_border,
-                color: isFavorite ? LumenTheme.accentWarm : const Color(0xFF6B7080),
+                color: isFavorite
+                    ? LumenTheme.accentWarm
+                    : const Color(0xFF6B7080),
                 size: 22,
               ),
             ),

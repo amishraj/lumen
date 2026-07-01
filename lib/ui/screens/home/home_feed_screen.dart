@@ -79,19 +79,24 @@ class HomeFeedScreen extends ConsumerWidget {
 
   Widget _rowFor(String id) {
     switch (id) {
+      // Movie-heavy rows use wide, hover-expanding landscape cards.
       case 'continue':
         return _ContentRow(
-            title: 'Continue Watching', provider: continueWatchingProvider);
+            title: 'Continue Watching',
+            provider: continueWatchingProvider,
+            wide: true);
       case 'favorites':
-        return _ContentRow(
-            title: 'My Favorites', provider: favoritesListProvider);
+        return _ContentRow(title: 'My List', provider: favoritesListProvider);
       case 'recent':
         return _ContentRow(
-            title: 'Recently Watched', provider: recentlyWatchedProvider);
+            title: 'Recently Watched',
+            provider: recentlyWatchedProvider,
+            wide: true);
       case 'movies':
         return _ContentRow(
             title: 'Movies for You',
-            provider: kindSampleProvider(StreamKind.movie));
+            provider: kindSampleProvider(StreamKind.movie),
+            wide: true);
       case 'series':
         return _ContentRow(
             title: 'TV Shows', provider: kindSampleProvider(StreamKind.series));
@@ -371,13 +376,7 @@ class _HeroBillboard extends ConsumerWidget {
                     FocusableItem(
                       borderRadius: 12,
                       onRight: onNext,
-                      onActivate: () async {
-                        if (item.id == null) return;
-                        final repo = await ref.read(repositoryProvider.future);
-                        await repo.toggleFavorite(item.id!, !isFav);
-                        ref.invalidate(favoriteIdsProvider);
-                        ref.invalidate(favoritesListProvider);
-                      },
+                      onActivate: () => setFavorite(ref, item, !isFav),
                       builder: (context, focused) => Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 18, vertical: 13),
@@ -416,11 +415,14 @@ class _HeroSkeleton extends StatelessWidget {
   }
 }
 
-/// A titled horizontal strip of poster cards bound to a provider.
+/// A titled horizontal strip of cards bound to a provider. [wide] switches to
+/// landscape 16:9 cards that expand on hover/focus (movie rows).
 class _ContentRow extends ConsumerWidget {
-  const _ContentRow({required this.title, required this.provider});
+  const _ContentRow(
+      {required this.title, required this.provider, this.wide = false});
   final String title;
   final ProviderListenable<AsyncValue<List<StreamItem>>> provider;
+  final bool wide;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -440,15 +442,16 @@ class _ContentRow extends ConsumerWidget {
                   const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
         ),
         SizedBox(
-          height: 250,
+          height: wide ? 160 : 250,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             clipBehavior: Clip.none, // don't clip the focus glow / scale
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
             itemCount: items.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 14),
+            separatorBuilder: (_, __) => SizedBox(width: wide ? 16 : 14),
             itemBuilder: (_, i) => PosterCard(
               item: items[i],
+              wide: wide,
               onTap: () => openItem(context, ref, items[i]),
             ),
           ),
@@ -473,13 +476,17 @@ class _TmdbSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (genres.isNotEmpty) _GenreChips(genres: genres),
-        _ContentRow(title: 'Popular Now', provider: tmdbPopularProvider),
         _ContentRow(
-            title: 'Trending This Week', provider: tmdbTrendingProvider),
+            title: 'Popular Now', provider: tmdbPopularProvider, wide: true),
+        _ContentRow(
+            title: 'Trending This Week',
+            provider: tmdbTrendingProvider,
+            wide: true),
         const _BecauseYouWatchedRow(),
         // A few genre rows inline; full catalogue via the chips above.
         for (final g in genres.take(3))
-          _ContentRow(title: g.name, provider: tmdbGenreRowProvider(g.id)),
+          _ContentRow(
+              title: g.name, provider: tmdbGenreRowProvider(g.id), wide: true),
       ],
     );
   }

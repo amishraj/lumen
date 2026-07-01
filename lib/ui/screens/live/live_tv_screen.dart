@@ -243,6 +243,8 @@ class _CategoryRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // The favorites pseudo-category isn't a real provider group — no pin.
+    final isFavs = category.name == kFavoritesCategory;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       padding: const EdgeInsets.only(left: 2, right: 2),
@@ -265,7 +267,7 @@ class _CategoryRow extends ConsumerWidget {
               onActivate: () =>
                   ref.read(selectedCategoryProvider.notifier).state = category,
               // From the name, Right goes straight to the pin toggle.
-              onRight: () => FocusScope.of(context).nextFocus(),
+              onRight: isFavs ? null : () => FocusScope.of(context).nextFocus(),
               builder: (context, focused) => Padding(
                 padding: const EdgeInsets.only(left: 8, top: 4, bottom: 4),
                 child: Column(
@@ -290,17 +292,19 @@ class _CategoryRow extends ConsumerWidget {
               ),
             ),
           ),
-          FocusableItem(
-            borderRadius: 18,
-            onActivate: () => _togglePin(ref),
-            builder: (context, focused) => Padding(
-              padding: const EdgeInsets.all(6),
-              child: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                  size: 15,
-                  color:
-                      pinned ? LumenTheme.accentWarm : const Color(0xFF5B6072)),
+          if (!isFavs)
+            FocusableItem(
+              borderRadius: 18,
+              onActivate: () => _togglePin(ref),
+              builder: (context, focused) => Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                    size: 15,
+                    color: pinned
+                        ? LumenTheme.accentWarm
+                        : const Color(0xFF5B6072)),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -322,6 +326,13 @@ class _ContentArea extends ConsumerWidget {
         final selected = ref.watch(selectedCategoryProvider) ?? cats.first;
         final current =
             cats.any((c) => c.name == selected.name) ? selected : cats.first;
+        if (current.name == kFavoritesCategory) {
+          return _FavoritesPane(
+            key: ValueKey('${pl!.id}-${kind.name}-favs'),
+            playlistId: pl.id!,
+            kind: kind,
+          );
+        }
         return _ContentPane(
           key: ValueKey('${pl!.id}-${kind.name}-${current.name}'),
           playlistId: pl.id!,
@@ -331,6 +342,69 @@ class _ContentArea extends ConsumerWidget {
       },
       loading: () => const _SkeletonList(),
       error: (e, _) => Center(child: Text('$e')),
+    );
+  }
+}
+
+/// The "★ My Favorites" pseudo-category: the user's favorites of this kind.
+class _FavoritesPane extends ConsumerWidget {
+  const _FavoritesPane(
+      {super.key, required this.playlistId, required this.kind});
+  final int playlistId;
+  final StreamKind kind;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final favIds = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
+    return FutureBuilder<List<StreamItem>>(
+      // favIds in the key so the list refreshes when favorites change.
+      key: ValueKey(favIds.length),
+      future: ref
+          .read(repositoryProvider.future)
+          .then((repo) => repo.favoritesByKind(playlistId, kind)),
+      builder: (context, snap) {
+        final items = snap.data ?? const <StreamItem>[];
+        if (snap.connectionState != ConnectionState.done) {
+          return const _SkeletonList();
+        }
+        if (items.isEmpty) {
+          return const Center(
+              child: Text('No favorites yet — tap the ♥ on any item.'));
+        }
+        if (kind != StreamKind.live) {
+          return GridView.builder(
+            clipBehavior: Clip.none,
+            padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 140,
+              mainAxisExtent: 242,
+              crossAxisSpacing: 16,
+              mainAxisSpacing: 14,
+            ),
+            itemCount: items.length,
+            itemBuilder: (context, i) => PosterCard(
+              item: items[i],
+              width: 120,
+              onTap: () => openItem(context, ref, items[i]),
+            ),
+          );
+        }
+        return ListView.builder(
+          itemExtent: 72,
+          padding: const EdgeInsets.only(bottom: 24),
+          itemCount: items.length,
+          itemBuilder: (context, i) {
+            final item = items[i];
+            return ChannelTile(
+              item: item,
+              isFavorite: true,
+              onFavorite:
+                  item.id == null ? null : () => setFavorite(ref, item, false),
+              onTap: () => openItem(context, ref, item),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -481,13 +555,8 @@ class _ContentPaneState extends ConsumerState<_ContentPane> {
         return ChannelTile(
           item: item,
           isFavorite: fav,
-          onFavorite: item.id == null
-              ? null
-              : () async {
-                  final repo = await ref.read(repositoryProvider.future);
-                  await repo.toggleFavorite(item.id!, !fav);
-                  ref.invalidate(favoriteIdsProvider);
-                },
+          onFavorite:
+              item.id == null ? null : () => setFavorite(ref, item, !fav),
           onTap: () => openItem(context, ref, item),
         );
       },

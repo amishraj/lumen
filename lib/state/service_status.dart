@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/models/models.dart';
 import '../data/sources/omdb_service.dart';
+import '../data/sources/realdebrid_service.dart';
 import '../data/sources/tmdb_service.dart';
 import '../data/sources/trakt_service.dart';
 import 'providers.dart';
@@ -31,15 +32,18 @@ final serviceHealthProvider =
   final trakt = await ref.watch(traktServiceProvider.future);
   final tmdb = await ref.watch(tmdbServiceProvider.future);
   final omdb = await ref.watch(omdbServiceProvider.future);
+  final rd = await ref.watch(realDebridServiceProvider.future);
   final results = await Future.wait([
     trakt.ping(),
     tmdb.ping(),
     omdb.ping(),
+    rd.ping(),
   ]);
   return [
     _map('Trakt', results[0]),
     _map('TMDB', results[1]),
     _map('OMDb (ratings)', results[2]),
+    _map('Real-Debrid', results[3]),
   ];
 });
 

@@ -161,7 +161,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     NavRailItem(Icons.sports_soccer_outlined,
                         Icons.sports_soccer, 'Sports'),
                     NavRailItem(Icons.search, Icons.search, 'Search'),
-                    NavRailItem(Icons.tune, Icons.tune, 'Sources'),
+                    NavRailItem(
+                        Icons.settings_outlined, Icons.settings, 'Settings'),
                   ],
                 ),
                 Expanded(child: IndexedStack(index: _index, children: pages)),

@@ -3,11 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
 import '../../../data/sources/omdb_service.dart';
+import '../../../data/sources/realdebrid_service.dart';
 import '../../../data/sources/tmdb_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/logo_image.dart';
+import '../../widgets/source_picker.dart';
 import '../../widgets/rating_badges.dart';
 import '../player/player_screen.dart';
 
@@ -26,6 +28,8 @@ class ContentDetailScreen extends ConsumerWidget {
         .valueOrNull;
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = item.id != null && favs.contains(item.id);
+    // Warm the RD flag so it's resolved by the time Play is pressed.
+    ref.watch(rdEnabledProvider);
     final info = meta.valueOrNull;
     // TMDB supplies the best backdrop; fall back to OMDb poster / provider art.
     final backdrop = tmdb?.backdrop ?? info?.poster ?? item.logo;
@@ -108,9 +112,22 @@ class ContentDetailScreen extends ConsumerWidget {
                     FocusableItem(
                       autofocus: true,
                       borderRadius: 12,
-                      onActivate: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                              builder: (_) => PlayerScreen(item: item))),
+                      onActivate: () async {
+                        // With Real-Debrid enabled, let the user choose the
+                        // source; otherwise go straight to the IPTV stream.
+                        final rd =
+                            ref.read(rdEnabledProvider).valueOrNull ?? false;
+                        var toPlay = item;
+                        if (rd) {
+                          final picked = await showSourcePicker(context, ref,
+                              title: item.name, iptvUrl: item.url);
+                          if (picked == null) return;
+                          toPlay = item.copyWith(url: picked.url);
+                        }
+                        if (!context.mounted) return;
+                        Navigator.of(context).push(MaterialPageRoute(
+                            builder: (_) => PlayerScreen(item: toPlay)));
+                      },
                       builder: (context, focused) => Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 28, vertical: 13),
@@ -134,13 +151,7 @@ class ContentDetailScreen extends ConsumerWidget {
                     const SizedBox(width: 12),
                     FocusableItem(
                       borderRadius: 12,
-                      onActivate: () async {
-                        if (item.id == null) return;
-                        final repo = await ref.read(repositoryProvider.future);
-                        await repo.toggleFavorite(item.id!, !isFav);
-                        ref.invalidate(favoriteIdsProvider);
-                        ref.invalidate(favoritesListProvider);
-                      },
+                      onActivate: () => setFavorite(ref, item, !isFav),
                       builder: (context, focused) => Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 18, vertical: 13),

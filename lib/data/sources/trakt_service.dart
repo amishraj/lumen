@@ -491,6 +491,47 @@ class TraktService {
           options: Options(headers: await _authHeaders()));
     } catch (_) {/* best effort */}
   }
+
+  /// Resolve a title to its Trakt id node (contains imdb/tmdb/trakt ids).
+  /// Public search endpoint — works with just the api key.
+  Future<Map<String, dynamic>?> idsFor(String title,
+      {int? year, bool isShow = false}) async {
+    try {
+      final type = isShow ? 'show' : 'movie';
+      final search = await _dio.get('$_api/search/$type',
+          queryParameters: {'query': title, if (year != null) 'years': '$year'},
+          options: Options(headers: await _authHeaders()));
+      final list =
+          search.data is String ? jsonDecode(search.data) : search.data;
+      if (list is! List || list.isEmpty) return null;
+      final node = (list.first as Map)[type];
+      if (node is! Map || node['ids'] is! Map) return null;
+      return Map<String, dynamic>.from(node['ids'] as Map);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Keep the Trakt watchlist in sync with the in-app "My List": add/remove a
+  /// title (matched by name/year, like scrobbling). Best effort — a failure
+  /// never blocks the local favorite.
+  Future<void> setInWatchlist(String title,
+      {int? year, bool isShow = false, required bool inList}) async {
+    if (!await isConnected()) return;
+    try {
+      final ids = await idsFor(title, year: year, isShow: isShow);
+      if (ids == null) return;
+      final type = isShow ? 'show' : 'movie';
+      await _dio.post(
+          inList ? '$_api/sync/watchlist' : '$_api/sync/watchlist/remove',
+          data: jsonEncode({
+            '${type}s': [
+              {'ids': ids}
+            ]
+          }),
+          options: Options(headers: await _authHeaders()));
+    } catch (_) {/* best effort */}
+  }
 }
 
 class TraktDeviceCode {
@@ -547,34 +588,32 @@ final traktServiceProvider = FutureProvider<TraktService>((ref) async {
 });
 
 /// Connection state, refreshable after connect/disconnect.
-final traktConnectedProvider = FutureProvider.autoDispose<bool>((ref) async {
+final traktConnectedProvider = FutureProvider<bool>((ref) async {
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.isConnected();
 });
 
-final traktUsernameProvider = FutureProvider.autoDispose<String?>((ref) async {
+final traktUsernameProvider = FutureProvider<String?>((ref) async {
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.username();
 });
 
-final traktWatchlistProvider =
-    FutureProvider.autoDispose<List<TraktItem>>((ref) async {
+final traktWatchlistProvider = FutureProvider<List<TraktItem>>((ref) async {
   final connected = await ref.watch(traktConnectedProvider.future);
   if (!connected) return [];
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.watchlist();
 });
 
-final traktListsProvider =
-    FutureProvider.autoDispose<List<TraktList>>((ref) async {
+final traktListsProvider = FutureProvider<List<TraktList>>((ref) async {
   final connected = await ref.watch(traktConnectedProvider.future);
   if (!connected) return [];
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.lists();
 });
 
-final traktListItemsProvider = FutureProvider.autoDispose
-    .family<List<TraktItem>, String>((ref, listId) async {
+final traktListItemsProvider =
+    FutureProvider.family<List<TraktItem>, String>((ref, listId) async {
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.listItems(listId);
 });

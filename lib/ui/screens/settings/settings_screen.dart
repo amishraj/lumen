@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
 import '../../../data/sources/omdb_service.dart';
+import '../../../data/sources/realdebrid_service.dart';
 import '../../../data/sources/tmdb_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
+import '../../../state/service_status.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/service_status_view.dart';
 import '../../widgets/tv_text_field.dart';
@@ -43,6 +45,49 @@ Future<void> _editTmdbKey(BuildContext context, WidgetRef ref) async {
             // Nudge dependent providers to recompute now the key exists.
             ref.read(tmdbKeyRevProvider.notifier).state++;
             ref.invalidate(tmdbEnabledProvider);
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> _editRdToken(BuildContext context, WidgetRef ref) async {
+  final svc = await ref.read(realDebridServiceProvider.future);
+  final ctl = TextEditingController(text: await svc.token() ?? '');
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Real-Debrid'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+              'Paste your private API token from real-debrid.com/apitoken. '
+              'It stays on this device and is used only to resolve premium '
+              'streams. Requires an active RD premium subscription.',
+              style: TextStyle(fontSize: 12.5, color: Color(0xFF9AA0B0))),
+          const SizedBox(height: 12),
+          TvTextField(
+              controller: ctl,
+              hint: 'API token',
+              icon: Icons.cloud_outlined,
+              obscure: true),
+        ],
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () async {
+            await svc.saveToken(ctl.text);
+            await svc.setEnabled(ctl.text.trim().isNotEmpty);
+            ref.read(rdRevProvider.notifier).state++;
+            ref.invalidate(rdEnabledProvider);
+            ref.invalidate(serviceHealthProvider);
             if (ctx.mounted) Navigator.pop(ctx);
           },
           child: const Text('Save'),
@@ -99,8 +144,11 @@ class SettingsScreen extends ConsumerWidget {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          const Text('Settings',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 16),
           const Text('Sources',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
           const SizedBox(height: 12),
           playlists.when(
             data: (list) => Column(
@@ -196,6 +244,41 @@ class SettingsScreen extends ConsumerWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _editTmdbKey(context, ref),
             ),
+          ),
+          const SizedBox(height: 28),
+          const Text('Playback',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          Card(
+            child: Consumer(builder: (context, ref, _) {
+              final on = ref.watch(rdEnabledProvider).valueOrNull ?? false;
+              return ListTile(
+                leading:
+                    const Icon(Icons.cloud_outlined, color: Color(0xFF35C759)),
+                title: const Text('Real-Debrid'),
+                subtitle: Text(on
+                    ? 'Enabled — pick IPTV or Debrid when playing'
+                    : 'Add your token to unlock premium streams'),
+                trailing: Switch(
+                  value: on,
+                  activeThumbColor: LumenTheme.accent,
+                  onChanged: (v) async {
+                    final svc =
+                        await ref.read(realDebridServiceProvider.future);
+                    if (v && ((await svc.token())?.isEmpty ?? true)) {
+                      // No token yet — collect it first.
+                      if (context.mounted) await _editRdToken(context, ref);
+                      return;
+                    }
+                    await svc.setEnabled(v);
+                    ref.read(rdRevProvider.notifier).state++;
+                    ref.invalidate(rdEnabledProvider);
+                    ref.invalidate(serviceHealthProvider);
+                  },
+                ),
+                onTap: () => _editRdToken(context, ref),
+              );
+            }),
           ),
         ],
       ),

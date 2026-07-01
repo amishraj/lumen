@@ -45,10 +45,12 @@ class LumenApp extends StatelessWidget {
             // so you can't get from one field to the next on a remote. We do this
             // for Up/Down (vertical field-to-field nav) but leave Left/Right alone
             // so desktop keyboard users keep in-field cursor movement.
-            SingleActivator(LogicalKeyboardKey.arrowUp):
-                DirectionalFocusIntent(TraversalDirection.up, ignoreTextFields: false),
+            SingleActivator(LogicalKeyboardKey.arrowUp): DirectionalFocusIntent(
+                TraversalDirection.up,
+                ignoreTextFields: false),
             SingleActivator(LogicalKeyboardKey.arrowDown):
-                DirectionalFocusIntent(TraversalDirection.down, ignoreTextFields: false),
+                DirectionalFocusIntent(TraversalDirection.down,
+                    ignoreTextFields: false),
             SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
             SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
           },

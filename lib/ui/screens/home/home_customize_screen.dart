@@ -33,8 +33,7 @@ class _State extends ConsumerState<HomeCustomizeScreen> {
     await saveHomeConfig(ref, enabledInOrder);
   }
 
-  String _label(String id) =>
-      kAllHomeRows.firstWhere((r) => r.id == id).label;
+  String _label(String id) => kAllHomeRows.firstWhere((r) => r.id == id).label;
 
   // Remote/keyboard has no drag gesture, so Up/Down buttons are the only way
   // to reorder without a pointer.
@@ -87,14 +86,16 @@ class _State extends ConsumerState<HomeCustomizeScreen> {
                       key: ValueKey(id),
                       margin: const EdgeInsets.symmetric(vertical: 5),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 2),
                         child: Row(
                           children: [
                             ReorderableDragStartListener(
                               index: i,
                               child: const Padding(
                                 padding: EdgeInsets.all(12),
-                                child: Icon(Icons.drag_handle, color: Color(0xFF6B7080)),
+                                child: Icon(Icons.drag_handle,
+                                    color: Color(0xFF6B7080)),
                               ),
                             ),
                             // Up/down move buttons — the remote/keyboard
@@ -126,7 +127,8 @@ class _State extends ConsumerState<HomeCustomizeScreen> {
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(_label(id),
-                                  style: const TextStyle(fontWeight: FontWeight.w600)),
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w600)),
                             ),
                             FocusableItem(
                               borderRadius: 18,
@@ -147,7 +149,9 @@ class _State extends ConsumerState<HomeCustomizeScreen> {
                                   width: 40,
                                   height: 24,
                                   padding: const EdgeInsets.all(3),
-                                  alignment: on ? Alignment.centerRight : Alignment.centerLeft,
+                                  alignment: on
+                                      ? Alignment.centerRight
+                                      : Alignment.centerLeft,
                                   decoration: BoxDecoration(
                                     color: on
                                         ? LumenTheme.accent
@@ -158,7 +162,8 @@ class _State extends ConsumerState<HomeCustomizeScreen> {
                                     width: 18,
                                     height: 18,
                                     decoration: const BoxDecoration(
-                                        color: Colors.white, shape: BoxShape.circle),
+                                        color: Colors.white,
+                                        shape: BoxShape.circle),
                                   ),
                                 ),
                               ),
