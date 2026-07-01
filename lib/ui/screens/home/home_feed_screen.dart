@@ -32,7 +32,9 @@ class HomeFeedScreen extends ConsumerWidget {
         ref.invalidate(continueWatchingProvider);
         ref.invalidate(recentlyWatchedProvider);
         ref.invalidate(favoritesListProvider);
+        ref.invalidate(traktConnectedProvider);
         ref.invalidate(traktWatchlistProvider);
+        ref.invalidate(traktListsProvider);
       },
       child: CustomScrollView(
         slivers: [
@@ -52,6 +54,9 @@ class HomeFeedScreen extends ConsumerWidget {
             ),
           // TMDB discovery rows (only when the user has added a key).
           const SliverToBoxAdapter(child: _TmdbSection()),
+          // Trakt watchlist — always shown when connected (self-hides when
+          // empty), so it no longer depends on being toggled into the config.
+          const SliverToBoxAdapter(child: _TraktRow()),
           // The user's custom Trakt lists, one row each.
           SliverToBoxAdapter(
             child: Consumer(builder: (context, ref, _) {
@@ -87,8 +92,8 @@ class HomeFeedScreen extends ConsumerWidget {
       case 'series':
         return _ContentRow(
             title: 'TV Shows', provider: kindSampleProvider(StreamKind.series));
-      case 'trakt_watchlist':
-        return const _TraktRow();
+      // trakt_watchlist is rendered always-on below (not via config) so a
+      // connected account's watchlist shows without being toggled in.
       default:
         return const SizedBox.shrink();
     }

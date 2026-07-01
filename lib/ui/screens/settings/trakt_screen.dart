@@ -113,15 +113,24 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
         children: [
           connected.maybeWhen(
             data: (isOn) => isOn
-                ? _ConnectedCard(
-                    username: username.valueOrNull,
-                    onDisconnect: () async {
-                      final svc = await ref.read(traktServiceProvider.future);
-                      await svc.disconnect();
-                      ref.invalidate(traktConnectedProvider);
-                      ref.invalidate(traktUsernameProvider);
-                      ref.invalidate(traktWatchlistProvider);
-                    },
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _ConnectedCard(
+                        username: username.valueOrNull,
+                        onDisconnect: () async {
+                          final svc =
+                              await ref.read(traktServiceProvider.future);
+                          await svc.disconnect();
+                          ref.invalidate(traktConnectedProvider);
+                          ref.invalidate(traktUsernameProvider);
+                          ref.invalidate(traktWatchlistProvider);
+                          ref.invalidate(traktListsProvider);
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      const _DiagnosticsPanel(),
+                    ],
                   )
                 : _setupForm(),
             orElse: () => const Center(child: CircularProgressIndicator()),
@@ -141,11 +150,12 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
         Text(
           _embedded
               ? 'Tap Connect — we\'ll open trakt.tv/activate in your browser. '
-                'Enter the code shown here and you\'re done.'
+                  'Enter the code shown here and you\'re done.'
               : 'Create a free API app at trakt.tv/oauth/applications (redirect '
-                'URI: urn:ietf:wg:oauth:2.0:oob), then paste its Client ID & '
-                'Secret below.',
-          style: const TextStyle(color: Color(0xFF9AA0B0), fontSize: 13, height: 1.4),
+                  'URI: urn:ietf:wg:oauth:2.0:oob), then paste its Client ID & '
+                  'Secret below.',
+          style: const TextStyle(
+              color: Color(0xFF9AA0B0), fontSize: 13, height: 1.4),
         ),
         const SizedBox(height: 16),
         if (!_embedded) ...[
@@ -159,7 +169,8 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
           TextField(
             controller: _secretCtl,
             decoration: const InputDecoration(
-                hintText: 'Trakt Client Secret', prefixIcon: Icon(Icons.lock_outline)),
+                hintText: 'Trakt Client Secret',
+                prefixIcon: Icon(Icons.lock_outline)),
             autocorrect: false,
             obscureText: true,
           ),
@@ -184,9 +195,121 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
         FilledButton.icon(
           onPressed: _polling ? null : _connect,
           icon: Icon(_polling ? Icons.hourglass_top : Icons.link),
-          label: Text(_polling ? 'Waiting for authorization…' : 'Connect with Trakt'),
+          label: Text(
+              _polling ? 'Waiting for authorization…' : 'Connect with Trakt'),
         ),
       ],
+    );
+  }
+}
+
+/// Live "is my account actually linked & serving data?" check. Runs each
+/// endpoint the home screen relies on and shows the real status + counts, so an
+/// empty home screen can be told apart from an auth failure.
+class _DiagnosticsPanel extends ConsumerStatefulWidget {
+  const _DiagnosticsPanel();
+
+  @override
+  ConsumerState<_DiagnosticsPanel> createState() => _DiagnosticsPanelState();
+}
+
+class _DiagnosticsPanelState extends ConsumerState<_DiagnosticsPanel> {
+  List<TraktCheck>? _results;
+  bool _running = false;
+
+  Future<void> _run() async {
+    setState(() => _running = true);
+    final svc = await ref.read(traktServiceProvider.future);
+    final res = await svc.diagnostics();
+    if (!mounted) return;
+    setState(() {
+      _results = res;
+      _running = false;
+    });
+    // A fresh check may have refreshed the token / username — refresh the UI
+    // and the home rows so anything that was blank repopulates.
+    ref.invalidate(traktConnectedProvider);
+    ref.invalidate(traktUsernameProvider);
+    ref.invalidate(traktWatchlistProvider);
+    ref.invalidate(traktListsProvider);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: LumenTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(children: [
+            const Icon(Icons.health_and_safety_outlined,
+                color: LumenTheme.accent, size: 20),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text('Sanity check',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+            ),
+            TextButton(
+              onPressed: _running ? null : _run,
+              child: Text(_running ? 'Checking…' : 'Run'),
+            ),
+          ]),
+          const Text(
+            'Verifies the account link and that each Trakt list actually '
+            'returns data.',
+            style: TextStyle(color: Color(0xFF9AA0B0), fontSize: 12.5),
+          ),
+          if (_results != null) ...[
+            const SizedBox(height: 12),
+            for (final c in _results!) _CheckRow(check: c),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _CheckRow extends StatelessWidget {
+  const _CheckRow({required this.check});
+  final TraktCheck check;
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = <String>[
+      if (check.count != null) '${check.count} items',
+      if (check.status != null) 'HTTP ${check.status}',
+      if (check.detail != null) check.detail!,
+    ];
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(check.ok ? Icons.check_circle : Icons.error_outline,
+              size: 18,
+              color:
+                  check.ok ? const Color(0xFF35C759) : const Color(0xFFED1C24)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(check.name,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 13.5)),
+                if (parts.isNotEmpty)
+                  Text(parts.join(' · '),
+                      style: const TextStyle(
+                          color: Color(0xFF9AA0B0), fontSize: 12)),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -254,7 +377,8 @@ class _ConnectedCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text('Trakt connected',
-                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                      style:
+                          TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                   if (username != null)
                     Text('@$username',
                         style: const TextStyle(color: Color(0xFF9AA0B0))),

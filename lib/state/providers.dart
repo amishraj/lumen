@@ -7,7 +7,8 @@ import '../data/repositories/library_repository.dart';
 import '../data/sources/trakt_service.dart';
 
 /// Database + repository singletons.
-final databaseProvider = FutureProvider<AppDatabase>((ref) => AppDatabase.open());
+final databaseProvider =
+    FutureProvider<AppDatabase>((ref) => AppDatabase.open());
 
 final repositoryProvider = FutureProvider<LibraryRepository>((ref) async {
   final db = await ref.watch(databaseProvider.future);
@@ -22,7 +23,8 @@ final playlistsProvider = FutureProvider<List<Playlist>>((ref) async {
 
 /// Currently selected source + content kind (live / movie / series).
 final activePlaylistProvider = StateProvider<Playlist?>((ref) => null);
-final selectedKindProvider = StateProvider<StreamKind>((ref) => StreamKind.live);
+final selectedKindProvider =
+    StateProvider<StreamKind>((ref) => StreamKind.live);
 
 /// Categories for the active source + kind.
 final categoriesProvider =
@@ -113,7 +115,8 @@ final groupedSearchProvider =
 // Home feed
 // ---------------------------------------------------------------------------
 
-final featuredProvider = FutureProvider.autoDispose<List<StreamItem>>((ref) async {
+final featuredProvider =
+    FutureProvider.autoDispose<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
@@ -128,9 +131,7 @@ final featuredProvider = FutureProvider.autoDispose<List<StreamItem>>((ref) asyn
           playlistId: pl!.id!, kind: StreamKind.movie, query: t.title);
       if (hits.isNotEmpty) {
         final m = hits.first;
-        if (m.id != null &&
-            seen.add(m.id!) &&
-            (m.logo?.isNotEmpty ?? false)) {
+        if (m.id != null && seen.add(m.id!) && (m.logo?.isNotEmpty ?? false)) {
           picks.add(m);
           if (picks.length >= 8) break;
         }
@@ -175,9 +176,9 @@ final watchedIdsProvider = FutureProvider.autoDispose<Set<int>>((ref) async {
   try {
     final connected = await ref.watch(traktConnectedProvider.future);
     if (connected) {
-      final last = int.tryParse(
-              await repo.getSetting('trakt_watched_sync_at') ?? '') ??
-          0;
+      final last =
+          int.tryParse(await repo.getSetting('trakt_watched_sync_at') ?? '') ??
+              0;
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       if (nowMs - last > 3600 * 1000) {
         final svc = await ref.watch(traktServiceProvider.future);
@@ -235,11 +236,12 @@ class HomeRow {
   const HomeRow(this.id, this.label);
 }
 
+// Note: the Trakt watchlist + custom lists render always-on when connected
+// (see home_feed_screen), so they're intentionally not toggleable rows here.
 const kAllHomeRows = <HomeRow>[
   HomeRow('continue', 'Continue Watching'),
   HomeRow('favorites', 'My Favorites'),
   HomeRow('recent', 'Recently Watched'),
-  HomeRow('trakt_watchlist', 'Trakt Watchlist'),
   HomeRow('movies', 'Movies for You'),
   HomeRow('series', 'TV Shows'),
 ];

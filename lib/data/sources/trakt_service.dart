@@ -146,6 +146,9 @@ class TraktService {
             'refresh_token': refresh,
             'client_id': clientId,
             'client_secret': clientSecret,
+            // Trakt requires redirect_uri on the refresh exchange too; the app
+            // is registered with the device-flow OOB uri, so match it here.
+            'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
             'grant_type': 'refresh_token',
           }));
       if (res.statusCode == 200) {
@@ -264,6 +267,68 @@ class TraktService {
 
   Future<List<TraktItem>> listItems(String listId) =>
       _itemsFrom('$_api/users/me/lists/$listId/items/movies,shows');
+
+  /// Live end-to-end sanity check: verifies the token, forces a refresh if the
+  /// account call 401s, and reports real HTTP status + counts for each Trakt
+  /// endpoint the home screen depends on. Nothing here is swallowed, so the
+  /// user can actually see *why* rows are empty.
+  Future<List<TraktCheck>> diagnostics() async {
+    final out = <TraktCheck>[];
+
+    final tok = await token();
+    out.add(TraktCheck('Access token',
+        ok: tok != null && tok.isNotEmpty,
+        detail: (tok == null || tok.isEmpty)
+            ? 'none saved — not connected'
+            : 'present'));
+    final cid = await _clientId();
+    out.add(TraktCheck('API key (client id)',
+        ok: cid != null && cid.isNotEmpty,
+        detail: (cid == null || cid.isEmpty) ? 'missing' : 'present'));
+
+    if (tok == null || tok.isEmpty) return out;
+
+    Future<void> probe(String label, String url,
+        {bool countList = true}) async {
+      try {
+        final res = await _authGet(url);
+        final d = res.data is String ? jsonDecode(res.data) : res.data;
+        final count = countList && d is List ? d.length : null;
+        out.add(TraktCheck(label,
+            ok: res.statusCode == 200,
+            status: res.statusCode,
+            count: count,
+            detail: res.statusCode == 200
+                ? null
+                : (res.statusCode == 401
+                    ? 'unauthorized — token refresh failed; reconnect'
+                    : 'HTTP ${res.statusCode}')));
+      } catch (e) {
+        out.add(TraktCheck(label, ok: false, detail: '$e'));
+      }
+    }
+
+    // Account: also confirms who we're linked to.
+    try {
+      final res = await _authGet('$_api/users/settings');
+      final d = res.data is String ? jsonDecode(res.data) : res.data;
+      final name =
+          d is Map ? (d['user']?['username'] ?? d['user']?['name']) : null;
+      if (name != null) await _repo.setSetting('trakt_username', '$name');
+      out.add(TraktCheck('Account',
+          ok: res.statusCode == 200 && name != null,
+          status: res.statusCode,
+          detail: name != null ? '@$name' : 'no user in response'));
+    } catch (e) {
+      out.add(TraktCheck('Account', ok: false, detail: '$e'));
+    }
+
+    await probe('Watchlist', '$_api/sync/watchlist');
+    await probe('Custom lists', '$_api/users/me/lists');
+    await probe('In-progress (playback)', '$_api/sync/playback');
+    await probe('Watched movies', '$_api/sync/watched/movies');
+    return out;
+  }
 
   /// In-progress playback (resume points) across the user's devices.
   Future<List<TraktPlayback>> playback() async {
@@ -430,6 +495,17 @@ class TraktPlayback {
   final TraktItem item;
   final double progress; // 0..1
   const TraktPlayback({required this.item, required this.progress});
+}
+
+/// One line of the Trakt connectivity sanity check.
+class TraktCheck {
+  final String name;
+  final bool ok;
+  final int? status;
+  final int? count;
+  final String? detail;
+  const TraktCheck(this.name,
+      {required this.ok, this.status, this.count, this.detail});
 }
 
 // ---- Providers -------------------------------------------------------------
