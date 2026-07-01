@@ -44,7 +44,25 @@
   }
   .btn:hover{filter:brightness(1.08)}
   .btn.ghost{background:var(--surface-hi);color:var(--text)}
-  .note{max-width:720px;margin:0 auto 70px;padding:20px 24px;color:var(--muted);
+  .tv{max-width:980px;margin:0 auto;padding:8px 24px 8px}
+  .tv-inner{
+    background:linear-gradient(120deg,#1B2348 0%,var(--surface) 70%);
+    border:1px solid #7b9bff33;border-radius:22px;padding:26px 28px;
+    display:flex;align-items:center;gap:22px;flex-wrap:wrap;
+  }
+  .tv-ic{font-size:40px;line-height:1}
+  .tv-inner .txt{flex:1;min-width:220px}
+  .tv-inner h2{font-size:21px;margin-bottom:4px}
+  .tv-inner p{color:var(--muted);font-size:13.5px}
+  .tv-inner p strong{color:var(--text)}
+  .code{
+    font-variant-numeric:tabular-nums;letter-spacing:6px;font-weight:800;
+    font-size:34px;color:var(--accent);background:var(--bg);
+    border:1px dashed #7b9bff66;border-radius:14px;padding:12px 20px;white-space:nowrap;
+  }
+  .code small{display:block;letter-spacing:0;font-size:11px;font-weight:600;
+    color:var(--muted);margin-top:4px;text-align:center}
+  .note{max-width:720px;margin:24px auto 70px;padding:20px 24px;color:var(--muted);
     font-size:13px;text-align:center}
   .note code{background:var(--surface-hi);padding:2px 7px;border-radius:6px;color:var(--accent)}
   footer{text-align:center;color:#5b6072;font-size:12px;padding:40px 0 60px}
@@ -59,6 +77,18 @@
     <span class="pill">Android · Google&nbsp;TV · iOS · macOS</span>
   </header>
 
+  <section class="tv">
+    <div class="tv-inner">
+      <div class="tv-ic">📺</div>
+      <div class="txt">
+        <h2>Fire TV / Android TV — fastest install</h2>
+        <p>Get the free <strong>Downloader</strong> app (by AFTVnews) from your
+          TV's app store, open it, and enter this code to grab the latest APK:</p>
+      </div>
+      <div class="code">7291112<small>Downloader code</small></div>
+    </div>
+  </section>
+
   <main class="grid">
     <div class="card">
       <div class="ic">🤖</div>
@@ -69,7 +99,7 @@
     <div class="card">
       <div class="ic">📺</div>
       <h3>Google TV / Android TV</h3>
-      <p>Sideload the same universal APK; it shows in the TV launcher.</p>
+      <p>Use Downloader code <strong style="color:var(--accent)">7291112</strong>, or sideload the universal APK below.</p>
       <a class="btn ghost" href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-universal.apk">Download APK</a>
     </div>
     <div class="card">
