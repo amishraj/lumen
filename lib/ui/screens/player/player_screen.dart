@@ -43,7 +43,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   late final VideoController _controller = VideoController(_player);
 
   late final List<StreamItem> _queue =
-      widget.queue == null || widget.queue!.isEmpty ? [widget.item] : widget.queue!;
+      widget.queue == null || widget.queue!.isEmpty
+          ? [widget.item]
+          : widget.queue!;
   late int _index = widget.startIndex.clamp(0, _queue.length - 1);
 
   StreamItem get _current => _queue[_index];
@@ -57,6 +59,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   int _lastPosMs = 0;
   int _lastDurMs = 0;
 
+  // Playback state driven straight off the libmpv streams so our own overlay
+  // can render a buffering spinner + play/pause + seek bar (we no longer use
+  // media_kit's built-in controls, which aren't remote-navigable).
+  bool _buffering = true;
+  bool _playing = true;
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  final List<StreamSubscription<dynamic>> _subs = [];
+
   // ---- Keyboard/remote controls overlay -------------------------------
   // Controls auto-hide so video can play full-screen, but any arrow/select
   // press (and not just a tap/mouse move) brings them back so the player is
@@ -64,7 +75,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _controlsVisible = true;
   Timer? _hideTimer;
   final FocusNode _rootFocus = FocusNode(debugLabel: 'player-root');
-  final FocusNode _firstControlFocus = FocusNode(debugLabel: 'player-first-control');
+  final FocusNode _firstControlFocus =
+      FocusNode(debugLabel: 'player-first-control');
 
   static final _wakeKeys = <LogicalKeyboardKey>{
     LogicalKeyboardKey.arrowUp,
@@ -82,6 +94,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // Listeners for the player's lifetime; they read _current.
     _player.stream.position.listen(_onPosition);
     _player.stream.completed.listen(_onCompleted);
+    // Drive the overlay's spinner / play-pause / seek bar.
+    _subs.add(_player.stream.buffering.listen((b) {
+      if (mounted) setState(() => _buffering = b);
+    }));
+    _subs.add(_player.stream.playing.listen((p) {
+      if (mounted) setState(() => _playing = p);
+    }));
+    _subs.add(_player.stream.position.listen((p) {
+      if (mounted) setState(() => _position = p);
+    }));
+    _subs.add(_player.stream.duration.listen((d) {
+      if (mounted) setState(() => _duration = d);
+    }));
     _init();
     _resetHideTimer();
   }
@@ -225,11 +250,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     if (!_sought && _resume != null && _resume! > 0.02 && _resume! < 0.9) {
       _sought = true;
-      await _player.seek(Duration(milliseconds: (dur.inMilliseconds * _resume!).round()));
+      await _player.seek(
+          Duration(milliseconds: (dur.inMilliseconds * _resume!).round()));
     }
     if (_current.id != null) {
       final repo = ref.read(repositoryProvider).valueOrNull;
-      await repo?.db.saveProgress(_current.id!, pos.inMilliseconds, dur.inMilliseconds);
+      await repo?.db
+          .saveProgress(_current.id!, pos.inMilliseconds, dur.inMilliseconds);
     }
     if (!_scrobbled && pos.inMilliseconds / dur.inMilliseconds >= 0.9) {
       _scrobbled = true;
@@ -257,6 +284,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void dispose() {
     _checkpoint();
     _hideTimer?.cancel();
+    for (final s in _subs) {
+      s.cancel();
+    }
     _rootFocus.dispose();
     _firstControlFocus.dispose();
     _player.dispose();
@@ -303,7 +333,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return parts.isEmpty ? 'Track $id' : parts.join(' · ');
   }
 
-  void _showTrackSheet({required String title, required List<_TrackOption> options}) {
+  void _showTrackSheet(
+      {required String title, required List<_TrackOption> options}) {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF15171F),
@@ -318,7 +349,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(title,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w800)),
               ),
             ),
             if (options.isEmpty)
@@ -334,8 +366,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   for (final o in options)
                     ListTile(
                       leading: Icon(
-                        o.selected ? Icons.radio_button_checked : Icons.radio_button_off,
-                        color: o.selected ? LumenTheme.accent : const Color(0xFF6B7080),
+                        o.selected
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                        color: o.selected
+                            ? LumenTheme.accent
+                            : const Color(0xFF6B7080),
                       ),
                       title: Text(o.label),
                       onTap: () {
@@ -361,152 +397,300 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     ref.invalidate(favoriteIdsProvider);
   }
 
+  void _togglePlay() {
+    _player.playOrPause();
+    _resetHideTimer();
+  }
+
+  static String _fmt(Duration d) {
+    final h = d.inHours;
+    final mm = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final ss = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasQueue = _queue.length > 1;
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = _current.id != null && favs.contains(_current.id);
+    final isLive = _current.kind == StreamKind.live;
+    // Spinner while libmpv fills its buffer — without this a slow live stream
+    // is just a black screen with no feedback.
+    final showSpinner = _buffering && !_reconnecting && _error == null;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Focus(
-        focusNode: _rootFocus,
-        autofocus: true,
-        skipTraversal: true,
-        canRequestFocus: true,
-        onKeyEvent: _onRootKey,
-        child: MouseRegion(
-          onHover: (_) => _showControls(focusFirst: false),
-          child: GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onTap: () => _controlsVisible ? _hideControls() : _showControls(),
-            child: Stack(
-              children: [
-                Center(
-                  child: _error != null
-                      ? _ErrorView(message: _error!, name: _current.name)
-                      : Video(
-                          controller: _controller,
-                          controls: NoVideoControls,
-                          fit: BoxFit.contain,
-                        ),
-                ),
-                if (_reconnecting)
-                  const ColoredBox(
-                    color: Colors.black54,
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircularProgressIndicator(color: LumenTheme.accent),
-                          SizedBox(height: 14),
-                          Text('Reconnecting to live stream…',
-                              style: TextStyle(color: Colors.white, fontSize: 13)),
-                        ],
-                      ),
-                    ),
+    return PopScope(
+      // While the controls overlay is up, Back should dismiss it rather than
+      // leave the player — only pop out once the controls are already hidden.
+      canPop: !_controlsVisible,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _controlsVisible) _hideControls();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Focus(
+          focusNode: _rootFocus,
+          autofocus: true,
+          skipTraversal: true,
+          canRequestFocus: true,
+          onKeyEvent: _onRootKey,
+          child: MouseRegion(
+            onHover: (_) => _showControls(focusFirst: false),
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: () => _controlsVisible ? _hideControls() : _showControls(),
+              child: Stack(
+                children: [
+                  Center(
+                    child: _error != null
+                        ? _ErrorView(message: _error!, name: _current.name)
+                        : Video(
+                            controller: _controller,
+                            controls: NoVideoControls,
+                            fit: BoxFit.contain,
+                          ),
                   ),
-                IgnorePointer(
-                  ignoring: !_controlsVisible,
-                  child: ExcludeFocus(
-                    excluding: !_controlsVisible,
-                    child: AnimatedOpacity(
-                      opacity: _controlsVisible ? 1 : 0,
-                      duration: const Duration(milliseconds: 200),
-                      child: Stack(
-                        children: [
-                          SafeArea(
-                            child: Row(
-                              children: [
-                                Padding(
-                                  padding: const EdgeInsets.all(8),
-                                  child: _RoundButton(
-                                    focusNode: _firstControlFocus,
-                                    icon: Icons.arrow_back,
-                                    tooltip: 'Back',
-                                    onTap: () => Navigator.of(context).maybePop(),
-                                    onActivity: _resetHideTimer,
-                                  ),
-                                ),
-                                const Spacer(),
-                                if (hasQueue)
-                                  _RoundButton(
-                                    icon: Icons.skip_previous,
-                                    tooltip: 'Previous episode',
-                                    enabled: _index > 0,
-                                    onTap: () => _skip(-1),
-                                    onActivity: _resetHideTimer,
-                                  ),
-                                if (hasQueue) const SizedBox(width: 6),
-                                if (hasQueue)
-                                  _RoundButton(
-                                    icon: Icons.skip_next,
-                                    tooltip: 'Next episode',
-                                    enabled: _index < _queue.length - 1,
-                                    onTap: () => _skip(1),
-                                    onActivity: _resetHideTimer,
-                                  ),
-                                if (hasQueue) const SizedBox(width: 6),
-                                if (_current.id != null)
-                                  _RoundButton(
-                                    icon: isFav ? Icons.favorite : Icons.favorite_border,
-                                    iconColor: isFav ? LumenTheme.accentWarm : null,
-                                    tooltip: isFav ? 'Remove from favorites' : 'Add to favorites',
-                                    onTap: _toggleFavorite,
-                                    onActivity: _resetHideTimer,
-                                  ),
-                                if (_current.id != null) const SizedBox(width: 6),
-                                if (_current.kind != StreamKind.live)
-                                  _RoundButton(
-                                    icon: Icons.closed_caption,
-                                    tooltip: 'Subtitles',
-                                    onTap: _pickSubtitle,
-                                    onActivity: _resetHideTimer,
-                                  ),
-                                const SizedBox(width: 6),
-                                _RoundButton(
-                                  icon: Icons.multitrack_audio,
-                                  tooltip: 'Audio track',
-                                  onTap: _pickAudio,
-                                  onActivity: _resetHideTimer,
-                                ),
-                                const SizedBox(width: 8),
+                  if (_reconnecting)
+                    const ColoredBox(
+                      color: Colors.black54,
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircularProgressIndicator(color: LumenTheme.accent),
+                            SizedBox(height: 14),
+                            Text('Reconnecting to live stream…',
+                                style: TextStyle(
+                                    color: Colors.white, fontSize: 13)),
+                          ],
+                        ),
+                      ),
+                    )
+                  // Buffering spinner shows regardless of the controls overlay
+                  // (but hidden behind the play/pause button when paused).
+                  else if (showSpinner)
+                    const Center(
+                        child: CircularProgressIndicator(
+                            color: LumenTheme.accent)),
+                  IgnorePointer(
+                    ignoring: !_controlsVisible,
+                    child: ExcludeFocus(
+                      excluding: !_controlsVisible,
+                      child: AnimatedOpacity(
+                        opacity: _controlsVisible ? 1 : 0,
+                        duration: const Duration(milliseconds: 200),
+                        child: Container(
+                          // Scrim so white controls stay legible over bright video.
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Color(0x99000000),
+                                Color(0x22000000),
+                                Color(0x99000000),
                               ],
+                              stops: [0.0, 0.5, 1.0],
                             ),
                           ),
-                          // Episode label
-                          if (hasQueue)
-                            SafeArea(
-                              child: Align(
-                                alignment: Alignment.topCenter,
-                                child: Padding(
-                                  padding: const EdgeInsets.only(top: 14),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 12, vertical: 5),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black54,
-                                      borderRadius: BorderRadius.circular(20),
+                          child: Stack(
+                            children: [
+                              // ---- Top bar: back + track / episode / fav ----
+                              SafeArea(
+                                child: Row(
+                                  children: [
+                                    Padding(
+                                      padding: const EdgeInsets.all(8),
+                                      child: _RoundButton(
+                                        icon: Icons.arrow_back,
+                                        tooltip: 'Back',
+                                        onTap: () =>
+                                            Navigator.of(context).maybePop(),
+                                        onActivity: _resetHideTimer,
+                                      ),
                                     ),
-                                    child: Text(_current.name,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                            color: Colors.white, fontSize: 12.5)),
+                                    const Spacer(),
+                                    if (hasQueue)
+                                      _RoundButton(
+                                        icon: Icons.skip_previous,
+                                        tooltip: 'Previous episode',
+                                        enabled: _index > 0,
+                                        onTap: () => _skip(-1),
+                                        onActivity: _resetHideTimer,
+                                      ),
+                                    if (hasQueue) const SizedBox(width: 6),
+                                    if (hasQueue)
+                                      _RoundButton(
+                                        icon: Icons.skip_next,
+                                        tooltip: 'Next episode',
+                                        enabled: _index < _queue.length - 1,
+                                        onTap: () => _skip(1),
+                                        onActivity: _resetHideTimer,
+                                      ),
+                                    if (hasQueue) const SizedBox(width: 6),
+                                    if (_current.id != null)
+                                      _RoundButton(
+                                        icon: isFav
+                                            ? Icons.favorite
+                                            : Icons.favorite_border,
+                                        iconColor: isFav
+                                            ? LumenTheme.accentWarm
+                                            : null,
+                                        tooltip: isFav
+                                            ? 'Remove from favorites'
+                                            : 'Add to favorites',
+                                        onTap: _toggleFavorite,
+                                        onActivity: _resetHideTimer,
+                                      ),
+                                    if (_current.id != null)
+                                      const SizedBox(width: 6),
+                                    if (!isLive)
+                                      _RoundButton(
+                                        icon: Icons.closed_caption,
+                                        tooltip: 'Subtitles',
+                                        onTap: _pickSubtitle,
+                                        onActivity: _resetHideTimer,
+                                      ),
+                                    const SizedBox(width: 6),
+                                    _RoundButton(
+                                      icon: Icons.multitrack_audio,
+                                      tooltip: 'Audio track',
+                                      onTap: _pickAudio,
+                                      onActivity: _resetHideTimer,
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ],
+                                ),
+                              ),
+                              // ---- Center: play / pause (hidden while buffering) ----
+                              if (!showSpinner)
+                                Center(
+                                  child: _RoundButton(
+                                    focusNode: _firstControlFocus,
+                                    big: true,
+                                    icon: _playing
+                                        ? Icons.pause
+                                        : Icons.play_arrow,
+                                    tooltip: _playing ? 'Pause' : 'Play',
+                                    onTap: _togglePlay,
+                                    onActivity: _resetHideTimer,
+                                  ),
+                                ),
+                              // ---- Bottom: title + seek bar (or LIVE pill) ----
+                              SafeArea(
+                                child: Align(
+                                  alignment: Alignment.bottomCenter,
+                                  child: Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        16, 0, 16, 12),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(_current.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w600)),
+                                        const SizedBox(height: 4),
+                                        if (isLive)
+                                          Row(children: [
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 3),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFED1C24),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
+                                              ),
+                                              child: const Text('● LIVE',
+                                                  style: TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 11,
+                                                      fontWeight:
+                                                          FontWeight.w800)),
+                                            ),
+                                          ])
+                                        else
+                                          _SeekBar(
+                                            position: _position,
+                                            duration: _duration,
+                                            onSeek: (d) {
+                                              _player.seek(d);
+                                              _resetHideTimer();
+                                            },
+                                            fmt: _fmt,
+                                          ),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                        ],
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Seek bar with elapsed / remaining labels. The [Slider] is natively
+/// focusable so Left/Right on a remote scrubs while it holds focus.
+class _SeekBar extends StatelessWidget {
+  const _SeekBar({
+    required this.position,
+    required this.duration,
+    required this.onSeek,
+    required this.fmt,
+  });
+  final Duration position;
+  final Duration duration;
+  final ValueChanged<Duration> onSeek;
+  final String Function(Duration) fmt;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxMs = duration.inMilliseconds;
+    final posMs = position.inMilliseconds.clamp(0, maxMs == 0 ? 0 : maxMs);
+    return Row(
+      children: [
+        Text(fmt(position),
+            style: const TextStyle(color: Colors.white, fontSize: 12)),
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 3,
+              activeTrackColor: LumenTheme.accent,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: LumenTheme.accent,
+              overlayColor: LumenTheme.accent.withValues(alpha: 0.2),
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+            ),
+            child: Slider(
+              value: posMs.toDouble(),
+              max: (maxMs == 0 ? 1 : maxMs).toDouble(),
+              onChanged: maxMs == 0
+                  ? null
+                  : (v) => onSeek(Duration(milliseconds: v.round())),
+            ),
+          ),
+        ),
+        Text(fmt(duration),
+            style: const TextStyle(color: Colors.white, fontSize: 12)),
+      ],
     );
   }
 }
@@ -527,6 +711,7 @@ class _RoundButton extends StatelessWidget {
     this.iconColor,
     this.focusNode,
     this.onActivity,
+    this.big = false,
   });
   final IconData icon;
   final VoidCallback onTap;
@@ -535,19 +720,22 @@ class _RoundButton extends StatelessWidget {
   final Color? iconColor;
   final FocusNode? focusNode;
   final VoidCallback? onActivity;
+  final bool big;
 
   @override
   Widget build(BuildContext context) {
     final button = FocusableItem(
       focusNode: focusNode,
-      borderRadius: 24,
+      borderRadius: big ? 40 : 24,
       onActivate: () {
         onActivity?.call();
         if (enabled) onTap();
       },
       builder: (context, focused) => CircleAvatar(
+        radius: big ? 34 : 20,
         backgroundColor: Colors.black54,
         child: Icon(icon,
+            size: big ? 40 : 24,
             color: !enabled
                 ? const Color(0xFF5B6072)
                 : (iconColor ?? Colors.white)),
@@ -569,11 +757,14 @@ class _ErrorView extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.error_outline, color: LumenTheme.accentWarm, size: 48),
+          const Icon(Icons.error_outline,
+              color: LumenTheme.accentWarm, size: 48),
           const SizedBox(height: 16),
           Text('Couldn\'t play "$name"',
               style: const TextStyle(
-                  color: Colors.white, fontWeight: FontWeight.w600, fontSize: 16)),
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 16)),
           const SizedBox(height: 8),
           Text(message,
               textAlign: TextAlign.center,
