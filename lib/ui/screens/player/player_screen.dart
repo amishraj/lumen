@@ -504,8 +504,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                       child: _RoundButton(
                                         icon: Icons.arrow_back,
                                         tooltip: 'Back',
+                                        // Explicit tap = deliberate exit, so pop
+                                        // directly instead of maybePop(), which
+                                        // the PopScope above blocks while the
+                                        // controls overlay is visible (that
+                                        // guard is only meant for system/
+                                        // hardware back — see canPop below).
                                         onTap: () =>
-                                            Navigator.of(context).maybePop(),
+                                            Navigator.of(context).pop(),
                                         onActivity: _resetHideTimer,
                                       ),
                                     ),
