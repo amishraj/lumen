@@ -110,10 +110,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ref.read(activePlaylistProvider.notifier).state = list.first;
           });
         } else if (!_kickedOffSync) {
-          // Refresh the active source in the background on first load so the
-          // library is current, without blocking the UI.
+          // Refresh the active source in the background — but only once the
+          // first screensful have painted and queried. Kicking it off
+          // immediately competed with the initial category/page queries and
+          // made first browse feel sluggish.
           _kickedOffSync = true;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
+          Future.delayed(const Duration(seconds: 6), () {
+            if (!mounted) return;
             ref.read(syncControllerProvider.notifier).resync(active);
           });
         }

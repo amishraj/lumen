@@ -9,6 +9,7 @@ import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../../state/service_status.dart';
 import '../../theme/lumen_theme.dart';
+import '../../widgets/rd_connect_sheet.dart';
 import '../../widgets/service_status_view.dart';
 import '../../widgets/tv_text_field.dart';
 import '../home/home_customize_screen.dart';
@@ -66,9 +67,9 @@ Future<void> _editRdToken(BuildContext context, WidgetRef ref) async {
         mainAxisSize: MainAxisSize.min,
         children: [
           const Text(
-              'Paste your private API token from real-debrid.com/apitoken. '
-              'It stays on this device and is used only to resolve premium '
-              'streams. Requires an active RD premium subscription.',
+              'Manual alternative to the code flow: paste your private API '
+              'token from real-debrid.com/apitoken. It stays on this device '
+              'and is used only to resolve premium streams.',
               style: TextStyle(fontSize: 12.5, color: Color(0xFF9AA0B0))),
           const SizedBox(height: 12),
           TvTextField(
@@ -266,8 +267,9 @@ class SettingsScreen extends ConsumerWidget {
                     final svc =
                         await ref.read(realDebridServiceProvider.future);
                     if (v && ((await svc.token())?.isEmpty ?? true)) {
-                      // No token yet — collect it first.
-                      if (context.mounted) await _editRdToken(context, ref);
+                      // No token yet — run the code-based connect flow.
+                      if (context.mounted)
+                        await showRdConnectSheet(context, ref);
                       return;
                     }
                     await svc.setEnabled(v);
@@ -276,7 +278,18 @@ class SettingsScreen extends ConsumerWidget {
                     ref.invalidate(serviceHealthProvider);
                   },
                 ),
-                onTap: () => _editRdToken(context, ref),
+                // Code flow first; the manual token dialog stays available
+                // once connected (to inspect/replace the credential).
+                onTap: () async {
+                  final svc = await ref.read(realDebridServiceProvider.future);
+                  final hasToken = (await svc.token())?.isNotEmpty ?? false;
+                  if (!context.mounted) return;
+                  if (hasToken) {
+                    await _editRdToken(context, ref);
+                  } else {
+                    await showRdConnectSheet(context, ref);
+                  }
+                },
               );
             }),
           ),

@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/sources/trakt_service.dart';
+import '../../data/sources/realdebrid_service.dart';
+import '../../data/sources/tmdb_service.dart';
 import '../../state/providers.dart';
 import '../../state/service_status.dart';
 import '../theme/lumen_theme.dart';
@@ -79,10 +80,14 @@ class ServiceStatusList extends ConsumerWidget {
               TextButton.icon(
                 onPressed: () {
                   ref.invalidate(serviceHealthProvider);
-                  // Also refresh home data that depends on these services.
-                  ref.invalidate(featuredProvider);
-                  ref.invalidate(traktWatchlistProvider);
-                  ref.invalidate(traktListsProvider);
+                  // Refresh everything the home screen derives from these
+                  // services — including the connected-state gate, which the
+                  // old code missed (Retry looked like it "did nothing").
+                  refreshTraktData(ref);
+                  ref.read(tmdbKeyRevProvider.notifier).state++;
+                  ref.invalidate(tmdbEnabledProvider);
+                  ref.read(rdRevProvider.notifier).state++;
+                  ref.invalidate(rdEnabledProvider);
                 },
                 icon: const Icon(Icons.refresh, size: 18),
                 label: const Text('Retry'),

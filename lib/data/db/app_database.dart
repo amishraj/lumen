@@ -293,57 +293,63 @@ class AppDatabase {
     void Function(int written)? onProgress,
     int batchSize = 800,
   }) async {
-    // Clear old rows + their FTS shadow.
-    if (ftsAvailable) {
-      await db.execute(
-          'DELETE FROM streams_fts WHERE rowid IN (SELECT id FROM streams WHERE playlist_id=?)',
-          [playlistId]);
-    }
-    await db.delete('streams', where: 'playlist_id=?', whereArgs: [playlistId]);
-
+    // One atomic transaction for the whole swap. Crucially, in WAL mode
+    // readers keep seeing the *old* snapshot until commit — so a background
+    // re-sync never leaves browsing with an empty/half-written library (which
+    // is what made channels/movies crawl or vanish during startup refresh).
     int written = 0;
-    final iter = items.iterator;
-    var done = false;
-    while (!done) {
-      final batch = db.batch();
-      int n = 0;
-      while (n < batchSize) {
-        if (!iter.moveNext()) {
-          done = true;
-          break;
-        }
-        final it = iter.current;
-        batch.rawInsert(
-          'INSERT INTO streams(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating) '
-          'VALUES(?,?,?,?,?,?,?,?,?)',
-          [
-            playlistId,
-            it.kind.name,
-            it.name,
-            it.logo,
-            it.url,
-            it.groupTitle,
-            it.tvgId,
-            it.num,
-            it.rating,
-          ],
-        );
-        n++;
+    await db.transaction((txn) async {
+      if (ftsAvailable) {
+        await txn.execute(
+            'DELETE FROM streams_fts WHERE rowid IN (SELECT id FROM streams WHERE playlist_id=?)',
+            [playlistId]);
       }
-      if (n == 0) break;
-      await batch.commit(noResult: true, continueOnError: true);
-      written += n;
-      onProgress?.call(written);
-    }
+      await txn
+          .delete('streams', where: 'playlist_id=?', whereArgs: [playlistId]);
 
-    // Populate the FTS shadow in one pass over the freshly inserted rows.
-    // A single INSERT..SELECT is far faster than per-row FTS writes during ingest.
-    if (ftsAvailable) {
-      await db.execute(
-          'INSERT INTO streams_fts(rowid, name) '
-          'SELECT id, name FROM streams WHERE playlist_id=?',
-          [playlistId]);
-    }
+      final iter = items.iterator;
+      var done = false;
+      while (!done) {
+        final batch = txn.batch();
+        int n = 0;
+        while (n < batchSize) {
+          if (!iter.moveNext()) {
+            done = true;
+            break;
+          }
+          final it = iter.current;
+          batch.rawInsert(
+            'INSERT INTO streams(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating) '
+            'VALUES(?,?,?,?,?,?,?,?,?)',
+            [
+              playlistId,
+              it.kind.name,
+              it.name,
+              it.logo,
+              it.url,
+              it.groupTitle,
+              it.tvgId,
+              it.num,
+              it.rating,
+            ],
+          );
+          n++;
+        }
+        if (n == 0) break;
+        await batch.commit(noResult: true, continueOnError: true);
+        written += n;
+        onProgress?.call(written);
+      }
+
+      // Populate the FTS shadow in one pass over the freshly inserted rows.
+      // A single INSERT..SELECT is far faster than per-row FTS writes.
+      if (ftsAvailable) {
+        await txn.execute(
+            'INSERT INTO streams_fts(rowid, name) '
+            'SELECT id, name FROM streams WHERE playlist_id=?',
+            [playlistId]);
+      }
+    });
 
     return written;
   }

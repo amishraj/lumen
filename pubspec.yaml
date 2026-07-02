@@ -1,7 +1,7 @@
 name: lumen
 description: "Lumen — a buttery-smooth personal IPTV player for Android, Google TV, iOS & macOS."
 publish_to: "none"
-version: 1.0.23+24
+version: 1.0.24+25
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

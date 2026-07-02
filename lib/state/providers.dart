@@ -284,6 +284,19 @@ final favoriteIdsProvider = FutureProvider<Set<int>>((ref) async {
   return repo.favoriteIds();
 });
 
+/// Refresh every provider that depends on the Trakt account. Must be called
+/// after connect / disconnect / a health-check retry: home data is
+/// session-cached now, so any provider missed here simply never updates.
+void refreshTraktData(WidgetRef ref) {
+  ref.invalidate(traktConnectedProvider);
+  ref.invalidate(traktUsernameProvider);
+  ref.invalidate(traktWatchlistProvider);
+  ref.invalidate(traktListsProvider);
+  ref.invalidate(featuredProvider);
+  ref.invalidate(continueWatchingProvider);
+  ref.invalidate(watchedIdsProvider);
+}
+
 /// Single entry point for favoriting: toggles locally, refreshes the favorite
 /// providers, and (for movies/shows) mirrors the change onto the Trakt
 /// watchlist so "My List" and Trakt stay the same list.

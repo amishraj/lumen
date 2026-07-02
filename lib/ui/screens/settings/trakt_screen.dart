@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../data/sources/trakt_service.dart';
+import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/tv_text_field.dart';
 
@@ -77,9 +78,9 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
       try {
         final ok = await svc.pollToken(code.deviceCode);
         if (ok) {
-          ref.invalidate(traktConnectedProvider);
-          ref.invalidate(traktUsernameProvider);
-          ref.invalidate(traktWatchlistProvider);
+          // Home data is session-cached — refresh everything Trakt-backed so
+          // the home screen reflects the new account immediately.
+          refreshTraktData(ref);
           if (mounted) {
             setState(() {
               _polling = false;
@@ -123,10 +124,7 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
                           final svc =
                               await ref.read(traktServiceProvider.future);
                           await svc.disconnect();
-                          ref.invalidate(traktConnectedProvider);
-                          ref.invalidate(traktUsernameProvider);
-                          ref.invalidate(traktWatchlistProvider);
-                          ref.invalidate(traktListsProvider);
+                          refreshTraktData(ref);
                         },
                       ),
                       const SizedBox(height: 16),
@@ -222,10 +220,7 @@ class _DiagnosticsPanelState extends ConsumerState<_DiagnosticsPanel> {
     });
     // A fresh check may have refreshed the token / username — refresh the UI
     // and the home rows so anything that was blank repopulates.
-    ref.invalidate(traktConnectedProvider);
-    ref.invalidate(traktUsernameProvider);
-    ref.invalidate(traktWatchlistProvider);
-    ref.invalidate(traktListsProvider);
+    refreshTraktData(ref);
   }
 
   @override

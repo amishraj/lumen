@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
-import '../../../data/sources/realdebrid_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/focusable_item.dart';
+import '../../widgets/rd_connect_sheet.dart';
 import '../../widgets/tv_text_field.dart';
 
 /// Add an M3U playlist or Xtream Codes account, then run the first sync with
@@ -26,7 +26,6 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
   final _userCtl = TextEditingController();
   final _passCtl = TextEditingController();
   final _portalCtl = TextEditingController();
-  final _rdTokenCtl = TextEditingController();
 
   String? _status;
   bool _busy = false;
@@ -35,6 +34,7 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
   /// false = IPTV only, true = IPTV + Real-Debrid. When this screen is pushed
   /// from Settings the chooser is skipped entirely.
   bool? _withDebrid;
+  bool _rdConnected = false;
 
   @override
   void dispose() {
@@ -44,7 +44,6 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
     _userCtl.dispose();
     _passCtl.dispose();
     _portalCtl.dispose();
-    _rdTokenCtl.dispose();
     super.dispose();
   }
 
@@ -75,14 +74,6 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
     });
 
     try {
-      // Save the Real-Debrid token first if the user opted in during setup.
-      if (_withDebrid == true && _rdTokenCtl.text.trim().isNotEmpty) {
-        final rd = await ref.read(realDebridServiceProvider.future);
-        await rd.saveToken(_rdTokenCtl.text);
-        await rd.setEnabled(true);
-        ref.read(rdRevProvider.notifier).state++;
-        ref.invalidate(rdEnabledProvider);
-      }
       final saved = await repo.addPlaylist(pl);
       await for (final p in repo.sync(saved)) {
         if (!mounted) return;
@@ -203,9 +194,12 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
             child: ConstrainedBox(
               // Keep the form comfortably narrow on tablets / TV / desktop.
               constraints: const BoxConstraints(maxWidth: 520),
-              child: Padding(
+              child: SingleChildScrollView(
+                // Scrollable so the on-screen keyboard never covers the field
+                // being edited — the focused TextField auto-scrolls into view.
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
                 child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     if (pushed)
@@ -246,7 +240,7 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                     const SizedBox(height: 22),
                     // First run: choose the watching mode before the form.
                     if (!pushed && _withDebrid == null)
-                      Expanded(child: _modeChooser())
+                      _modeChooser()
                     else ...[
                       // Segmented source-type switch.
                       Container(
@@ -274,7 +268,8 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                         ),
                       ),
                       const SizedBox(height: 18),
-                      Expanded(
+                      SizedBox(
+                        height: 330,
                         child: TabBarView(
                           controller: _tab,
                           physics: _busy
@@ -283,13 +278,46 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                           children: [_m3uForm(), _xtreamForm()],
                         ),
                       ),
+                      const SizedBox(height: 4),
                       if (_withDebrid == true) ...[
-                        TvTextField(
-                          controller: _rdTokenCtl,
-                          hint:
-                              'Real-Debrid API token (real-debrid.com/apitoken)',
-                          icon: Icons.cloud_outlined,
-                          obscure: true,
+                        FocusableItem(
+                          borderRadius: 14,
+                          onActivate: () async {
+                            final ok = await showRdConnectSheet(context, ref);
+                            if (ok && mounted)
+                              setState(() => _rdConnected = true);
+                          },
+                          builder: (context, focused) => Container(
+                            height: 52,
+                            padding: const EdgeInsets.symmetric(horizontal: 14),
+                            decoration: BoxDecoration(
+                              color: LumenTheme.surface,
+                              borderRadius: BorderRadius.circular(14),
+                              border:
+                                  Border.all(color: const Color(0xFF2A2E3A)),
+                            ),
+                            child: Row(children: [
+                              Icon(
+                                  _rdConnected
+                                      ? Icons.check_circle
+                                      : Icons.cloud_outlined,
+                                  size: 20,
+                                  color: _rdConnected
+                                      ? const Color(0xFF35C759)
+                                      : const Color(0xFF9AA0B0)),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  _rdConnected
+                                      ? 'Real-Debrid connected'
+                                      : 'Connect Real-Debrid (enter a code)',
+                                  style: const TextStyle(fontSize: 14.5),
+                                ),
+                              ),
+                              const Icon(Icons.chevron_right,
+                                  size: 18, color: Color(0xFF6B7080)),
+                            ]),
+                          ),
                         ),
                         const SizedBox(height: 12),
                       ],

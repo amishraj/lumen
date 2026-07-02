@@ -75,11 +75,12 @@ class SyncController extends StateNotifier<SyncState> {
   /// [state] so the top bar can show a live indicator. Invalidates the home
   /// providers on completion so freshly-synced content appears.
   ///
-  /// [minInterval] skips the sync if the source was refreshed very recently, so
-  /// rapid relaunches don't re-download + re-parse a 40k-channel playlist every
-  /// time; pass Duration.zero to force it (the manual re-sync button does).
+  /// [minInterval] skips the sync if the source was refreshed recently —
+  /// playlists rarely change, and re-downloading + re-parsing 40k channels on
+  /// every launch made browsing feel slow. Manual re-sync (Settings) always
+  /// forces it with Duration.zero.
   Future<void> resync(Playlist pl,
-      {Duration minInterval = const Duration(minutes: 15)}) async {
+      {Duration minInterval = const Duration(hours: 12)}) async {
     if (state.running || pl.id == null) return;
     final last = pl.lastSyncedAt;
     if (last != null && minInterval > Duration.zero) {

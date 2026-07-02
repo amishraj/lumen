@@ -106,6 +106,9 @@ class _TvTextFieldState extends State<TvTextField> {
           keyboardType: widget.keyboard,
           autocorrect: false,
           enableSuggestions: false,
+          // Keep the field comfortably above the on-screen keyboard when the
+          // enclosing scrollable auto-scrolls it into view.
+          scrollPadding: const EdgeInsets.only(bottom: 140),
           style: TextStyle(fontSize: widget.dense ? 14 : 15),
           textInputAction: TextInputAction.done,
           onChanged: widget.onChanged,

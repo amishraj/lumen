@@ -21,7 +21,12 @@ class RealDebridService {
   final LibraryRepository _repo;
 
   static const _api = 'https://api.real-debrid.com/rest/1.0';
+  static const _oauth = 'https://api.real-debrid.com/oauth/v2';
   static const _torrentio = 'https://torrentio.strem.fun';
+
+  /// Real-Debrid's published client id for open-source apps — used only to
+  /// start the device flow; RD then issues per-user credentials.
+  static const _openSourceClientId = 'X245A4XAIBGVM';
 
   final _dio = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 15),
@@ -30,7 +35,96 @@ class RealDebridService {
   ));
 
   Future<String?> token() => _repo.getSetting('rd_token');
-  Future<void> saveToken(String t) => _repo.setSetting('rd_token', t.trim());
+
+  /// Manual API-token path (real-debrid.com/apitoken). Clears any OAuth
+  /// session state — private tokens don't expire or refresh.
+  Future<void> saveToken(String t) async {
+    await _repo.setSetting('rd_token', t.trim());
+    await _repo.setSetting('rd_refresh_token', null);
+    await _repo.setSetting('rd_oauth_client_id', null);
+    await _repo.setSetting('rd_oauth_client_secret', null);
+    await _repo.setSetting('rd_token_expires_at', null);
+  }
+
+  // ---- Device-code OAuth (Trakt-style "enter a code") ---------------------
+
+  /// Step 1: get a short code for the user to enter at real-debrid.com/device.
+  Future<RdDeviceCode> requestDeviceCode() async {
+    final res = await _dio.get('$_oauth/device/code', queryParameters: {
+      'client_id': _openSourceClientId,
+      'new_credentials': 'yes',
+    });
+    if (res.statusCode != 200) {
+      throw Exception('Real-Debrid rejected the request (${res.statusCode}).');
+    }
+    final d = res.data is String ? jsonDecode(res.data) : res.data;
+    return RdDeviceCode(
+      deviceCode: '${d['device_code']}',
+      userCode: '${d['user_code']}',
+      verificationUrl:
+          '${d['verification_url'] ?? 'https://real-debrid.com/device'}',
+      intervalSecs: (d['interval'] as num?)?.toInt() ?? 5,
+      expiresInSecs: (d['expires_in'] as num?)?.toInt() ?? 600,
+    );
+  }
+
+  /// Step 2: poll once. Returns true when the user has authorized — at that
+  /// point per-user credentials + tokens are saved and RD is enabled.
+  Future<bool> pollDeviceAuth(String deviceCode) async {
+    final res = await _dio.get('$_oauth/device/credentials', queryParameters: {
+      'client_id': _openSourceClientId,
+      'code': deviceCode,
+    });
+    if (res.statusCode != 200) return false; // 403 = still pending
+    final d = res.data is String ? jsonDecode(res.data) : res.data;
+    final cid = d is Map ? '${d['client_id'] ?? ''}' : '';
+    final secret = d is Map ? '${d['client_secret'] ?? ''}' : '';
+    if (cid.isEmpty || secret.isEmpty) return false;
+    await _repo.setSetting('rd_oauth_client_id', cid);
+    await _repo.setSetting('rd_oauth_client_secret', secret);
+    final ok = await _exchangeToken(cid, secret, deviceCode);
+    if (ok) await setEnabled(true);
+    return ok;
+  }
+
+  Future<bool> _exchangeToken(String cid, String secret, String code) async {
+    final res = await _dio.post('$_oauth/token',
+        data: {
+          'client_id': cid,
+          'client_secret': secret,
+          'code': code,
+          'grant_type': 'http://oauth.net/grant_type/device/1.0',
+        },
+        options: Options(contentType: Headers.formUrlEncodedContentType));
+    if (res.statusCode != 200) return false;
+    final d = res.data is String ? jsonDecode(res.data) : res.data;
+    if (d is! Map || d['access_token'] == null) return false;
+    await _repo.setSetting('rd_token', '${d['access_token']}');
+    await _repo.setSetting('rd_refresh_token', '${d['refresh_token'] ?? ''}');
+    final ttl = (d['expires_in'] as num?)?.toInt() ?? 3600;
+    await _repo.setSetting('rd_token_expires_at',
+        '${DateTime.now().millisecondsSinceEpoch + ttl * 1000}');
+    return true;
+  }
+
+  /// OAuth access tokens expire (~1h); refresh transparently. Manual API
+  /// tokens (no refresh token stored) pass through untouched.
+  Future<String?> freshToken() async {
+    final t = await token();
+    final refresh = await _repo.getSetting('rd_refresh_token');
+    if (t == null || refresh == null || refresh.isEmpty) return t;
+    final expiresAt =
+        int.tryParse(await _repo.getSetting('rd_token_expires_at') ?? '') ?? 0;
+    if (DateTime.now().millisecondsSinceEpoch < expiresAt - 60000) return t;
+    final cid = await _repo.getSetting('rd_oauth_client_id');
+    final secret = await _repo.getSetting('rd_oauth_client_secret');
+    if (cid == null || secret == null) return t;
+    try {
+      final ok = await _exchangeToken(cid, secret, refresh);
+      if (ok) return token();
+    } catch (_) {/* keep the old token; RD may still accept it */}
+    return t;
+  }
 
   Future<bool> get enabled async =>
       (await _repo.getSetting('rd_enabled')) == '1' &&
@@ -41,7 +135,7 @@ class RealDebridService {
 
   /// Fast health probe: does the token authenticate, and is premium active?
   Future<({bool configured, bool ok, String detail})> ping() async {
-    final t = await token();
+    final t = await freshToken();
     if (t == null || t.isEmpty) {
       return (configured: false, ok: false, detail: 'No token');
     }
@@ -81,7 +175,7 @@ class RealDebridService {
   /// high quality without pointless 60 GB remux downloads.
   Future<List<RdStream>> streams(String imdbId,
       {int? season, int? episode}) async {
-    final t = await token();
+    final t = await freshToken();
     if (t == null || t.isEmpty) return [];
     final isEpisode = season != null && episode != null;
     final path = isEpisode
@@ -149,6 +243,22 @@ class RealDebridService {
     if (v == null) return null;
     return (m.group(2) == 'G' ? v * 1024 : v).round();
   }
+}
+
+/// Device-flow code shown to the user (enter at real-debrid.com/device).
+class RdDeviceCode {
+  final String deviceCode;
+  final String userCode;
+  final String verificationUrl;
+  final int intervalSecs;
+  final int expiresInSecs;
+  const RdDeviceCode({
+    required this.deviceCode,
+    required this.userCode,
+    required this.verificationUrl,
+    required this.intervalSecs,
+    required this.expiresInSecs,
+  });
 }
 
 /// One playable debrid stream option.
