@@ -9,6 +9,7 @@ import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../navigation.dart';
 import '../../theme/lumen_theme.dart';
+import '../../title_utils.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/logo_image.dart';
 import '../../widgets/poster_card.dart';
@@ -305,7 +306,7 @@ class _HeroBillboard extends ConsumerWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  item.name,
+                  cleanTitle(item.name).title,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -658,6 +659,14 @@ class _TraktChip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Banner art from TMDB (DB-cached per title); text-card fallback when
+    // there's no key or no match.
+    final art = ref
+        .watch(tmdbDetailProvider(
+            (title: item.title, isShow: item.type == 'show')))
+        .valueOrNull
+        ?.backdrop;
+
     return FocusableItem(
       borderRadius: 14,
       onActivate: () async {
@@ -674,28 +683,56 @@ class _TraktChip extends ConsumerWidget {
               content: Text('"${item.title}" not found in your library.')));
         }
       },
-      builder: (context, focused) => Container(
-        width: 160,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: LumenTheme.surface,
+      builder: (context, focused) => SizedBox(
+        width: 164,
+        child: ClipRRect(
           borderRadius: BorderRadius.circular(14),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(item.title,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-            const SizedBox(height: 4),
-            Text(
-                '${item.type == 'show' ? 'TV' : 'Movie'}'
-                '${item.year != null ? ' · ${item.year}' : ''}',
-                style: const TextStyle(color: Color(0xFF9AA0B0), fontSize: 11)),
-          ],
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (art != null)
+                LogoImage(
+                    url: art,
+                    size: 164,
+                    height: 92,
+                    radius: 0,
+                    fallbackText: item.title)
+              else
+                const ColoredBox(color: LumenTheme.surface),
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [Color(0xCC000000), Colors.transparent],
+                    stops: [0.0, 0.7],
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 10,
+                right: 10,
+                bottom: 7,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12.5)),
+                    Text(
+                        '${item.type == 'show' ? 'TV' : 'Movie'}'
+                        '${item.year != null ? ' · ${item.year}' : ''}',
+                        style: const TextStyle(
+                            color: Color(0xFFB9BECD), fontSize: 10.5)),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

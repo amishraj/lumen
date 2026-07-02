@@ -334,16 +334,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
     _rootFocus.dispose();
     _firstControlFocus.dispose();
-    // Tear the player down deterministically. Player.dispose() is async and,
-    // on Android in particular, the currently-buffered audio can keep playing
-    // after the route is gone if we only fire-and-forget dispose(). Stopping
-    // first halts the audio output immediately; dispose() then frees libmpv.
+    // Tear the player down deterministically. The naive `stop(); dispose();`
+    // could still leak audio: if stop() stalls on a dead network socket its
+    // await never completes and dispose() never runs — playback continues
+    // headless in the background. So: mute *immediately* (cheap property set,
+    // silences output even if teardown lags), then pause/stop with hard
+    // timeouts, then dispose unconditionally.
     final player = _player;
     () async {
       try {
-        await player.stop();
-      } catch (_) {/* ignore — we're tearing down anyway */}
-      await player.dispose();
+        unawaited(player.setVolume(0));
+        unawaited(player.pause());
+      } catch (_) {/* already tearing down */}
+      try {
+        await player.stop().timeout(const Duration(seconds: 3));
+      } catch (_) {/* stalled or already stopped — dispose regardless */}
+      try {
+        await player.dispose().timeout(const Duration(seconds: 5));
+      } catch (_) {/* libmpv wedged — nothing more we can do */}
     }();
     super.dispose();
   }

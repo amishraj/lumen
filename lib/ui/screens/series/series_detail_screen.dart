@@ -5,6 +5,7 @@ import '../../../data/models/models.dart';
 import '../../../data/sources/omdb_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../../title_utils.dart';
 import '../../widgets/logo_image.dart';
 import '../../widgets/rating_badges.dart';
 import '../player/player_screen.dart';
@@ -78,7 +79,7 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
             expandedHeight: 260,
             pinned: true,
             flexibleSpace: FlexibleSpaceBar(
-              title: Text(widget.series.name,
+              title: Text(cleanTitle(widget.series.name).title,
                   maxLines: 1, overflow: TextOverflow.ellipsis),
               background: Stack(
                 fit: StackFit.expand,

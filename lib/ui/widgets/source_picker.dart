@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/sources/realdebrid_service.dart';
 import '../theme/lumen_theme.dart';
+import '../title_utils.dart';
 
 /// The stream the user picked in [showSourcePicker].
 class PickedSource {
@@ -70,11 +71,11 @@ class _SourceSheetState extends ConsumerState<_SourceSheet> {
 
   Future<void> _resolve() async {
     try {
-      // Strip provider prefixes ("EN | ") before matching the title.
-      final clean = widget.title
-          .replaceAll(RegExp(r'^\s*[A-Z]{2,3}\s*[|:-]\s*'), '')
-          .replaceAll(RegExp(r'^S\d+E\d+\s*·\s*'), '')
-          .trim();
+      // Clean provider noise (numbering, "EN -", quality tags, episode
+      // prefixes) so the IMDb lookup sees the real title.
+      final clean =
+          cleanTitle(widget.title.replaceAll(RegExp(r'^S\d+E\d+\s*·\s*'), ''))
+              .title;
       final imdb = await imdbIdForTitle(ref, clean, isShow: widget.isShow);
       if (imdb == null) {
         if (mounted) {

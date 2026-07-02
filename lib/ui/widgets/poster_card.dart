@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/models/models.dart';
 import '../../state/providers.dart';
 import '../theme/lumen_theme.dart';
+import '../title_utils.dart';
 import 'focusable_item.dart';
 import 'logo_image.dart';
 
@@ -74,13 +75,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                   ],
                 ),
                 const SizedBox(height: 6),
-                Text(
-                  item.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 12.5, fontWeight: FontWeight.w600),
-                ),
+                _TitleLine(item: item, light: false),
                 if (item.rating != null && item.rating! > 0)
                   Row(children: [
                     const Icon(Icons.star_rounded,
@@ -147,17 +142,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                     bottom: 8,
                     child: Row(
                       children: [
-                        Expanded(
-                          child: Text(
-                            item.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w700),
-                          ),
-                        ),
+                        Expanded(child: _TitleLine(item: item, light: true)),
                         if (item.rating != null && item.rating! > 0) ...[
                           const Icon(Icons.star_rounded,
                               size: 12, color: LumenTheme.accentWarm),
@@ -195,4 +180,49 @@ class _SeenBadge extends StatelessWidget {
           child: const Icon(Icons.check, size: 13, color: Color(0xFF0A0B0F)),
         ),
       );
+}
+
+/// Cleaned title with an optional small language chip ("EN"). Live channels
+/// keep their raw provider names — cleanup is for movies/shows only.
+class _TitleLine extends StatelessWidget {
+  const _TitleLine({required this.item, required this.light});
+  final StreamItem item;
+  final bool light;
+
+  @override
+  Widget build(BuildContext context) {
+    final isVod = item.kind != StreamKind.live;
+    final parts = isVod ? cleanTitle(item.name) : TitleParts(item.name, null);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (parts.lang != null) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+            decoration: BoxDecoration(
+              color: LumenTheme.accent.withValues(alpha: 0.22),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(parts.lang!,
+                style: const TextStyle(
+                    color: LumenTheme.accent,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800)),
+          ),
+          const SizedBox(width: 5),
+        ],
+        Flexible(
+          child: Text(
+            parts.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                color: light ? Colors.white : null,
+                fontSize: 12.5,
+                fontWeight: light ? FontWeight.w700 : FontWeight.w600),
+          ),
+        ),
+      ],
+    );
+  }
 }

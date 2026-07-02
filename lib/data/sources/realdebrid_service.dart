@@ -69,9 +69,16 @@ class RealDebridService {
     }
   }
 
-  /// Debrid streams for a title, best quality first. [imdbId] like "tt0111161";
-  /// for episodes pass [season]+[episode]. Only RD-cached (instant) results are
-  /// returned so playback starts immediately.
+  /// Junk releases we never offer: cams, telesyncs, screeners, 3D — bad
+  /// quality or unwatchable on a normal screen.
+  static final _junk = RegExp(
+      r'\b(cam(rip)?|hd-?cam|hd-?ts|telesync|\bts\b|telecine|\btc\b|scr(eener)?|dvdscr|workprint|3d)\b',
+      caseSensitive: false);
+
+  /// Debrid streams for a title. Curated: only RD-cached (instant) results,
+  /// capped at 1080p, junk releases (CAM/TS/screener/3D) removed, and ranked
+  /// best-quality-first with the *smallest* file per quality tier first —
+  /// high quality without pointless 60 GB remux downloads.
   Future<List<RdStream>> streams(String imdbId,
       {int? season, int? episode}) async {
     final t = await token();
@@ -94,14 +101,26 @@ class RealDebridService {
           // Torrentio prefixes uncached results with [RD download]; skip them —
           // they'd start a torrent download instead of playing instantly.
           if (name.contains('download')) continue;
+          final quality = _quality(name, title);
+          // Cap at 1080p and drop junk releases.
+          if (quality == '4K') continue;
+          if (_junk.hasMatch('$name $title')) continue;
           out.add(RdStream(
             url: '${s['url']}',
-            quality: _quality(name, title),
+            quality: quality,
             label: title.split('\n').first.trim(),
             size: _size(title),
+            sizeMb: _sizeMb(title),
           ));
         }
       }
+      // Best quality first; within a tier, smallest file first.
+      const rank = {'1080p': 0, '720p': 1, '480p': 2, 'SD': 3};
+      out.sort((a, b) {
+        final q = (rank[a.quality] ?? 9).compareTo(rank[b.quality] ?? 9);
+        if (q != 0) return q;
+        return (a.sizeMb ?? 1 << 30).compareTo(b.sizeMb ?? 1 << 30);
+      });
       return out;
     } catch (_) {
       return [];
@@ -121,6 +140,15 @@ class RealDebridService {
     final m = RegExp(r'💾\s*([\d.]+\s*[GM]B)').firstMatch(title);
     return m?.group(1);
   }
+
+  /// Parsed size in MB for compact-file-first sorting.
+  static int? _sizeMb(String title) {
+    final m = RegExp(r'💾\s*([\d.]+)\s*([GM])B').firstMatch(title);
+    if (m == null) return null;
+    final v = double.tryParse(m.group(1)!);
+    if (v == null) return null;
+    return (m.group(2) == 'G' ? v * 1024 : v).round();
+  }
 }
 
 /// One playable debrid stream option.
@@ -129,11 +157,13 @@ class RdStream {
   final String quality;
   final String label;
   final String? size;
+  final int? sizeMb;
   const RdStream(
       {required this.url,
       required this.quality,
       required this.label,
-      this.size});
+      this.size,
+      this.sizeMb});
 }
 
 final realDebridServiceProvider =

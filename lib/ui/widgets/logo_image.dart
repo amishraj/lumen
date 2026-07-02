@@ -40,8 +40,11 @@ class LogoImage extends StatelessWidget {
         height: height,
         fit: BoxFit.cover,
         // Cap decoded size — the killer optimisation for huge libraries.
+        // Width only: capping BOTH dimensions forces the decode into that
+        // exact box, distorting the aspect ratio (posters looked stretched in
+        // the 16:9 cards). With a width cap alone the decode keeps its
+        // proportions and BoxFit.cover crops instead of stretching.
         memCacheWidth: (size * dpr).round(),
-        memCacheHeight: (height * dpr).round(),
         fadeInDuration: const Duration(milliseconds: 180),
         placeholder: (_, __) => loading,
         errorWidget: (_, __, ___) => lettered,

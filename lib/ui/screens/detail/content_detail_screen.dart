@@ -7,6 +7,7 @@ import '../../../data/sources/realdebrid_service.dart';
 import '../../../data/sources/tmdb_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../../title_utils.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/logo_image.dart';
 import '../../widgets/source_picker.dart';
@@ -87,7 +88,7 @@ class ContentDetailScreen extends ConsumerWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(item.name,
+                  Text(cleanTitle(item.name).title,
                       style: const TextStyle(
                           fontSize: 26,
                           fontWeight: FontWeight.w900,
