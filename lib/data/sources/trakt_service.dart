@@ -492,6 +492,44 @@ class TraktService {
     } catch (_) {/* best effort */}
   }
 
+  /// Session cache of title → Trakt ids so pause/resume/stop cycles don't
+  /// re-hit the search endpoint every time.
+  final _idsCache = <String, Map<String, dynamic>?>{};
+
+  /// Real-time scrobbling per the Trakt protocol. [action] is start | pause |
+  /// stop. Trakt records the exact progress: a `stop` below 80% is stored as
+  /// a paused checkpoint (shows at that timestamp in continue watching); at or
+  /// above 80% the play is scrobbled as watched. Shows require the episode's
+  /// season+number. Best-effort — never throws into playback.
+  Future<void> scrobble(
+    String action,
+    String title, {
+    bool isShow = false,
+    int? season,
+    int? episode,
+    required double progressPct,
+  }) async {
+    if (!await isConnected()) return;
+    // A show scrobble without an episode is meaningless to Trakt.
+    if (isShow && (season == null || episode == null)) return;
+    try {
+      final key = '${isShow ? 's' : 'm'}:${title.toLowerCase()}';
+      final ids = _idsCache.containsKey(key)
+          ? _idsCache[key]
+          : _idsCache[key] = await idsFor(title, isShow: isShow);
+      if (ids == null) return;
+      final body = <String, dynamic>{
+        'progress': progressPct.clamp(0, 100),
+        if (!isShow) 'movie': {'ids': ids},
+        if (isShow) 'show': {'ids': ids},
+        if (isShow) 'episode': {'season': season, 'number': episode},
+      };
+      await _dio.post('$_api/scrobble/$action',
+          data: jsonEncode(body),
+          options: Options(headers: await _authHeaders()));
+    } catch (_) {/* best effort */}
+  }
+
   /// Resolve a title to its Trakt id node (contains imdb/tmdb/trakt ids).
   /// Public search endpoint — works with just the api key.
   Future<Map<String, dynamic>?> idsFor(String title,

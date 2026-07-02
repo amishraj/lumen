@@ -221,7 +221,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
   }
 }
 
-class _CategoryRow extends ConsumerWidget {
+class _CategoryRow extends ConsumerStatefulWidget {
   const _CategoryRow({
     required this.category,
     required this.selected,
@@ -231,18 +231,51 @@ class _CategoryRow extends ConsumerWidget {
   final bool selected;
   final bool pinned;
 
-  Future<void> _togglePin(WidgetRef ref) async {
-    final repo = await ref.read(repositoryProvider.future);
-    final pl = ref.read(activePlaylistProvider);
-    final kind = ref.read(selectedKindProvider);
-    if (pl?.id == null) return;
-    await repo.setPinned(pl!.id!, kind, category.name, !pinned);
-    ref.invalidate(pinnedCategoriesProvider);
-    ref.invalidate(orderedCategoriesProvider);
+  @override
+  ConsumerState<_CategoryRow> createState() => _CategoryRowState();
+}
+
+class _CategoryRowState extends ConsumerState<_CategoryRow> {
+  // Dedicated node so Right from the name lands *exactly* on the pin —
+  // nextFocus() followed traversal order and could skip it entirely, which
+  // made pinning unreachable by remote.
+  final FocusNode _pinFocus = FocusNode(debugLabel: 'category-pin');
+
+  Category get category => widget.category;
+  bool get selected => widget.selected;
+  bool get pinned => widget.pinned;
+
+  @override
+  void dispose() {
+    _pinFocus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _togglePin() async {
+    try {
+      // Read the fresh pinned state — the build-time bool can be stale if the
+      // providers refreshed between paint and press.
+      final repo = await ref.read(repositoryProvider.future);
+      final pl = ref.read(activePlaylistProvider);
+      final kind = ref.read(selectedKindProvider);
+      if (pl?.id == null) return;
+      final current =
+          (await repo.pinnedCategories(pl!.id!, kind)).contains(category.name);
+      await repo.setPinned(pl.id!, kind, category.name, !current);
+      ref.invalidate(pinnedCategoriesProvider);
+      ref.invalidate(orderedCategoriesProvider);
+    } catch (e) {
+      // Surface instead of failing silently — "pin does nothing" is
+      // undebuggable from the couch.
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Couldn\'t pin: $e')));
+      }
+    }
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     // The favorites pseudo-category isn't a real provider group — no pin.
     final isFavs = category.name == kFavoritesCategory;
     return Container(
@@ -266,8 +299,8 @@ class _CategoryRow extends ConsumerWidget {
               borderRadius: 8,
               onActivate: () =>
                   ref.read(selectedCategoryProvider.notifier).state = category,
-              // From the name, Right goes straight to the pin toggle.
-              onRight: isFavs ? null : () => FocusScope.of(context).nextFocus(),
+              // From the name, Right lands exactly on the pin toggle.
+              onRight: isFavs ? null : _pinFocus.requestFocus,
               builder: (context, focused) => Padding(
                 padding: const EdgeInsets.only(left: 8, top: 4, bottom: 4),
                 child: Column(
@@ -294,12 +327,13 @@ class _CategoryRow extends ConsumerWidget {
           ),
           if (!isFavs)
             FocusableItem(
+              focusNode: _pinFocus,
               borderRadius: 18,
-              onActivate: () => _togglePin(ref),
+              onActivate: _togglePin,
               builder: (context, focused) => Padding(
-                padding: const EdgeInsets.all(6),
+                padding: const EdgeInsets.all(8),
                 child: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                    size: 15,
+                    size: 16,
                     color: pinned
                         ? LumenTheme.accentWarm
                         : const Color(0xFF5B6072)),

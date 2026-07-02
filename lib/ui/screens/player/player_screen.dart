@@ -11,6 +11,7 @@ import '../../../data/sources/realdebrid_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
+import '../../title_utils.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/source_picker.dart';
 
@@ -52,6 +53,12 @@ class PlayerScreen extends ConsumerStatefulWidget {
 }
 
 class _PlayerScreenState extends ConsumerState<PlayerScreen> {
+  /// The one player instance allowed to make noise. If a second PlayerScreen
+  /// mounts (e.g. a double OK-press pushed the route twice), the previous
+  /// instance's audio is killed immediately instead of playing on behind it.
+  static _PlayerScreenState? _active;
+  bool _tornDown = false;
+
   late final Player _player = Player(
     configuration: const PlayerConfiguration(
       bufferSize: 32 * 1024 * 1024, // generous buffer for flaky IPTV sources
@@ -69,7 +76,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   StreamItem get _current => _queue[_index];
 
   String? _error;
-  bool _scrobbled = false;
   bool _sought = false;
   bool _reconnecting = false;
   int _liveRetries = 0;
@@ -109,6 +115,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    _active?._teardownPlayer(); // silence any stacked/leaked predecessor
+    _active = this;
     // Listeners for the player's lifetime; they read _current.
     _player.stream.position.listen(_onPosition);
     _player.stream.completed.listen(_onCompleted);
@@ -225,7 +233,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _error = null;
       _reconnecting = false;
       _liveRetries = 0;
-      _scrobbled = false;
       _sought = false;
       _resume = null;
       _lastPosMs = 0;
@@ -255,6 +262,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (mounted) setState(() => _reconnecting = false);
     _liveRetries = 0;
     if (_current.kind == StreamKind.live) return;
+    _scrobble('start'); // real-time "watching now" on Trakt
     final svc = ref.read(traktServiceProvider).valueOrNull;
     _resume = await svc?.resumeProgress(_current.name,
         isShow: _current.kind == StreamKind.series);
@@ -303,18 +311,49 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       await repo?.db
           .saveProgress(_current.id!, pos.inMilliseconds, dur.inMilliseconds);
     }
-    if (!_scrobbled && pos.inMilliseconds / dur.inMilliseconds >= 0.9) {
-      _scrobbled = true;
-      ref.read(traktServiceProvider).valueOrNull?.markWatched(_current.name,
-          isShow: _current.kind == StreamKind.series);
+  }
+
+  // ---- Trakt scrobbling ------------------------------------------------
+  // Real protocol: start when playback begins/resumes, pause on pause, stop
+  // on exit/skip. Trakt stores the exact stop position (<80% → continue
+  // watching at that timestamp; ≥80% → scrobbled as watched), so what you see
+  // on trakt.tv matches where you actually left the player.
+
+  /// (title, isShow, season, episode) for the item currently playing.
+  (String, bool, int?, int?) _scrobbleIdentity() {
+    final ctx = widget.debrid;
+    final isShow = ctx?.isShow ?? _current.kind == StreamKind.series;
+    int? season, episode;
+    if (ctx?.episodes != null && _index < ctx!.episodes!.length) {
+      (season, episode) = ctx.episodes![_index];
+    } else if (isShow) {
+      // Fallback: parse "S1E2 · Title" queue names.
+      final m = RegExp(r'^S(\d+)E(\d+)').firstMatch(_current.name);
+      season = int.tryParse(m?.group(1) ?? '');
+      episode = int.tryParse(m?.group(2) ?? '');
     }
+    final raw = ctx?.title ?? _current.name;
+    return (cleanTitle(raw).title, isShow, season, episode);
+  }
+
+  double get _progressPct =>
+      _lastDurMs > 0 ? (_lastPosMs / _lastDurMs * 100.0).clamp(0, 100) : 0;
+
+  void _scrobble(String action) {
+    if (_current.kind == StreamKind.live) return;
+    final (title, isShow, season, episode) = _scrobbleIdentity();
+    // Fire-and-forget: scrobbling must never block or break playback.
+    ref.read(traktServiceProvider).valueOrNull?.scrobble(action, title,
+        isShow: isShow,
+        season: season,
+        episode: episode,
+        progressPct: _progressPct);
   }
 
   void _checkpoint() {
-    if (_current.kind != StreamKind.live && _lastDurMs > 0 && !_scrobbled) {
-      ref.read(traktServiceProvider).valueOrNull?.savePlayback(_current.name,
-          isShow: _current.kind == StreamKind.series,
-          progressPct: _lastPosMs / _lastDurMs * 100.0);
+    // Exact exit position → Trakt (watched if ≥80%, else continue-watching).
+    if (_current.kind != StreamKind.live && _lastDurMs > 0) {
+      _scrobble('stop');
     }
   }
 
@@ -334,12 +373,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
     _rootFocus.dispose();
     _firstControlFocus.dispose();
-    // Tear the player down deterministically. The naive `stop(); dispose();`
-    // could still leak audio: if stop() stalls on a dead network socket its
-    // await never completes and dispose() never runs — playback continues
-    // headless in the background. So: mute *immediately* (cheap property set,
-    // silences output even if teardown lags), then pause/stop with hard
-    // timeouts, then dispose unconditionally.
+    if (_active == this) _active = null;
+    _teardownPlayer();
+    super.dispose();
+  }
+
+  /// Idempotent, deterministic audio teardown. The naive `stop(); dispose();`
+  /// could still leak audio: if stop() stalls on a dead network socket its
+  /// await never completes and dispose() never runs — playback continues
+  /// headless in the background. So: mute *immediately* (cheap property set,
+  /// silences output even if teardown lags), then pause/stop with hard
+  /// timeouts, then dispose unconditionally.
+  void _teardownPlayer() {
+    if (_tornDown) return;
+    _tornDown = true;
     final player = _player;
     () async {
       try {
@@ -353,7 +400,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         await player.dispose().timeout(const Duration(seconds: 5));
       } catch (_) {/* libmpv wedged — nothing more we can do */}
     }();
-    super.dispose();
   }
 
   // ---- Track selection -----------------------------------------------------
@@ -459,8 +505,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   void _togglePlay() {
+    final wasPlaying = _playing;
     _player.playOrPause();
     _resetHideTimer();
+    // Mirror pause/resume to Trakt in real time.
+    _scrobble(wasPlaying ? 'pause' : 'start');
   }
 
   /// In-player source switch (IPTV ↔ Real-Debrid). Keeps the playback
