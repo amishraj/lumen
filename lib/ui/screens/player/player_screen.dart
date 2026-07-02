@@ -14,6 +14,7 @@ import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../title_utils.dart';
 import '../../widgets/focusable_item.dart';
+import '../../widgets/logo_image.dart';
 import '../../widgets/source_picker.dart';
 
 /// Structured identity of what's playing, for Real-Debrid stream lookups.
@@ -95,6 +96,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   // press (and not just a tap/mouse move) brings them back so the player is
   // fully usable with no pointer.
   bool _controlsVisible = true;
+  bool _episodesOpen = false; // series: quick-switch drawer
   Timer? _hideTimer;
   final FocusNode _rootFocus = FocusNode(debugLabel: 'player-root');
   final FocusNode _firstControlFocus =
@@ -494,6 +496,40 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _scrobble(wasPlaying ? 'pause' : 'start');
   }
 
+  /// Skip forward/back by [secs], clamped to the stream bounds.
+  void _seekBy(int secs) {
+    if (_current.kind == StreamKind.live) return;
+    var target = _position + Duration(seconds: secs);
+    if (target < Duration.zero) target = Duration.zero;
+    if (_duration > Duration.zero && target > _duration) target = _duration;
+    _player.seek(target);
+    setState(() => _position = target); // instant UI feedback
+    _resetHideTimer();
+  }
+
+  void _toggleEpisodes() {
+    setState(() => _episodesOpen = !_episodesOpen);
+    if (_episodesOpen) {
+      _hideTimer?.cancel(); // keep the chrome up while the drawer is open
+    } else {
+      _resetHideTimer();
+    }
+  }
+
+  /// Jump to another episode in the queue. Uses the shared pipeline so the
+  /// switch is a single open() — the last frame stays until the new one is
+  /// ready, so it feels seamless.
+  void _switchTo(int i) {
+    setState(() => _episodesOpen = false);
+    if (i == _index) {
+      _resetHideTimer();
+      return;
+    }
+    _checkpoint();
+    _openAt(i);
+    _showControls(focusFirst: false);
+  }
+
   /// In-player source switch (IPTV ↔ Real-Debrid). Keeps the playback
   /// position for VOD so switching quality doesn't lose your place.
   Future<void> _pickSource() async {
@@ -566,6 +602,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           canRequestFocus: true,
           onKeyEvent: _onRootKey,
           child: MouseRegion(
+            // Cursor fades away with the overlay (and returns on any move),
+            // so idle playback is a clean, chrome-free full-screen image.
+            cursor: (_controlsVisible || _episodesOpen)
+                ? MouseCursor.defer
+                : SystemMouseCursors.none,
             onHover: (_) => _showControls(focusFirst: false),
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -667,6 +708,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                         onActivity: _resetHideTimer,
                                       ),
                                     if (hasQueue) const SizedBox(width: 6),
+                                    if (hasQueue)
+                                      _RoundButton(
+                                        icon: Icons.video_library_outlined,
+                                        tooltip: 'Episodes',
+                                        onTap: _toggleEpisodes,
+                                        onActivity: _resetHideTimer,
+                                      ),
+                                    if (hasQueue) const SizedBox(width: 6),
                                     if (_current.id != null)
                                       _RoundButton(
                                         icon: isFav
@@ -711,18 +760,41 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                   ],
                                 ),
                               ),
-                              // ---- Center: play / pause (hidden while buffering) ----
+                              // ---- Center: −30s · play/pause · +30s ----
                               if (!showSpinner)
                                 Center(
-                                  child: _RoundButton(
-                                    focusNode: _firstControlFocus,
-                                    big: true,
-                                    icon: _playing
-                                        ? Icons.pause
-                                        : Icons.play_arrow,
-                                    tooltip: _playing ? 'Pause' : 'Play',
-                                    onTap: _togglePlay,
-                                    onActivity: _resetHideTimer,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (!isLive) ...[
+                                        _RoundButton(
+                                          icon: Icons.replay_30,
+                                          tooltip: 'Back 30 seconds',
+                                          onTap: () => _seekBy(-30),
+                                          onActivity: _resetHideTimer,
+                                        ),
+                                        const SizedBox(width: 30),
+                                      ],
+                                      _RoundButton(
+                                        focusNode: _firstControlFocus,
+                                        big: true,
+                                        icon: _playing
+                                            ? Icons.pause
+                                            : Icons.play_arrow,
+                                        tooltip: _playing ? 'Pause' : 'Play',
+                                        onTap: _togglePlay,
+                                        onActivity: _resetHideTimer,
+                                      ),
+                                      if (!isLive) ...[
+                                        const SizedBox(width: 30),
+                                        _RoundButton(
+                                          icon: Icons.forward_30,
+                                          tooltip: 'Forward 30 seconds',
+                                          onTap: () => _seekBy(30),
+                                          onActivity: _resetHideTimer,
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ),
                               // ---- Bottom: title + seek bar (or LIVE pill) ----
@@ -786,10 +858,182 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                       ),
                     ),
                   ),
+                  // ---- Episodes quick-switch drawer (series) ----
+                  if (hasQueue)
+                    _EpisodesDrawer(
+                      open: _episodesOpen,
+                      queue: _queue,
+                      currentIndex: _index,
+                      onSelect: _switchTo,
+                      onClose: () {
+                        setState(() => _episodesOpen = false);
+                        _resetHideTimer();
+                      },
+                    ),
                 ],
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A right-side drawer that slides in over the video to switch episodes
+/// without leaving the player. Buttery: a single AnimatedSlide + fade, and
+/// selecting an episode reuses the shared pipeline so the picture never blacks
+/// out between episodes.
+class _EpisodesDrawer extends StatelessWidget {
+  const _EpisodesDrawer({
+    required this.open,
+    required this.queue,
+    required this.currentIndex,
+    required this.onSelect,
+    required this.onClose,
+  });
+
+  final bool open;
+  final List<StreamItem> queue;
+  final int currentIndex;
+  final ValueChanged<int> onSelect;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final width =
+        (MediaQuery.of(context).size.width * 0.42).clamp(300.0, 420.0);
+    return Positioned.fill(
+      child: IgnorePointer(
+        ignoring: !open,
+        child: Stack(
+          children: [
+            // Dim scrim over the video; tap to dismiss.
+            AnimatedOpacity(
+              opacity: open ? 1 : 0,
+              duration: const Duration(milliseconds: 240),
+              child: GestureDetector(
+                onTap: onClose,
+                child: const ColoredBox(color: Color(0x66000000)),
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: AnimatedSlide(
+                offset: open ? Offset.zero : const Offset(1, 0),
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOutCubic,
+                child: Container(
+                  width: width,
+                  decoration: const BoxDecoration(
+                    color: Color(0xF215171F),
+                    borderRadius:
+                        BorderRadius.horizontal(left: Radius.circular(20)),
+                  ),
+                  child: SafeArea(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
+                          child: Row(
+                            children: [
+                              const Expanded(
+                                child: Text('Episodes',
+                                    style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w800)),
+                              ),
+                              FocusableItem(
+                                borderRadius: 20,
+                                onActivate: onClose,
+                                builder: (context, focused) => const Padding(
+                                  padding: EdgeInsets.all(6),
+                                  child: Icon(Icons.close, size: 20),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView.builder(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            itemCount: queue.length,
+                            itemBuilder: (context, i) => _EpisodeTile(
+                              item: queue[i],
+                              current: i == currentIndex,
+                              autofocus: i == currentIndex,
+                              onTap: () => onSelect(i),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EpisodeTile extends StatelessWidget {
+  const _EpisodeTile({
+    required this.item,
+    required this.current,
+    required this.autofocus,
+    required this.onTap,
+  });
+  final StreamItem item;
+  final bool current;
+  final bool autofocus;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableItem(
+      borderRadius: 12,
+      autofocus: autofocus,
+      onActivate: onTap,
+      builder: (context, focused) => Container(
+        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: current
+              ? LumenTheme.accent.withValues(alpha: 0.18)
+              : (focused ? LumenTheme.surfaceHi : Colors.transparent),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            LogoImage(
+                url: item.logo,
+                size: 76,
+                height: 46,
+                radius: 8,
+                fallbackText: item.name),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                cleanTitle(item.name).title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: current ? FontWeight.w700 : FontWeight.w500,
+                    color: current ? Colors.white : const Color(0xFFC7CBD6)),
+              ),
+            ),
+            if (current)
+              const Padding(
+                padding: EdgeInsets.only(left: 8),
+                child:
+                    Icon(Icons.equalizer, color: LumenTheme.accent, size: 18),
+              ),
+          ],
         ),
       ),
     );
