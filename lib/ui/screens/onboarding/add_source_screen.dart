@@ -19,7 +19,12 @@ class AddSourceScreen extends ConsumerStatefulWidget {
 
 class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
     with SingleTickerProviderStateMixin {
-  late final TabController _tab = TabController(length: 2, vsync: this);
+  late final TabController _tab = TabController(length: 2, vsync: this)
+    ..addListener(_onTabChanged);
+
+  void _onTabChanged() {
+    if (mounted) setState(() {});
+  }
 
   final _nameCtl = TextEditingController();
   final _urlCtl = TextEditingController();
@@ -38,6 +43,7 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
 
   @override
   void dispose() {
+    _tab.removeListener(_onTabChanged);
     _tab.dispose();
     _nameCtl.dispose();
     _urlCtl.dispose();
@@ -186,6 +192,24 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
   @override
   Widget build(BuildContext context) {
     final pushed = Navigator.of(context).canPop();
+    // First-run: Back from the M3U/Xtream form returns to the "Welcome to
+    // Lumen" chooser instead of leaving the app. (When pushed from Settings,
+    // Back pops normally.)
+    final interceptBack = !pushed && _withDebrid != null;
+    return PopScope(
+      canPop: !interceptBack,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || _busy) return;
+        setState(() {
+          _withDebrid = null;
+          _status = null;
+        });
+      },
+      child: _buildScaffold(context, pushed),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context, bool pushed) {
     return Scaffold(
       body: DecoratedBox(
         decoration: const BoxDecoration(gradient: LumenTheme.heroGradient),
@@ -268,24 +292,20 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                         ),
                       ),
                       const SizedBox(height: 18),
-                      SizedBox(
-                        height: 330,
-                        child: TabBarView(
-                          controller: _tab,
-                          physics: _busy
-                              ? const NeverScrollableScrollPhysics()
-                              : null,
-                          children: [_m3uForm(), _xtreamForm()],
-                        ),
-                      ),
-                      const SizedBox(height: 4),
+                      // Direct swap instead of TabBarView: PageView keeps the
+                      // offstage sibling page in the tree and its nested
+                      // scrollables broke D-pad traversal (Down from the tab
+                      // bar skipped every field straight to the CTA).
+                      if (_tab.index == 0) _m3uForm() else _xtreamForm(),
+                      const SizedBox(height: 16),
                       if (_withDebrid == true) ...[
                         FocusableItem(
                           borderRadius: 14,
                           onActivate: () async {
                             final ok = await showRdConnectSheet(context, ref);
-                            if (ok && mounted)
+                            if (ok && mounted) {
                               setState(() => _rdConnected = true);
+                            }
                           },
                           builder: (context, focused) => Container(
                             height: 52,
@@ -377,7 +397,9 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
     );
   }
 
-  Widget _m3uForm() => ListView(
+  Widget _m3uForm() => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _field(_nameCtl, 'Name (optional)', Icons.label_outline,
               autofocus: true),
@@ -391,7 +413,9 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
         ],
       );
 
-  Widget _xtreamForm() => ListView(
+  Widget _xtreamForm() => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _field(_nameCtl, 'Name (optional)', Icons.label_outline,
               autofocus: true),

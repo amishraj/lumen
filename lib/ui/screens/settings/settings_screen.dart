@@ -268,8 +268,9 @@ class SettingsScreen extends ConsumerWidget {
                         await ref.read(realDebridServiceProvider.future);
                     if (v && ((await svc.token())?.isEmpty ?? true)) {
                       // No token yet — run the code-based connect flow.
-                      if (context.mounted)
+                      if (context.mounted) {
                         await showRdConnectSheet(context, ref);
+                      }
                       return;
                     }
                     await svc.setEnabled(v);
