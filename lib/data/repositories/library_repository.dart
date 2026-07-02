@@ -129,6 +129,7 @@ class LibraryRepository {
       db.favoritesByKind(playlistId, kind);
   Future<void> markWatched(int id) => db.markWatched(id);
   Future<Set<int>> watchedIds(int playlistId) => db.watchedIds(playlistId);
+  Future<Map<int, double>> progressFractions() => db.progressFractions();
 
   /// Providers often carry the same movie/show in several languages, prefixed
   /// like "EN | Title", "EN - Title", "ENGLISH: Title". When we pick a title

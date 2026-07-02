@@ -256,6 +256,35 @@ class TmdbService {
     return null;
   }
 
+  /// Per-episode metadata for one season of a show: canonical episode names,
+  /// overviews, stills and ratings. Resolves the show by title (cached), then
+  /// fetches the season. Cached for a week.
+  Future<List<TmdbEpisode>> seasonEpisodes(String showTitle, int season) async {
+    final info = await lookup(showTitle, isShow: true);
+    if (info?.tmdbId == null) return [];
+    final data = await _cachedGet('tmdb:season:${info!.tmdbId}:$season',
+        '/tv/${info.tmdbId}/season/$season',
+        ttl: const Duration(days: 7));
+    final list = data is Map ? data['episodes'] : null;
+    final out = <TmdbEpisode>[];
+    if (list is List) {
+      for (final e in list) {
+        if (e is! Map || e['episode_number'] == null) continue;
+        out.add(TmdbEpisode(
+          number: (e['episode_number'] as num).toInt(),
+          name: '${e['name'] ?? ''}',
+          overview:
+              (e['overview'] is String && (e['overview'] as String).isNotEmpty)
+                  ? e['overview'] as String
+                  : null,
+          still: posterUrl(e['still_path'] as String?, size: 'w300'),
+          rating: (e['vote_average'] as num?)?.toDouble(),
+        ));
+      }
+    }
+    return out;
+  }
+
   /// Strip provider noise (leading numbering, quality tags) and pull a year.
   (String, int?) _clean(String raw) {
     var s = raw.trim();
@@ -295,6 +324,22 @@ class TmdbItem {
     this.isShow = false,
     this.poster,
     this.backdrop,
+    this.rating,
+  });
+}
+
+/// One episode's canonical metadata from TMDB.
+class TmdbEpisode {
+  final int number;
+  final String name;
+  final String? overview;
+  final String? still;
+  final double? rating;
+  const TmdbEpisode({
+    required this.number,
+    required this.name,
+    this.overview,
+    this.still,
     this.rating,
   });
 }
@@ -394,6 +439,16 @@ final tmdbEnabledProvider = FutureProvider<bool>((ref) async {
 
 /// Bumped whenever the key is saved so dependent providers recompute.
 final tmdbKeyRevProvider = StateProvider<int>((ref) => 0);
+
+/// Episode number → TMDB metadata for one (show, season). autoDispose is fine
+/// here — the underlying HTTP result is DB-cached, so re-entry is a local read.
+final tmdbSeasonProvider = FutureProvider.autoDispose
+    .family<Map<int, TmdbEpisode>, ({String title, int season})>(
+        (ref, args) async {
+  final svc = await ref.watch(tmdbServiceProvider.future);
+  final eps = await svc.seasonEpisodes(args.title, args.season);
+  return {for (final e in eps) e.number: e};
+});
 
 /// Lazily resolved TMDB metadata for a title's detail screen.
 final tmdbDetailProvider = FutureProvider.autoDispose

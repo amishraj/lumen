@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +12,7 @@ import '../../../data/sources/realdebrid_service.dart';
 import '../../../data/sources/trakt_service.dart';
 import '../../../state/playback_engine.dart';
 import '../../../state/providers.dart';
+import '../../../state/scrub_thumbs.dart';
 import '../../theme/lumen_theme.dart';
 import '../../title_utils.dart';
 import '../../widgets/focusable_item.dart';
@@ -243,6 +245,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _lastPosMs = 0;
       _lastDurMs = 0;
       _autoAudioPicked = false; // re-pick English audio for the new item
+      _thumbsScheduled = false; // new content → new scrub previews
     });
     await _load();
   }
@@ -299,12 +302,26 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     });
   }
 
+  bool _thumbsScheduled = false;
+
   Future<void> _onPosition(Duration pos) async {
     if (!_ownsPlayback || _current.kind == StreamKind.live) return;
     final dur = _player.state.duration;
     if (dur.inMilliseconds <= 0) return;
     _lastPosMs = pos.inMilliseconds;
     _lastDurMs = dur.inMilliseconds;
+
+    // Background scrub previews: start well after playback has settled so the
+    // secondary connection never competes with initial buffering.
+    if (!_thumbsScheduled) {
+      _thumbsScheduled = true;
+      final url = _urlOverrides[_index] ?? _current.url;
+      Future.delayed(const Duration(seconds: 12), () {
+        if (!mounted || !_ownsPlayback) return;
+        if ((_urlOverrides[_index] ?? _current.url) != url) return;
+        ScrubThumbs.instance.generate(url, dur);
+      });
+    }
 
     if (!_sought && _resume != null && _resume! > 0.02 && _resume! < 0.9) {
       _sought = true;
@@ -379,6 +396,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _rootFocus.dispose();
     _firstControlFocus.dispose();
     if (_active == this) _active = null;
+    ScrubThumbs.instance.cancel(); // stop background frame grabs immediately
     // Stop the shared pipeline — verified & retried inside the engine. No
     // dispose(): the engine owns the player for the app's lifetime, which is
     // what finally makes "exit = silence" deterministic.
@@ -838,14 +856,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                             ),
                                           ])
                                         else
-                                          _SeekBar(
+                                          _ScrubBar(
                                             position: _position,
                                             duration: _duration,
                                             onSeek: (d) {
                                               _player.seek(d);
+                                              setState(() => _position = d);
                                               _resetHideTimer();
                                             },
                                             fmt: _fmt,
+                                            // Keep the chrome up while
+                                            // scrubbing; resume auto-hide
+                                            // afterwards.
+                                            onScrubStart: () =>
+                                                _hideTimer?.cancel(),
+                                            onScrubEnd: _resetHideTimer,
                                           ),
                                       ],
                                     ),
@@ -863,6 +888,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     _EpisodesDrawer(
                       open: _episodesOpen,
                       queue: _queue,
+                      episodes: widget.debrid?.episodes,
                       currentIndex: _index,
                       onSelect: _switchTo,
                       onClose: () {
@@ -884,10 +910,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 /// without leaving the player. Buttery: a single AnimatedSlide + fade, and
 /// selecting an episode reuses the shared pipeline so the picture never blacks
 /// out between episodes.
-class _EpisodesDrawer extends StatelessWidget {
+class _EpisodesDrawer extends StatefulWidget {
   const _EpisodesDrawer({
     required this.open,
     required this.queue,
+    this.episodes,
     required this.currentIndex,
     required this.onSelect,
     required this.onClose,
@@ -895,12 +922,63 @@ class _EpisodesDrawer extends StatelessWidget {
 
   final bool open;
   final List<StreamItem> queue;
+  final List<(int, int)>? episodes; // (season, episode) per queue index
   final int currentIndex;
   final ValueChanged<int> onSelect;
   final VoidCallback onClose;
 
   @override
+  State<_EpisodesDrawer> createState() => _EpisodesDrawerState();
+}
+
+class _EpisodesDrawerState extends State<_EpisodesDrawer> {
+  // Owned once — the player rebuilds every position tick, and a per-build
+  // controller would snap the list back to its initial offset constantly.
+  late final ScrollController _controller =
+      ScrollController(initialScrollOffset: () {
+    final startAt = _entries().indexOf(widget.currentIndex);
+    return startAt <= 2 ? 0.0 : (startAt - 2) * 64.0;
+  }());
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  int? _seasonOf(int i) =>
+      (widget.episodes != null && i < widget.episodes!.length)
+          ? widget.episodes![i].$1
+          : null;
+
+  /// Queue indexes + season-header markers. Header entries are negative
+  /// encodings: -(season+1).
+  List<int> _entries() {
+    final queue = widget.queue;
+    if (widget.episodes == null) {
+      return [for (var i = 0; i < queue.length; i++) i];
+    }
+    final out = <int>[];
+    int? last;
+    for (var i = 0; i < queue.length; i++) {
+      final s = _seasonOf(i);
+      if (s != null && s != last) {
+        out.add(-(s + 1)); // season header
+        last = s;
+      }
+      out.add(i);
+    }
+    return out;
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final open = widget.open;
+    final queue = widget.queue;
+    final currentIndex = widget.currentIndex;
+    final onSelect = widget.onSelect;
+    final onClose = widget.onClose;
+    final entries = _entries();
     final width =
         (MediaQuery.of(context).size.width * 0.42).clamp(300.0, 420.0);
     return Positioned.fill(
@@ -957,14 +1035,31 @@ class _EpisodesDrawer extends StatelessWidget {
                         ),
                         Expanded(
                           child: ListView.builder(
+                            controller: _controller,
                             padding: const EdgeInsets.only(bottom: 12),
-                            itemCount: queue.length,
-                            itemBuilder: (context, i) => _EpisodeTile(
-                              item: queue[i],
-                              current: i == currentIndex,
-                              autofocus: i == currentIndex,
-                              onTap: () => onSelect(i),
-                            ),
+                            itemCount: entries.length,
+                            itemBuilder: (context, n) {
+                              final e = entries[n];
+                              if (e < 0) {
+                                // Season header.
+                                return Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                                  child: Text('SEASON ${-e - 1}',
+                                      style: const TextStyle(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.w800,
+                                          letterSpacing: 1.2,
+                                          color: Color(0xFF8A8F9E))),
+                                );
+                              }
+                              return _EpisodeTile(
+                                item: queue[e],
+                                current: e == currentIndex,
+                                autofocus: e == currentIndex,
+                                onTap: () => onSelect(e),
+                              );
+                            },
                           ),
                         ),
                       ],
@@ -1042,48 +1137,302 @@ class _EpisodeTile extends StatelessWidget {
 
 /// Seek bar with elapsed / remaining labels. The [Slider] is natively
 /// focusable so Left/Right on a remote scrubs while it holds focus.
-class _SeekBar extends StatelessWidget {
-  const _SeekBar({
+/// Premium scrub bar.
+///
+/// Remote/keyboard flow: Up/Down reaches the bar (it highlights), **OK/click
+/// enters scrub mode** — a bubble with the target timestamp (and a frame
+/// preview once background grabs exist) rises above the thumb. Holding
+/// Left/Right accelerates: gentle 5s nudges at first, ramping to 15s/30s/60s
+/// the longer the key is held. OK commits the seek, Back/Escape cancels.
+/// Mouse: click-to-seek and drag-to-scrub with the same bubble.
+class _ScrubBar extends StatefulWidget {
+  const _ScrubBar({
     required this.position,
     required this.duration,
     required this.onSeek,
     required this.fmt,
+    this.onScrubStart,
+    this.onScrubEnd,
   });
   final Duration position;
   final Duration duration;
   final ValueChanged<Duration> onSeek;
   final String Function(Duration) fmt;
+  final VoidCallback? onScrubStart;
+  final VoidCallback? onScrubEnd;
+
+  @override
+  State<_ScrubBar> createState() => _ScrubBarState();
+}
+
+class _ScrubBarState extends State<_ScrubBar> {
+  final FocusNode _focus = FocusNode(debugLabel: 'scrub-bar');
+  bool _focused = false;
+  bool _scrubbing = false;
+  Duration _scrubPos = Duration.zero;
+  int _streak = 0; // consecutive held-key repeats → acceleration
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(() {
+      if (mounted) setState(() => _focused = _focus.hasFocus);
+      if (!_focus.hasFocus && _scrubbing) _endScrub(commit: false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _startScrub() {
+    setState(() {
+      _scrubbing = true;
+      _scrubPos = widget.position;
+      _streak = 0;
+    });
+    widget.onScrubStart?.call();
+  }
+
+  void _endScrub({required bool commit}) {
+    if (commit) widget.onSeek(_scrubPos);
+    if (mounted) setState(() => _scrubbing = false);
+    widget.onScrubEnd?.call();
+  }
+
+  /// Slow-then-fast: the first presses nudge 5s so you can land precisely;
+  /// a held key ramps through 15s and 30s up to 60s jumps.
+  int get _stepSecs {
+    if (_streak < 4) return 5;
+    if (_streak < 12) return 15;
+    if (_streak < 24) return 30;
+    return 60;
+  }
+
+  void _nudge(int direction) {
+    _streak++;
+    var t = _scrubPos + Duration(seconds: _stepSecs * direction);
+    if (t < Duration.zero) t = Duration.zero;
+    if (t > widget.duration) t = widget.duration;
+    setState(() => _scrubPos = t);
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey;
+    if (event is KeyUpEvent) {
+      _streak = 0; // released — next hold starts gentle again
+      return KeyEventResult.ignored;
+    }
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final isSelect = key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.gameButtonA;
+    if (!_scrubbing) {
+      if (isSelect) {
+        _startScrub();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored; // arrows keep traversing normally
+    }
+    // Scrub mode: own the keys.
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      _nudge(-1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      _nudge(1);
+      return KeyEventResult.handled;
+    }
+    if (isSelect) {
+      _endScrub(commit: true);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      _endScrub(commit: false);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.handled; // swallow up/down while scrubbing
+  }
+
+  double get _fraction {
+    final max = widget.duration.inMilliseconds;
+    if (max <= 0) return 0;
+    final pos = _scrubbing ? _scrubPos : widget.position;
+    return (pos.inMilliseconds / max).clamp(0.0, 1.0);
+  }
+
+  void _pointerTo(Offset local, double width, {required bool commit}) {
+    final max = widget.duration.inMilliseconds;
+    if (max <= 0) return;
+    final f = (local.dx / width).clamp(0.0, 1.0);
+    final t = Duration(milliseconds: (max * f).round());
+    if (commit) {
+      widget.onSeek(t);
+      if (_scrubbing) _endScrub(commit: false);
+    } else {
+      if (!_scrubbing) _startScrub();
+      setState(() => _scrubPos = t);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final maxMs = duration.inMilliseconds;
-    final posMs = position.inMilliseconds.clamp(0, maxMs == 0 ? 0 : maxMs);
-    return Row(
-      children: [
-        Text(fmt(position),
-            style: const TextStyle(color: Colors.white, fontSize: 12)),
-        Expanded(
-          child: SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 3,
-              activeTrackColor: LumenTheme.accent,
-              inactiveTrackColor: Colors.white24,
-              thumbColor: LumenTheme.accent,
-              overlayColor: LumenTheme.accent.withValues(alpha: 0.2),
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-            ),
-            child: Slider(
-              value: posMs.toDouble(),
-              max: (maxMs == 0 ? 1 : maxMs).toDouble(),
-              onChanged: maxMs == 0
-                  ? null
-                  : (v) => onSeek(Duration(milliseconds: v.round())),
+    final active = _focused || _scrubbing;
+    final showPos = _scrubbing ? _scrubPos : widget.position;
+
+    return Focus(
+      focusNode: _focus,
+      onKeyEvent: _onKey,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ---- Preview bubble ----
+          SizedBox(
+            height: _scrubbing ? 116 : 0,
+            child: _scrubbing
+                ? LayoutBuilder(builder: (context, box) {
+                    const bw = 172.0;
+                    final x = (_fraction * box.maxWidth - bw / 2)
+                        .clamp(0.0, (box.maxWidth - bw).clamp(0.0, 1e9));
+                    return Stack(children: [
+                      Positioned(
+                        left: x,
+                        bottom: 8,
+                        child: _PreviewBubble(
+                            position: _scrubPos, fmt: widget.fmt),
+                      ),
+                    ]);
+                  })
+                : null,
+          ),
+          Row(
+            children: [
+              Text(widget.fmt(showPos),
+                  style: TextStyle(
+                      color: _scrubbing ? LumenTheme.accent : Colors.white,
+                      fontWeight:
+                          _scrubbing ? FontWeight.w800 : FontWeight.w400,
+                      fontSize: 12)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: LayoutBuilder(builder: (context, box) {
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: (d) =>
+                        _pointerTo(d.localPosition, box.maxWidth, commit: true),
+                    onHorizontalDragUpdate: (d) => _pointerTo(
+                        d.localPosition, box.maxWidth,
+                        commit: false),
+                    onHorizontalDragEnd: (_) => _endScrub(commit: true),
+                    child: SizedBox(
+                      height: 28,
+                      child: Center(
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
+                          height: active ? 6 : 3.5,
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            borderRadius: BorderRadius.circular(4),
+                            boxShadow: active
+                                ? [
+                                    BoxShadow(
+                                        color: LumenTheme.accent
+                                            .withValues(alpha: 0.35),
+                                        blurRadius: 10)
+                                  ]
+                                : null,
+                          ),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: FractionallySizedBox(
+                              widthFactor: _fraction,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: LumenTheme.accent,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: const SizedBox.expand(),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+              const SizedBox(width: 10),
+              Text(widget.fmt(widget.duration),
+                  style: const TextStyle(color: Colors.white, fontSize: 12)),
+            ],
+          ),
+          // Hint line: teaches the remote interaction once focused.
+          AnimatedOpacity(
+            opacity: _focused && !_scrubbing ? 1 : 0,
+            duration: const Duration(milliseconds: 200),
+            child: const Padding(
+              padding: EdgeInsets.only(top: 3),
+              child: Text('OK to scrub · hold ◀ ▶ to speed up',
+                  style: TextStyle(color: Color(0xFF8A8F9E), fontSize: 10.5)),
             ),
           ),
-        ),
-        Text(fmt(duration),
-            style: const TextStyle(color: Colors.white, fontSize: 12)),
-      ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Timestamp + (when generated) frame-grab preview shown above the thumb.
+class _PreviewBubble extends StatelessWidget {
+  const _PreviewBubble({required this.position, required this.fmt});
+  final Duration position;
+  final String Function(Duration) fmt;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: ScrubThumbs.instance.thumbs,
+      builder: (context, _, __) {
+        final frame = ScrubThumbs.instance.nearest(position);
+        return Container(
+          width: 172,
+          padding: const EdgeInsets.all(5),
+          decoration: BoxDecoration(
+            color: const Color(0xF215171F),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: LumenTheme.accent.withValues(alpha: 0.5)),
+            boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 16)],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (frame != null)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.memory(frame,
+                      width: 162,
+                      height: 88,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true),
+                ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Text(fmt(position),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
+                        fontFeatures: [FontFeature.tabularFigures()])),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

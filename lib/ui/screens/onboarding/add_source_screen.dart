@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../state/credential_vault.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../widgets/focusable_item.dart';
@@ -93,6 +96,8 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
       ref.read(activePlaylistProvider.notifier).state =
           (await repo.playlists()).firstWhere((e) => e.id == saved.id);
       ref.invalidate(playlistsProvider);
+      // Snapshot the new source (+ any tokens) into the reinstall vault.
+      unawaited(CredentialVault.instance.save(repo));
       if (!mounted) return;
       if (Navigator.of(context).canPop()) Navigator.of(context).pop(true);
     } catch (e) {

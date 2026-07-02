@@ -42,8 +42,11 @@ class _PosterCardState extends ConsumerState<PosterCard> {
     final item = widget.item;
     final watched = item.id != null &&
         (ref.watch(watchedIdsProvider).valueOrNull?.contains(item.id) ?? false);
+    final fraction = item.id == null
+        ? null
+        : ref.watch(progressFractionsProvider).valueOrNull?[item.id];
 
-    if (widget.wide) return _buildWide(watched);
+    if (widget.wide) return _buildWide(watched, fraction);
 
     // Live channels look better square; movies/series as 2:3 posters.
     final isPoster = item.kind != StreamKind.live;
@@ -73,6 +76,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                       fallbackText: item.name,
                     ),
                     if (watched) const _SeenBadge(),
+                    if (fraction != null) _ProgressStripe(fraction: fraction),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -91,7 +95,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
 
   /// 16:9 landscape card, title overlaid on a bottom gradient, expands on
   /// hover/focus like modern streaming apps.
-  Widget _buildWide(bool watched) {
+  Widget _buildWide(bool watched, double? fraction) {
     final item = widget.item;
     final w = widget.width * 1.9; // 16:9-ish footprint for the same row height
     final h = w * 9 / 16;
@@ -147,9 +151,46 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                     ),
                   ),
                   if (watched) const _SeenBadge(),
+                  if (fraction != null) _ProgressStripe(fraction: fraction),
                 ],
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Thin resume-progress bar along the bottom edge of the artwork — the
+/// familiar streaming-app cue for partially watched content.
+class _ProgressStripe extends StatelessWidget {
+  const _ProgressStripe({required this.fraction});
+  final double fraction;
+
+  @override
+  Widget build(BuildContext context) {
+    // Skip barely-started and effectively-finished content.
+    if (fraction < 0.02 || fraction > 0.97) return const SizedBox.shrink();
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: ClipRRect(
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(14)),
+        child: SizedBox(
+          height: 4,
+          child: Row(
+            children: [
+              Expanded(
+                flex: (fraction * 1000).round(),
+                child: const ColoredBox(color: LumenTheme.accent),
+              ),
+              Expanded(
+                flex: ((1 - fraction) * 1000).round(),
+                child: const ColoredBox(color: Color(0x66000000)),
+              ),
+            ],
           ),
         ),
       ),

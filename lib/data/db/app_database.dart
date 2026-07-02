@@ -535,6 +535,21 @@ class AppDatabase {
     return rows.map(StreamItem.fromRow).toList();
   }
 
+  /// stream_id → completed fraction (0..1) for every in-progress item.
+  /// Drives the partial-progress bars on cards.
+  Future<Map<int, double>> progressFractions() async {
+    final rows = await db
+        .rawQuery('SELECT stream_id, position_ms, duration_ms FROM progress '
+            'WHERE duration_ms > 0');
+    final out = <int, double>{};
+    for (final r in rows) {
+      final pos = (r['position_ms'] as num?)?.toDouble() ?? 0;
+      final dur = (r['duration_ms'] as num?)?.toDouble() ?? 0;
+      if (dur > 0) out[r['stream_id'] as int] = (pos / dur).clamp(0.0, 1.0);
+    }
+    return out;
+  }
+
   /// Mark an item watched (e.g. reflecting Trakt's watched history).
   Future<void> markWatched(int streamId) async {
     await db.insert(

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and below (Auto Backup). Keep the tiny credential vault,
+     exclude the multi-MB channel database (it would blow the 25MB backup
+     quota and is rebuilt from the provider on first sync anyway). -->
+<full-backup-content>
+    <include domain="file" path="app_flutter/lumen_vault.json"/>
+    <exclude domain="database" path="."/>
+    <exclude domain="sharedpref" path="."/>
+</full-backup-content>

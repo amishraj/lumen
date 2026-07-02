@@ -273,6 +273,30 @@ class TraktService {
     }
   }
 
+  /// Shows the user has watched (any episodes) on Trakt.
+  Future<List<TraktItem>> watchedShows() async {
+    if (!await isConnected()) return [];
+    try {
+      final res = await _authGet('$_api/sync/watched/shows');
+      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final out = <TraktItem>[];
+      if (list is List) {
+        for (final e in list) {
+          final m = e is Map ? e['show'] : null;
+          if (m is Map && m['title'] != null) {
+            out.add(TraktItem(
+                title: '${m['title']}',
+                year: (m['year'] as num?)?.toInt(),
+                type: 'show'));
+          }
+        }
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }
+
   /// The user's custom Trakt lists.
   Future<List<TraktList>> lists() async {
     if (!await isConnected()) return [];

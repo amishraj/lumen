@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../state/credential_vault.dart';
 import '../../../state/providers.dart';
 import '../../../state/service_status.dart';
 import '../../theme/lumen_theme.dart';
@@ -102,7 +103,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const Scaffold(body: Center(child: CircularProgressIndicator())),
       error: (e, _) => Scaffold(body: Center(child: Text('$e'))),
       data: (list) {
-        if (list.isEmpty) return const AddSourceScreen();
+        if (list.isEmpty) {
+          // Fresh install: a same-device reinstall may have an OS-restored
+          // vault with the user's sources + accounts — restore before showing
+          // onboarding so they land straight back in their setup.
+          final restore = ref.watch(vaultRestoreProvider);
+          return restore.when(
+            loading: () => const Scaffold(
+                body: Center(child: CircularProgressIndicator())),
+            error: (_, __) => const AddSourceScreen(),
+            data: (restored) {
+              if (restored) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  ref.invalidate(playlistsProvider);
+                });
+                return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()));
+              }
+              return const AddSourceScreen();
+            },
+          );
+        }
 
         final active = ref.watch(activePlaylistProvider);
         if (active == null) {

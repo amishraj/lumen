@@ -203,9 +203,18 @@ final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       if (nowMs - last > 3600 * 1000) {
         final svc = await ref.watch(traktServiceProvider.future);
+        // Movies AND shows — matched to the library with the EN-preferring
+        // title search, so a watch on any language variant marks the same
+        // title here.
         for (final w in (await svc.watchedMovies()).take(150)) {
           final hit = await repo.findByTitle(pl!.id!, w.title);
           if (hit?.id != null && hit!.kind == StreamKind.movie) {
+            await repo.markWatched(hit.id!);
+          }
+        }
+        for (final w in (await svc.watchedShows()).take(150)) {
+          final hit = await repo.findByTitle(pl!.id!, w.title);
+          if (hit?.id != null && hit!.kind == StreamKind.series) {
             await repo.markWatched(hit.id!);
           }
         }
@@ -214,6 +223,29 @@ final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
     }
   } catch (_) {/* best effort */}
   return repo.watchedIds(pl!.id!);
+});
+
+/// stream id → watched fraction (0..1). Local progress first, overlaid with
+/// Trakt's cross-device resume points (matched by EN-preferring title search)
+/// so partial progress shows no matter where you watched.
+final progressFractionsProvider = FutureProvider<Map<int, double>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final map = await repo.progressFractions();
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return map;
+  try {
+    final connected = await ref.watch(traktConnectedProvider.future);
+    if (connected) {
+      final svc = await ref.watch(traktServiceProvider.future);
+      for (final p in (await svc.playback()).take(30)) {
+        final hit = await repo.findByTitle(pl!.id!, p.item.title);
+        if (hit?.id != null && !map.containsKey(hit!.id)) {
+          map[hit.id!] = p.progress.clamp(0.0, 1.0);
+        }
+      }
+    }
+  } catch (_) {/* offline — local progress still shows */}
+  return map;
 });
 
 final recentlyWatchedProvider = FutureProvider<List<StreamItem>>((ref) async {

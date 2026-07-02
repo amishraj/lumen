@@ -39,6 +39,7 @@ void openItem(BuildContext context, WidgetRef ref, StreamItem item) {
       ref.invalidate(continueWatchingProvider);
       ref.invalidate(recentlyWatchedProvider);
       ref.invalidate(watchedIdsProvider);
+      ref.invalidate(progressFractionsProvider);
     } catch (_) {/* ref disposed with the screen — nothing to refresh */}
   });
 }
