@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../../data/models/models.dart';
 import '../../../data/sources/realdebrid_service.dart';
 import '../../../data/sources/trakt_service.dart';
+import '../../../state/playback_engine.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../title_utils.dart';
@@ -53,19 +54,16 @@ class PlayerScreen extends ConsumerStatefulWidget {
 }
 
 class _PlayerScreenState extends ConsumerState<PlayerScreen> {
-  /// The one player instance allowed to make noise. If a second PlayerScreen
-  /// mounts (e.g. a double OK-press pushed the route twice), the previous
-  /// instance's audio is killed immediately instead of playing on behind it.
-  static _PlayerScreenState? _active;
-  bool _tornDown = false;
+  // The app-wide playback pipeline: never disposed, only stopped. See
+  // PlaybackEngine for why per-screen Player instances kept leaking audio.
+  Player get _player => PlaybackEngine.instance.player;
+  VideoController get _controller => PlaybackEngine.instance.controller;
 
-  late final Player _player = Player(
-    configuration: const PlayerConfiguration(
-      bufferSize: 32 * 1024 * 1024, // generous buffer for flaky IPTV sources
-      title: 'Lumen',
-    ),
-  );
-  late final VideoController _controller = VideoController(_player);
+  /// Event ownership: the shared player emits to every mounted PlayerScreen,
+  /// so if two get stacked (double OK-press), only the newest may react —
+  /// otherwise a buried screen writes the wrong progress or auto-advances.
+  static _PlayerScreenState? _active;
+  bool get _ownsPlayback => _active == this;
 
   late final List<StreamItem> _queue =
       widget.queue == null || widget.queue!.isEmpty
@@ -115,11 +113,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _active?._teardownPlayer(); // silence any stacked/leaked predecessor
     _active = this;
-    // Listeners for the player's lifetime; they read _current.
-    _player.stream.position.listen(_onPosition);
-    _player.stream.completed.listen(_onCompleted);
+    // Every listener is stored and cancelled in dispose — the global player
+    // outlives this screen, so an unstored listener would fire forever.
+    _subs.add(_player.stream.position.listen(_onPosition));
+    _subs.add(_player.stream.completed.listen(_onCompleted));
     // Drive the overlay's spinner / play-pause / seek bar.
     _subs.add(_player.stream.buffering.listen((b) {
       if (mounted) setState(() => _buffering = b);
@@ -144,7 +142,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _autoAudioPicked = false;
 
   void _maybePickEnglishAudio(List<AudioTrack> tracks) {
-    if (_autoAudioPicked || _current.kind == StreamKind.live) return;
+    if (!_ownsPlayback ||
+        _autoAudioPicked ||
+        _current.kind == StreamKind.live) {
+      return;
+    }
     final en = tracks.firstWhere(
       (t) =>
           t != AudioTrack.no() &&
@@ -201,6 +203,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Future<void> _init() async {
     await _configureMpv();
+    await PlaybackEngine.instance.restoreVolume(); // teardown mutes to 0
     await _openAt(_index);
   }
 
@@ -272,7 +275,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// closed the socket, a segment ran out), reconnect with backoff instead of
   /// sitting paused. VOD at the end auto-advances to the next episode.
   void _onCompleted(bool done) {
-    if (!done || !mounted) return;
+    if (!done || !mounted || !_ownsPlayback) return;
     if (_current.kind == StreamKind.live) {
       _scheduleLiveReconnect();
     } else if (_index < _queue.length - 1) {
@@ -295,7 +298,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Future<void> _onPosition(Duration pos) async {
-    if (_current.kind == StreamKind.live) return;
+    if (!_ownsPlayback || _current.kind == StreamKind.live) return;
     final dur = _player.state.duration;
     if (dur.inMilliseconds <= 0) return;
     _lastPosMs = pos.inMilliseconds;
@@ -374,32 +377,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _rootFocus.dispose();
     _firstControlFocus.dispose();
     if (_active == this) _active = null;
-    _teardownPlayer();
+    // Stop the shared pipeline — verified & retried inside the engine. No
+    // dispose(): the engine owns the player for the app's lifetime, which is
+    // what finally makes "exit = silence" deterministic.
+    unawaited(PlaybackEngine.instance.stopPlayback());
     super.dispose();
-  }
-
-  /// Idempotent, deterministic audio teardown. The naive `stop(); dispose();`
-  /// could still leak audio: if stop() stalls on a dead network socket its
-  /// await never completes and dispose() never runs — playback continues
-  /// headless in the background. So: mute *immediately* (cheap property set,
-  /// silences output even if teardown lags), then pause/stop with hard
-  /// timeouts, then dispose unconditionally.
-  void _teardownPlayer() {
-    if (_tornDown) return;
-    _tornDown = true;
-    final player = _player;
-    () async {
-      try {
-        unawaited(player.setVolume(0));
-        unawaited(player.pause());
-      } catch (_) {/* already tearing down */}
-      try {
-        await player.stop().timeout(const Duration(seconds: 3));
-      } catch (_) {/* stalled or already stopped — dispose regardless */}
-      try {
-        await player.dispose().timeout(const Duration(seconds: 5));
-      } catch (_) {/* libmpv wedged — nothing more we can do */}
-    }();
   }
 
   // ---- Track selection -----------------------------------------------------
