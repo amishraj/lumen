@@ -13,6 +13,7 @@ import '../../title_utils.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/logo_image.dart';
 import '../../widgets/poster_card.dart';
+import '../../widgets/imdb_badge.dart';
 import '../../widgets/rating_badges.dart';
 import 'genre_browse_screen.dart';
 import 'home_customize_screen.dart';
@@ -56,11 +57,11 @@ class HomeFeedScreen extends ConsumerWidget {
                 childCount: rows.length,
               ),
             ),
-          // TMDB discovery rows (only when the user has added a key).
-          const SliverToBoxAdapter(child: _TmdbSection()),
-          // Trakt watchlist — always shown when connected (self-hides when
-          // empty), so it no longer depends on being toggled into the config.
+          // Trakt watchlist — above the discovery rows, always shown when
+          // connected (self-hides when empty).
           const SliverToBoxAdapter(child: _TraktRow()),
+          // TMDB discovery rows (Browse by Genre / Popular / Trending …).
+          const SliverToBoxAdapter(child: _TmdbSection()),
           // The user's custom Trakt lists, one row each.
           SliverToBoxAdapter(
             child: Consumer(builder: (context, ref, _) {
@@ -316,22 +317,16 @@ class _HeroBillboard extends ConsumerWidget {
                       color: Colors.white,
                       letterSpacing: -1),
                 ),
-                // IMDb / Rotten Tomatoes (OMDb) badges, with a TMDB star as a
-                // fallback so the hero always shows a rating level.
+                // IMDb / Rotten Tomatoes (OMDb) badges, with an IMDb-styled
+                // rating fallback so the hero always shows a rating level.
                 if (omdb != null &&
                     (omdb.imdb != null || omdb.rotten != null)) ...[
                   const SizedBox(height: 10),
                   RatingBadges(info: omdb),
                 ] else if ((item.rating ?? tmdb?.rating ?? 0) > 0) ...[
-                  const SizedBox(height: 8),
-                  Row(children: [
-                    const Icon(Icons.star_rounded,
-                        size: 16, color: LumenTheme.accentWarm),
-                    const SizedBox(width: 4),
-                    Text((item.rating ?? tmdb!.rating!).toStringAsFixed(1),
-                        style: const TextStyle(
-                            color: Colors.white, fontWeight: FontWeight.w600)),
-                  ]),
+                  const SizedBox(height: 10),
+                  ImdbBadge(
+                      rating: (item.rating ?? tmdb!.rating!), compact: false),
                 ],
                 if (synopsis != null) ...[
                   const SizedBox(height: 12),
@@ -601,12 +596,13 @@ class _TraktRow extends ConsumerWidget {
           ]),
         ),
         SizedBox(
-          height: 92,
+          height: 246,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 20),
+            clipBehavior: Clip.none,
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
             itemCount: items.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            separatorBuilder: (_, __) => const SizedBox(width: 14),
             itemBuilder: (_, i) => _TraktChip(item: items[i]),
           ),
         ),
@@ -639,12 +635,13 @@ class _TraktListRow extends ConsumerWidget {
           ]),
         ),
         SizedBox(
-          height: 92,
+          height: 246,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 20),
+            clipBehavior: Clip.none,
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
             itemCount: items.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            separatorBuilder: (_, __) => const SizedBox(width: 14),
             itemBuilder: (_, i) => _TraktChip(item: items[i]),
           ),
         ),
@@ -659,13 +656,13 @@ class _TraktChip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Banner art from TMDB (DB-cached per title); text-card fallback when
-    // there's no key or no match.
-    final art = ref
+    // Vertical 2:3 poster from TMDB (DB-cached per title); neutral fallback.
+    final poster = ref
         .watch(tmdbDetailProvider(
             (title: item.title, isShow: item.type == 'show')))
         .valueOrNull
-        ?.backdrop;
+        ?.poster;
+    const w = 130.0;
 
     return FocusableItem(
       borderRadius: 14,
@@ -683,54 +680,33 @@ class _TraktChip extends ConsumerWidget {
               content: Text('"${item.title}" not found in your library.')));
         }
       },
-      builder: (context, focused) => SizedBox(
-        width: 164,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: Stack(
-            fit: StackFit.expand,
+      builder: (context, focused) => AnimatedScale(
+        scale: focused ? 1.05 : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOut,
+        child: SizedBox(
+          width: w,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (art != null)
-                LogoImage(
-                    url: art,
-                    size: 164,
-                    height: 92,
-                    radius: 0,
-                    fallbackText: item.title)
-              else
-                const ColoredBox(color: LumenTheme.surface),
-              const DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [Color(0xCC000000), Colors.transparent],
-                    stops: [0.0, 0.7],
-                  ),
-                ),
+              LogoImage(
+                url: poster,
+                size: w,
+                height: w * 1.5,
+                radius: 14,
+                fallbackText: item.title,
               ),
-              Positioned(
-                left: 10,
-                right: 10,
-                bottom: 7,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(item.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 12.5)),
-                    Text(
-                        '${item.type == 'show' ? 'TV' : 'Movie'}'
-                        '${item.year != null ? ' · ${item.year}' : ''}',
-                        style: const TextStyle(
-                            color: Color(0xFFB9BECD), fontSize: 10.5)),
-                  ],
-                ),
-              ),
+              const SizedBox(height: 6),
+              Text(item.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 12.5, fontWeight: FontWeight.w600)),
+              Text(
+                  '${item.type == 'show' ? 'TV' : 'Movie'}'
+                  '${item.year != null ? ' · ${item.year}' : ''}',
+                  style:
+                      const TextStyle(color: Color(0xFF9AA0B0), fontSize: 11)),
             ],
           ),
         ),

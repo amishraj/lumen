@@ -28,6 +28,19 @@ class PlaybackEngine {
 
   VideoController get controller => _controller ??= VideoController(player);
 
+  /// Instant, synchronous-as-possible silence for the moment the user leaves
+  /// the player. pause() is a far more reliable libmpv command than stop()
+  /// (which has failed to fully halt on some Android TV builds), so fire it
+  /// first and unawaited — the screen is already gone, we just need quiet now.
+  void pauseNow() {
+    final p = _player;
+    if (p == null) return;
+    try {
+      unawaited(p.setVolume(0));
+      unawaited(p.pause());
+    } catch (_) {/* best effort */}
+  }
+
   /// Hard-stop playback: mute instantly (so even a lagging stop is silent),
   /// pause, then stop — verified and retried until the pipeline reports idle.
   Future<void> stopPlayback() async {

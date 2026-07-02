@@ -549,7 +549,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // leave the player — only pop out once the controls are already hidden.
       canPop: !_controlsVisible,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _controlsVisible) _hideControls();
+        // The instant a real back happens, silence playback — don't wait for
+        // dispose()/stop() to work through media_kit's command queue.
+        if (didPop) {
+          PlaybackEngine.instance.pauseNow();
+        } else if (_controlsVisible) {
+          _hideControls();
+        }
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -635,8 +641,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                         // controls overlay is visible (that
                                         // guard is only meant for system/
                                         // hardware back — see canPop below).
-                                        onTap: () =>
-                                            Navigator.of(context).pop(),
+                                        onTap: () {
+                                          PlaybackEngine.instance.pauseNow();
+                                          Navigator.of(context).pop();
+                                        },
                                         onActivity: _resetHideTimer,
                                       ),
                                     ),

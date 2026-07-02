@@ -6,6 +6,7 @@ import '../../../data/sources/omdb_service.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../title_utils.dart';
+import '../../widgets/focusable_item.dart';
 import '../../widgets/logo_image.dart';
 import '../../widgets/rating_badges.dart';
 import '../player/player_screen.dart';
@@ -160,18 +161,24 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     SizedBox(
-                      height: 44,
+                      height: 48,
                       child: ListView.separated(
                         scrollDirection: Axis.horizontal,
+                        clipBehavior: Clip.none,
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         itemCount: seasons.length,
                         separatorBuilder: (_, __) => const SizedBox(width: 8),
                         itemBuilder: (_, i) {
                           final s = seasons[i];
                           final sel = s == _season;
-                          return GestureDetector(
-                            onTap: () => setState(() => _season = s),
-                            child: Container(
+                          // FocusableItem so the D-pad can move across seasons
+                          // and select one (was a plain GestureDetector —
+                          // unreachable by remote).
+                          return FocusableItem(
+                            borderRadius: 30,
+                            autofocus: i == 0,
+                            onActivate: () => setState(() => _season = s),
+                            builder: (context, focused) => Container(
                               alignment: Alignment.center,
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 16),
@@ -194,22 +201,32 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    ...inSeason.map((ep) => ListTile(
-                          leading: LogoImage(
-                              url: ep.still ?? widget.series.logo,
-                              size: 64,
-                              height: 40,
-                              radius: 8,
-                              fallbackText: ep.title),
-                          title: Text('${ep.episode}. ${ep.title}',
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: ep.durationSecs != null
-                              ? Text('${(ep.durationSecs! / 60).round()} min',
-                                  style: const TextStyle(fontSize: 12))
-                              : null,
-                          trailing: const Icon(Icons.play_circle_fill,
-                              color: LumenTheme.accent),
-                          onTap: () => _play(eps, ep),
+                    ...inSeason.map((ep) => FocusableItem(
+                          borderRadius: 12,
+                          onActivate: () => _play(eps, ep),
+                          builder: (context, focused) => Container(
+                            color: focused
+                                ? LumenTheme.surfaceHi
+                                : Colors.transparent,
+                            child: ListTile(
+                              leading: LogoImage(
+                                  url: ep.still ?? widget.series.logo,
+                                  size: 64,
+                                  height: 40,
+                                  radius: 8,
+                                  fallbackText: ep.title),
+                              title: Text('${ep.episode}. ${ep.title}',
+                                  maxLines: 1, overflow: TextOverflow.ellipsis),
+                              subtitle: ep.durationSecs != null
+                                  ? Text(
+                                      '${(ep.durationSecs! / 60).round()} min',
+                                      style: const TextStyle(fontSize: 12))
+                                  : null,
+                              trailing: const Icon(Icons.play_circle_fill,
+                                  color: LumenTheme.accent),
+                              onTap: () => _play(eps, ep),
+                            ),
+                          ),
                         )),
                     const SizedBox(height: 24),
                   ],

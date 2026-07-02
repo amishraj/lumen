@@ -6,6 +6,7 @@ import '../../state/providers.dart';
 import '../theme/lumen_theme.dart';
 import '../title_utils.dart';
 import 'focusable_item.dart';
+import 'imdb_badge.dart';
 import 'logo_image.dart';
 
 /// A Netflix-style tile used in horizontal home rows. Two shapes:
@@ -76,15 +77,10 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                 ),
                 const SizedBox(height: 6),
                 _TitleLine(item: item, light: false),
-                if (item.rating != null && item.rating! > 0)
-                  Row(children: [
-                    const Icon(Icons.star_rounded,
-                        size: 12, color: LumenTheme.accentWarm),
-                    const SizedBox(width: 2),
-                    Text(item.rating!.toStringAsFixed(1),
-                        style: const TextStyle(
-                            fontSize: 11, color: Color(0xFF9AA0B0))),
-                  ]),
+                if (item.rating != null && item.rating! > 0) ...[
+                  const SizedBox(height: 2),
+                  ImdbBadge(rating: item.rating!),
+                ],
               ],
             ),
           ),
@@ -144,12 +140,8 @@ class _PosterCardState extends ConsumerState<PosterCard> {
                       children: [
                         Expanded(child: _TitleLine(item: item, light: true)),
                         if (item.rating != null && item.rating! > 0) ...[
-                          const Icon(Icons.star_rounded,
-                              size: 12, color: LumenTheme.accentWarm),
-                          const SizedBox(width: 2),
-                          Text(item.rating!.toStringAsFixed(1),
-                              style: const TextStyle(
-                                  fontSize: 11, color: Colors.white70)),
+                          const SizedBox(width: 6),
+                          ImdbBadge(rating: item.rating!),
                         ],
                       ],
                     ),
