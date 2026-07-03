@@ -69,10 +69,19 @@ class TmdbService {
     return (<String, dynamic>{'api_key': k}, Options());
   }
 
-  static String? posterUrl(String? path, {String size = 'w500'}) =>
-      (path == null || path.isEmpty) ? null : '$_img/$size$path';
-  static String? backdropUrl(String? path, {String size = 'w1280'}) =>
-      (path == null || path.isEmpty) ? null : '$_img/$size$path';
+  /// Adaptive artwork quality: observed API latency decides between full
+  /// 1080p-class art (w1280/w500) and lighter tiers (w780/w342), so slow
+  /// connections still get instant-feeling rows instead of trickling images.
+  static bool fastNet = true;
+
+  static String? posterUrl(String? path, {String? size}) =>
+      (path == null || path.isEmpty)
+          ? null
+          : '$_img/${size ?? (fastNet ? 'w500' : 'w342')}$path';
+  static String? backdropUrl(String? path, {String? size}) =>
+      (path == null || path.isEmpty)
+          ? null
+          : '$_img/${size ?? (fastNet ? 'w1280' : 'w780')}$path';
 
   /// Cached GET. List endpoints get a TTL so home rows refresh occasionally;
   /// pass ttl: null for permanent caching (per-title detail lookups).
@@ -98,8 +107,16 @@ class TmdbService {
 
     try {
       final (q, opts) = await _auth();
+      final sw = Stopwatch()..start();
       final res = await _dio.get('$_api$path',
           queryParameters: {...q, ...query}, options: opts);
+      // Latency probe piggybacked on real requests: pick lighter artwork
+      // tiers on slow links, recover to full quality when the network does.
+      if (sw.elapsedMilliseconds > 1500) {
+        fastNet = false;
+      } else if (sw.elapsedMilliseconds < 400) {
+        fastNet = true;
+      }
       if (res.statusCode == 200) {
         final data = res.data is String ? jsonDecode(res.data) : res.data;
         await _repo.setSetting(

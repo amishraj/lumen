@@ -36,6 +36,9 @@ TitleParts cleanTitle(String raw) {
       .replaceFirst(_trailingYear, '')
       .replaceAll(_spaces, ' ')
       .trim();
-  // Never render an empty title — fall back to the raw name.
-  return TitleParts(s.isEmpty ? raw.trim() : s, lang);
+  // Never render an empty title — fall back to the raw name (and if even the
+  // trimmed raw is empty, keep the original string rather than nothing).
+  if (s.isNotEmpty) return TitleParts(s, lang);
+  final fallback = raw.trim();
+  return TitleParts(fallback.isNotEmpty ? fallback : raw, lang);
 }

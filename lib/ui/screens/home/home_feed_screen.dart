@@ -3,9 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
 import '../../../data/repositories/library_repository.dart';
-import '../../../data/sources/omdb_service.dart';
 import '../../../data/sources/tmdb_service.dart';
 import '../../../data/sources/trakt_service.dart';
+import '../../../state/detail_bundle.dart';
 import '../../../state/providers.dart';
 import '../../navigation.dart';
 import '../../theme/lumen_theme.dart';
@@ -222,14 +222,15 @@ class _HeroBillboard extends ConsumerWidget {
     final h = (MediaQuery.of(context).size.height * 0.62).clamp(380.0, 560.0);
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = item.id != null && favs.contains(item.id);
-    // Prefer a wide TMDB backdrop for the cinematic hero when available.
-    final tmdb = ref
-        .watch(tmdbDetailProvider(
+    // Single bundled fetch so backdrop, badges and synopsis land together.
+    final bundle = ref
+        .watch(detailBundleProvider(
             (title: item.name, isShow: item.kind == StreamKind.series)))
         .valueOrNull;
-    final omdb = ref.watch(omdbProvider(item.name)).valueOrNull;
+    final tmdb = bundle?.tmdb;
+    final omdb = bundle?.omdb;
     final heroArt = tmdb?.backdrop ?? item.logo;
-    final synopsis = omdb?.plot ?? tmdb?.overview;
+    final synopsis = bundle?.overview;
 
     return SizedBox(
       height: h,

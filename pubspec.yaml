@@ -1,7 +1,7 @@
 name: lumen
 description: "Lumen — a buttery-smooth personal IPTV player for Android, Google TV, iOS & macOS."
 publish_to: "none"
-version: 1.0.33+34
+version: 1.0.34+35
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -38,6 +38,8 @@ dependencies:
   cupertino_icons: ^1.0.8
 
 dev_dependencies:
+  flutter_test:
+    sdk: flutter
   flutter_lints: ^4.0.0
 
 flutter:

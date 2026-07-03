@@ -2,9 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
-import '../../../data/sources/omdb_service.dart';
 import '../../../data/sources/realdebrid_service.dart';
-import '../../../data/sources/tmdb_service.dart';
+import '../../../state/detail_bundle.dart';
 import '../../../state/providers.dart';
 import '../../theme/lumen_theme.dart';
 import '../../title_utils.dart';
@@ -22,16 +21,17 @@ class ContentDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final meta = ref.watch(omdbProvider(item.name));
-    final tmdb = ref
-        .watch(tmdbDetailProvider(
-            (title: item.name, isShow: item.kind == StreamKind.series)))
-        .valueOrNull;
+    // One bundled fetch (OMDb ∥ TMDB) so the page updates ONCE — no ratings/
+    // art/synopsis popping in one after another.
+    final bundle = ref.watch(detailBundleProvider(
+        (title: item.name, isShow: item.kind == StreamKind.series)));
+    final loading = bundle.isLoading;
+    final info = bundle.valueOrNull?.omdb;
+    final tmdb = bundle.valueOrNull?.tmdb;
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = item.id != null && favs.contains(item.id);
     // Warm the RD flag so it's resolved by the time Play is pressed.
     ref.watch(rdEnabledProvider);
-    final info = meta.valueOrNull;
     // TMDB supplies the best backdrop; fall back to OMDb poster / provider art.
     final backdrop = tmdb?.backdrop ?? info?.poster ?? item.logo;
     final overview = info?.plot ?? tmdb?.overview;
@@ -101,7 +101,7 @@ class ContentDetailScreen extends ConsumerWidget {
                           color: Color(0xFF9AA0B0), fontSize: 13),
                     ),
                   const SizedBox(height: 14),
-                  if (meta.isLoading)
+                  if (loading)
                     const SizedBox(
                         height: 18,
                         width: 18,
@@ -178,7 +178,7 @@ class ContentDetailScreen extends ConsumerWidget {
                             fontSize: 14,
                             height: 1.5,
                             color: Color(0xFFC7CBD6)))
-                  else if (!meta.isLoading)
+                  else if (!loading)
                     const Text('No description available.',
                         style:
                             TextStyle(color: Color(0xFF6B7080), fontSize: 13)),

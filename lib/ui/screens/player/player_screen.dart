@@ -303,6 +303,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   bool _thumbsScheduled = false;
+  int _lastSavedPosMs = -1;
 
   Future<void> _onPosition(Duration pos) async {
     if (!_ownsPlayback || _current.kind == StreamKind.live) return;
@@ -328,10 +329,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       await _player.seek(
           Duration(milliseconds: (dur.inMilliseconds * _resume!).round()));
     }
-    if (_current.id != null) {
+    // Persist progress every ~5s (not every position tick — that was a DB
+    // write per frame-ish event). The in-player UI runs off in-memory state,
+    // so the experience stays instant; the DB (and Trakt, via scrobble stop)
+    // catch up in the background and on exit.
+    if (_current.id != null &&
+        (pos.inMilliseconds - _lastSavedPosMs).abs() >= 5000) {
+      _lastSavedPosMs = pos.inMilliseconds;
       final repo = ref.read(repositoryProvider).valueOrNull;
-      await repo?.db
-          .saveProgress(_current.id!, pos.inMilliseconds, dur.inMilliseconds);
+      unawaited(repo?.db
+          .saveProgress(_current.id!, pos.inMilliseconds, dur.inMilliseconds));
     }
   }
 
@@ -373,10 +380,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   void _checkpoint() {
-    // Exact exit position → Trakt (watched if ≥80%, else continue-watching).
-    if (_current.kind != StreamKind.live && _lastDurMs > 0) {
-      _scrobble('stop');
+    if (_current.kind == StreamKind.live || _lastDurMs <= 0) return;
+    // Exact final position → local DB immediately (so continue-watching and
+    // the progress stripes are correct the instant the user is back on Home)…
+    if (_current.id != null) {
+      final repo = ref.read(repositoryProvider).valueOrNull;
+      unawaited(repo?.db.saveProgress(_current.id!, _lastPosMs, _lastDurMs));
     }
+    // …and → Trakt in the background (watched if ≥80%, else continue-watching).
+    _scrobble('stop');
   }
 
   void _skip(int delta) {
@@ -783,42 +795,47 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                 ),
                               ),
                               // ---- Center: −30s · play/pause · +30s ----
-                              if (!showSpinner)
-                                Center(
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      if (!isLive) ...[
-                                        _RoundButton(
-                                          icon: Icons.replay_30,
-                                          tooltip: 'Back 30 seconds',
-                                          onTap: () => _seekBy(-30),
-                                          onActivity: _resetHideTimer,
-                                        ),
-                                        const SizedBox(width: 30),
-                                      ],
+                              // Always in the tree: if this row vanished while
+                              // buffering, _firstControlFocus detached and OK
+                              // presses landed on arbitrary focusables.
+                              Center(
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (!isLive) ...[
                                       _RoundButton(
-                                        focusNode: _firstControlFocus,
-                                        big: true,
-                                        icon: _playing
-                                            ? Icons.pause
-                                            : Icons.play_arrow,
-                                        tooltip: _playing ? 'Pause' : 'Play',
-                                        onTap: _togglePlay,
+                                        icon: Icons.replay_30,
+                                        tooltip: 'Back 30 seconds',
+                                        onTap: () => _seekBy(-30),
                                         onActivity: _resetHideTimer,
                                       ),
-                                      if (!isLive) ...[
-                                        const SizedBox(width: 30),
-                                        _RoundButton(
-                                          icon: Icons.forward_30,
-                                          tooltip: 'Forward 30 seconds',
-                                          onTap: () => _seekBy(30),
-                                          onActivity: _resetHideTimer,
-                                        ),
-                                      ],
+                                      const SizedBox(width: 30),
                                     ],
-                                  ),
+                                    _RoundButton(
+                                      focusNode: _firstControlFocus,
+                                      big: true,
+                                      // Spinner lives inside the button while
+                                      // buffering; OK is a safe no-op then.
+                                      spinner: showSpinner,
+                                      icon: _playing
+                                          ? Icons.pause
+                                          : Icons.play_arrow,
+                                      tooltip: _playing ? 'Pause' : 'Play',
+                                      onTap: showSpinner ? () {} : _togglePlay,
+                                      onActivity: _resetHideTimer,
+                                    ),
+                                    if (!isLive) ...[
+                                      const SizedBox(width: 30),
+                                      _RoundButton(
+                                        icon: Icons.forward_30,
+                                        tooltip: 'Forward 30 seconds',
+                                        onTap: () => _seekBy(30),
+                                        onActivity: _resetHideTimer,
+                                      ),
+                                    ],
+                                  ],
                                 ),
+                              ),
                               // ---- Bottom: title + seek bar (or LIVE pill) ----
                               SafeArea(
                                 child: Align(
@@ -988,91 +1005,98 @@ class _EpisodesDrawerState extends State<_EpisodesDrawer> {
     return Positioned.fill(
       child: IgnorePointer(
         ignoring: !open,
-        child: Stack(
-          children: [
-            // Dim scrim over the video; tap to dismiss.
-            AnimatedOpacity(
-              opacity: open ? 1 : 0,
-              duration: const Duration(milliseconds: 240),
-              child: GestureDetector(
-                onTap: onClose,
-                child: const ColoredBox(color: Color(0x66000000)),
+        // Crucial: while hidden the drawer must also be focus-inert —
+        // without this its (autofocused!) episode tiles grabbed remote focus
+        // under the invisible overlay, so OK during load switched to a
+        // seemingly random episode.
+        child: ExcludeFocus(
+          excluding: !open,
+          child: Stack(
+            children: [
+              // Dim scrim over the video; tap to dismiss.
+              AnimatedOpacity(
+                opacity: open ? 1 : 0,
+                duration: const Duration(milliseconds: 240),
+                child: GestureDetector(
+                  onTap: onClose,
+                  child: const ColoredBox(color: Color(0x66000000)),
+                ),
               ),
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: AnimatedSlide(
-                offset: open ? Offset.zero : const Offset(1, 0),
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
-                child: Container(
-                  width: width,
-                  decoration: const BoxDecoration(
-                    color: Color(0xF215171F),
-                    borderRadius:
-                        BorderRadius.horizontal(left: Radius.circular(20)),
-                  ),
-                  child: SafeArea(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
-                          child: Row(
-                            children: [
-                              const Expanded(
-                                child: Text('Episodes',
-                                    style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w800)),
-                              ),
-                              FocusableItem(
-                                borderRadius: 20,
-                                onActivate: onClose,
-                                builder: (context, focused) => const Padding(
-                                  padding: EdgeInsets.all(6),
-                                  child: Icon(Icons.close, size: 20),
+              Align(
+                alignment: Alignment.centerRight,
+                child: AnimatedSlide(
+                  offset: open ? Offset.zero : const Offset(1, 0),
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeOutCubic,
+                  child: Container(
+                    width: width,
+                    decoration: const BoxDecoration(
+                      color: Color(0xF215171F),
+                      borderRadius:
+                          BorderRadius.horizontal(left: Radius.circular(20)),
+                    ),
+                    child: SafeArea(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
+                            child: Row(
+                              children: [
+                                const Expanded(
+                                  child: Text('Episodes',
+                                      style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800)),
                                 ),
-                              ),
-                            ],
+                                FocusableItem(
+                                  borderRadius: 20,
+                                  onActivate: onClose,
+                                  builder: (context, focused) => const Padding(
+                                    padding: EdgeInsets.all(6),
+                                    child: Icon(Icons.close, size: 20),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        Expanded(
-                          child: ListView.builder(
-                            controller: _controller,
-                            padding: const EdgeInsets.only(bottom: 12),
-                            itemCount: entries.length,
-                            itemBuilder: (context, n) {
-                              final e = entries[n];
-                              if (e < 0) {
-                                // Season header.
-                                return Padding(
-                                  padding:
-                                      const EdgeInsets.fromLTRB(16, 14, 16, 6),
-                                  child: Text('SEASON ${-e - 1}',
-                                      style: const TextStyle(
-                                          fontSize: 11.5,
-                                          fontWeight: FontWeight.w800,
-                                          letterSpacing: 1.2,
-                                          color: Color(0xFF8A8F9E))),
+                          Expanded(
+                            child: ListView.builder(
+                              controller: _controller,
+                              padding: const EdgeInsets.only(bottom: 12),
+                              itemCount: entries.length,
+                              itemBuilder: (context, n) {
+                                final e = entries[n];
+                                if (e < 0) {
+                                  // Season header.
+                                  return Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        16, 14, 16, 6),
+                                    child: Text('SEASON ${-e - 1}',
+                                        style: const TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w800,
+                                            letterSpacing: 1.2,
+                                            color: Color(0xFF8A8F9E))),
+                                  );
+                                }
+                                return _EpisodeTile(
+                                  item: queue[e],
+                                  current: e == currentIndex,
+                                  autofocus: e == currentIndex,
+                                  onTap: () => onSelect(e),
                                 );
-                              }
-                              return _EpisodeTile(
-                                item: queue[e],
-                                current: e == currentIndex,
-                                autofocus: e == currentIndex,
-                                onTap: () => onSelect(e),
-                              );
-                            },
+                              },
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1458,6 +1482,7 @@ class _RoundButton extends StatelessWidget {
     this.focusNode,
     this.onActivity,
     this.big = false,
+    this.spinner = false,
   });
   final IconData icon;
   final VoidCallback onTap;
@@ -1467,6 +1492,7 @@ class _RoundButton extends StatelessWidget {
   final FocusNode? focusNode;
   final VoidCallback? onActivity;
   final bool big;
+  final bool spinner;
 
   @override
   Widget build(BuildContext context) {
@@ -1480,11 +1506,18 @@ class _RoundButton extends StatelessWidget {
       builder: (context, focused) => CircleAvatar(
         radius: big ? 34 : 20,
         backgroundColor: Colors.black54,
-        child: Icon(icon,
-            size: big ? 40 : 24,
-            color: !enabled
-                ? const Color(0xFF5B6072)
-                : (iconColor ?? Colors.white)),
+        child: spinner
+            ? SizedBox(
+                width: big ? 30 : 18,
+                height: big ? 30 : 18,
+                child: const CircularProgressIndicator(
+                    strokeWidth: 3, color: LumenTheme.accent),
+              )
+            : Icon(icon,
+                size: big ? 40 : 24,
+                color: !enabled
+                    ? const Color(0xFF5B6072)
+                    : (iconColor ?? Colors.white)),
       ),
     );
     return tooltip == null ? button : Tooltip(message: tooltip!, child: button);
