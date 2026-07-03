@@ -600,13 +600,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     return PopScope(
       // While the controls overlay is up, Back should dismiss it rather than
-      // leave the player — only pop out once the controls are already hidden.
-      canPop: !_controlsVisible,
+      // leave the player — only pop out once the drawer is closed and the
+      // controls are already hidden.
+      canPop: !_episodesOpen && !_controlsVisible,
       onPopInvokedWithResult: (didPop, _) {
         // The instant a real back happens, silence playback — don't wait for
         // dispose()/stop() to work through media_kit's command queue.
         if (didPop) {
           PlaybackEngine.instance.pauseNow();
+        } else if (_episodesOpen) {
+          setState(() => _episodesOpen = false);
+          _resetHideTimer();
         } else if (_controlsVisible) {
           _hideControls();
         }

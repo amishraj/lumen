@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
@@ -33,6 +34,7 @@ class SeriesDetailScreen extends ConsumerStatefulWidget {
 class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
   late Future<List<Episode>> _future;
   int _season = 1;
+  final _scroll = ScrollController();
 
   /// TMDB corrections gathered so far, keyed by (season, episode). Grows as
   /// the user browses seasons; used for both the list AND the play queue so
@@ -47,9 +49,81 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
     _future = _load();
   }
 
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   Future<List<Episode>> _load() async {
     final repo = await ref.read(repositoryProvider.future);
     return repo.seriesEpisodes(widget.playlist, widget.series.url);
+  }
+
+  /// Bring the collapsing banner fully back into view.
+  void _scrollToTop() {
+    if (_scroll.hasClients && _scroll.offset > 0) {
+      _scroll.animateTo(0,
+          duration: const Duration(milliseconds: 320), curve: Curves.easeOut);
+    }
+  }
+
+  /// Back-dismissible season picker (a bottom sheet — Back or tapping away
+  /// closes it, which is the "dropdown that closes on back" behaviour).
+  Future<void> _pickSeason(List<int> seasons) async {
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: const Color(0xFF15171F),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 12, 20, 8),
+              child: Text('Select season',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+            ),
+            for (final s in seasons)
+              FocusableItem(
+                autofocus: s == _season,
+                borderRadius: 12,
+                onActivate: () => Navigator.pop(context, s),
+                builder: (context, focused) => Container(
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: focused ? LumenTheme.surfaceHi : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(children: [
+                    Expanded(
+                      child: Text('Season $s',
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: s == _season
+                                  ? FontWeight.w800
+                                  : FontWeight.w500,
+                              color: s == _season
+                                  ? LumenTheme.accent
+                                  : Colors.white)),
+                    ),
+                    if (s == _season)
+                      const Icon(Icons.check,
+                          color: LumenTheme.accent, size: 20),
+                  ]),
+                ),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked != null && mounted) setState(() => _season = picked);
   }
 
   /// Canonical episode title: TMDB name when known, else the cleaned
@@ -112,10 +186,15 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
 
     return Scaffold(
       body: CustomScrollView(
+        controller: _scroll,
         slivers: [
           SliverAppBar(
             expandedHeight: 380,
             pinned: true,
+            // Snap the full banner back the moment the user scrolls up, so
+            // the "featured" image returns instead of only reaching the tabs.
+            floating: true,
+            snap: true,
             flexibleSpace: FlexibleSpaceBar(
               titlePadding:
                   const EdgeInsets.only(left: 56, right: 16, bottom: 14),
@@ -222,42 +301,62 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const SizedBox(height: 16),
-                        SizedBox(
-                          height: 48,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            clipBehavior: Clip.none,
-                            padding: const EdgeInsets.symmetric(horizontal: 20),
-                            itemCount: seasons.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(width: 8),
-                            itemBuilder: (_, i) {
-                              final s = seasons[i];
-                              final sel = s == _season;
-                              return FocusableItem(
-                                borderRadius: 30,
-                                autofocus: i == 0,
-                                onActivate: () => setState(() => _season = s),
+                        // Season dropdown. Pressing Up here scrolls the banner
+                        // back into view (it's the top-most focusable, so the
+                        // remote otherwise stops at the tabs).
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Focus(
+                              onKeyEvent: (node, e) {
+                                if ((e is KeyDownEvent ||
+                                        e is KeyRepeatEvent) &&
+                                    e.logicalKey ==
+                                        LogicalKeyboardKey.arrowUp &&
+                                    _scroll.hasClients &&
+                                    _scroll.offset > 0) {
+                                  _scrollToTop();
+                                  return KeyEventResult.handled;
+                                }
+                                return KeyEventResult.ignored;
+                              },
+                              child: FocusableItem(
+                                autofocus: true,
+                                borderRadius: 12,
+                                onActivate: () => _pickSeason(seasons),
                                 builder: (context, focused) => Container(
-                                  alignment: Alignment.center,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 18),
+                                  padding:
+                                      const EdgeInsets.fromLTRB(16, 11, 12, 11),
                                   decoration: BoxDecoration(
-                                    color: sel
-                                        ? LumenTheme.accent
-                                        : LumenTheme.surfaceHi,
-                                    borderRadius: BorderRadius.circular(30),
+                                    color: LumenTheme.surfaceHi,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                        color: focused
+                                            ? LumenTheme.accent
+                                            : Colors.transparent,
+                                        width: 1.5),
                                   ),
-                                  child: Text('Season $s',
-                                      style: TextStyle(
-                                          color: sel
-                                              ? const Color(0xFF0A0B0F)
-                                              : Colors.white,
-                                          fontWeight: FontWeight.w700,
-                                          fontSize: 13)),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text('Season $_season',
+                                          style: const TextStyle(
+                                              fontWeight: FontWeight.w800,
+                                              fontSize: 15)),
+                                      const SizedBox(width: 8),
+                                      Text('of ${seasons.length}',
+                                          style: const TextStyle(
+                                              color: Color(0xFF8A8F9E),
+                                              fontSize: 12.5)),
+                                      const SizedBox(width: 6),
+                                      const Icon(Icons.arrow_drop_down,
+                                          color: Color(0xFF9AA0B0)),
+                                    ],
+                                  ),
                                 ),
-                              );
-                            },
+                              ),
+                            ),
                           ),
                         ),
                         const SizedBox(height: 12),
