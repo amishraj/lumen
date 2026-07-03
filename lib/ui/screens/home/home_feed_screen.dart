@@ -50,6 +50,8 @@ class HomeFeedScreen extends ConsumerWidget {
                     ? const SizedBox(height: 8)
                     : _HeroCarousel(items: featured),
           ),
+          // My List — categorized, directly under the featured banner.
+          const SliverToBoxAdapter(child: _MyListSection()),
           if (rows != null)
             SliverList(
               delegate: SliverChildBuilderDelegate(
@@ -88,7 +90,8 @@ class HomeFeedScreen extends ConsumerWidget {
             provider: continueWatchingProvider,
             wide: true);
       case 'favorites':
-        return _ContentRow(title: 'My List', provider: favoritesListProvider);
+        // Superseded by the categorized _MyListSection under the hero.
+        return const SizedBox.shrink();
       case 'recent':
         return _ContentRow(
             title: 'Recently Watched',
@@ -298,7 +301,7 @@ class _HeroBillboard extends ConsumerWidget {
                   child: Text(
                     item.kind == StreamKind.series
                         ? 'FEATURED SERIES'
-                        : 'FEATURED',
+                        : 'TRENDING THIS WEEK',
                     style: const TextStyle(
                         color: Color(0xFF0A0B0F),
                         fontSize: 10,
@@ -416,10 +419,14 @@ class _HeroSkeleton extends StatelessWidget {
 /// landscape 16:9 cards that expand on hover/focus (movie rows).
 class _ContentRow extends ConsumerWidget {
   const _ContentRow(
-      {required this.title, required this.provider, this.wide = false});
+      {required this.title,
+      required this.provider,
+      this.wide = false,
+      this.live = false});
   final String title;
   final ProviderListenable<AsyncValue<List<StreamItem>>> provider;
   final bool wide;
+  final bool live;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -429,6 +436,7 @@ class _ContentRow extends ConsumerWidget {
     // which drops keyboard/remote focus and makes Down/Up feel "reset".
     final items = ref.watch(provider).valueOrNull;
     if (items == null || items.isEmpty) return const SizedBox.shrink();
+    final rowHeight = live ? 150.0 : (wide ? 160.0 : 250.0);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -439,20 +447,45 @@ class _ContentRow extends ConsumerWidget {
                   const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
         ),
         SizedBox(
-          height: wide ? 160 : 250,
+          height: rowHeight,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             clipBehavior: Clip.none, // don't clip the focus glow / scale
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
             itemCount: items.length,
-            separatorBuilder: (_, __) => SizedBox(width: wide ? 16 : 14),
+            separatorBuilder: (_, __) =>
+                SizedBox(width: wide || live ? 16 : 14),
             itemBuilder: (_, i) => PosterCard(
               item: items[i],
               wide: wide,
+              live: live,
               onTap: () => openItem(context, ref, items[i]),
             ),
           ),
         ),
+      ],
+    );
+  }
+}
+
+final _liveFavs = favoritesByKindProvider(StreamKind.live);
+final _movieFavs = favoritesByKindProvider(StreamKind.movie);
+final _seriesFavs = favoritesByKindProvider(StreamKind.series);
+
+/// The user's "My List", categorized and pinned right under the hero:
+/// live channels first (their own card style), then favorite movies + shows.
+/// Each row self-hides when empty.
+class _MyListSection extends StatelessWidget {
+  const _MyListSection();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _ContentRow(title: 'My Live TV', provider: _liveFavs, live: true),
+        _ContentRow(
+            title: 'My Favorite Movies', provider: _movieFavs, wide: true),
+        _ContentRow(title: 'My Favorite TV Shows', provider: _seriesFavs),
       ],
     );
   }

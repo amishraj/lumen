@@ -23,12 +23,14 @@ class PosterCard extends ConsumerStatefulWidget {
     required this.onTap,
     this.width = 124,
     this.wide = false,
+    this.live = false,
   });
 
   final StreamItem item;
   final VoidCallback onTap;
   final double width;
   final bool wide;
+  final bool live; // live-TV styled card (channel logo + name, not a poster)
 
   @override
   ConsumerState<PosterCard> createState() => _PosterCardState();
@@ -46,6 +48,7 @@ class _PosterCardState extends ConsumerState<PosterCard> {
         ? null
         : ref.watch(progressFractionsProvider).valueOrNull?[item.id];
 
+    if (widget.live) return _buildLive();
     if (widget.wide) return _buildWide(watched, fraction);
 
     // Live channels look better square; movies/series as 2:3 posters.
@@ -160,6 +163,92 @@ class _PosterCardState extends ConsumerState<PosterCard> {
       ),
     );
   }
+
+  /// Live-TV card: a 16:9 dark tile with the channel's own logo centered
+  /// (contained, not cropped — IPTV logos are transparent glyphs) and the
+  /// channel name + number below. Distinct from movie/show posters.
+  Widget _buildLive() {
+    final item = widget.item;
+    final w = widget.width * 1.55;
+    final h = w * 9 / 16;
+    return FocusableItem(
+      onActivate: widget.onTap,
+      borderRadius: 14,
+      builder: (context, focused) => MouseRegion(
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: AnimatedScale(
+          scale: (_hover || focused) ? 1.06 : 1.0,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          child: SizedBox(
+            width: w,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: w,
+                  height: h,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF1C1F29), Color(0xFF0F1116)],
+                    ),
+                    border: Border.all(
+                        color: focused
+                            ? LumenTheme.accent
+                            : const Color(0xFF2A2E3A),
+                        width: focused ? 2 : 1),
+                  ),
+                  padding: const EdgeInsets.all(14),
+                  child: (item.logo != null && item.logo!.isNotEmpty)
+                      ? Image.network(item.logo!,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) => _liveGlyph(item.name))
+                      : _liveGlyph(item.name),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    if (item.num != null) ...[
+                      Text('${item.num}',
+                          style: const TextStyle(
+                              color: LumenTheme.accent,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800)),
+                      const SizedBox(width: 6),
+                    ],
+                    Expanded(
+                      child: Text(item.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.w600)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _liveGlyph(String name) => Center(
+        child: Text(
+          name.trim().isEmpty
+              ? '•'
+              : name.trim().characters.first.toUpperCase(),
+          style: const TextStyle(
+              color: LumenTheme.accent,
+              fontSize: 34,
+              fontWeight: FontWeight.w800),
+        ),
+      );
 }
 
 /// Thin resume-progress bar along the bottom edge of the artwork — the

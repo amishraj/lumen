@@ -191,6 +191,39 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
           SliverAppBar(
             expandedHeight: 380,
             pinned: true,
+            actions: [
+              // My List toggle for the whole show.
+              Consumer(builder: (context, ref, _) {
+                final favs =
+                    ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
+                final isFav =
+                    widget.series.id != null && favs.contains(widget.series.id);
+                return Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: FocusableItem(
+                    borderRadius: 24,
+                    onActivate: () => setFavorite(ref, widget.series, !isFav),
+                    builder: (context, focused) => Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.35),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                            color: focused
+                                ? LumenTheme.accent
+                                : Colors.transparent,
+                            width: 2),
+                      ),
+                      child: Icon(
+                        isFav ? Icons.check : Icons.add,
+                        color: isFav ? LumenTheme.accent : Colors.white,
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ],
             // Snap the full banner back the moment the user scrolls up, so
             // the "featured" image returns instead of only reaching the tabs.
             floating: true,

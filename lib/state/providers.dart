@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/db/app_database.dart';
 import '../data/models/models.dart';
 import '../data/repositories/library_repository.dart';
+import '../data/sources/tmdb_service.dart';
 import '../data/sources/trakt_service.dart';
 
 /// Database + repository singletons.
@@ -138,29 +139,51 @@ final groupedSearchProvider =
 // Home feed
 // ---------------------------------------------------------------------------
 
+/// Featured banner = movies trending THIS WEEK, matched to the library.
+/// TMDB weekly trending when a key is set (with backdrop art for the hero),
+/// otherwise Trakt trending; finally the library's own featured picks.
 final featuredProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
-  // Prefer current popular movies (Trakt trending) that exist in the library.
-  try {
-    final svc = await ref.watch(traktServiceProvider.future);
-    final trending = await svc.trendingMovies(limit: 30);
+
+  Future<List<StreamItem>> match(
+      List<(String title, String? art)> trending) async {
     final picks = <StreamItem>[];
     final seen = <int>{};
-    for (final t in trending) {
+    for (final (title, art) in trending) {
       final hits = await repo.search(
-          playlistId: pl!.id!, kind: StreamKind.movie, query: t.title);
+          playlistId: pl!.id!, kind: StreamKind.movie, query: title);
       final m = LibraryRepository.preferEnglish(hits);
-      if (m != null) {
-        if (m.id != null && seen.add(m.id!) && (m.logo?.isNotEmpty ?? false)) {
-          picks.add(m);
-          if (picks.length >= 8) break;
-        }
+      if (m?.id != null && seen.add(m!.id!)) {
+        // Prefer a wide TMDB backdrop for the cinematic hero.
+        picks.add(m.copyWith(logo: art ?? m.logo));
+        if (picks.length >= 10) break;
       }
     }
-    if (picks.isNotEmpty) return picks;
-  } catch (_) {/* fall back below */}
+    return picks;
+  }
+
+  // TMDB weekly trending (best: gives backdrops).
+  try {
+    if (await ref.watch(tmdbEnabledProvider.future)) {
+      final svc = await ref.watch(tmdbServiceProvider.future);
+      final picks = await match([
+        for (final t in await svc.trendingMoviesWeek()) (t.title, t.backdrop),
+      ]);
+      if (picks.isNotEmpty) return picks;
+    }
+  } catch (_) {/* fall through */}
+
+  // Trakt trending (works with the embedded key, no user setup).
+  try {
+    final svc = await ref.watch(traktServiceProvider.future);
+    final picks = await match([
+      for (final t in await svc.trendingMovies(limit: 30)) (t.title, null),
+    ]);
+    if (picks.isNotEmpty) return picks.where((m) => m.logo != null).toList();
+  } catch (_) {/* fall through */}
+
   return repo.featured(pl!.id!);
 });
 
@@ -314,6 +337,17 @@ Future<void> saveHomeConfig(WidgetRef ref, List<String> ids) async {
 final favoriteIdsProvider = FutureProvider<Set<int>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   return repo.favoriteIds();
+});
+
+/// Favorites of one kind for the active source — backs the categorized
+/// "My List" rows on Home. Re-runs whenever favorites change.
+final favoritesByKindProvider =
+    FutureProvider.family<List<StreamItem>, StreamKind>((ref, kind) async {
+  ref.watch(favoriteIdsProvider);
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return [];
+  return repo.favoritesByKind(pl!.id!, kind);
 });
 
 /// Refresh every provider that depends on the Trakt account. Must be called

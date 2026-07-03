@@ -171,6 +171,14 @@ class TmdbService {
     return _parseResults(data).take(limit).toList();
   }
 
+  /// Movies trending this week — drives the featured banner.
+  Future<List<TmdbItem>> trendingMoviesWeek({int limit = 30}) async {
+    final data = await _cachedGet(
+        'tmdb:trending:movieweek', '/trending/movie/week',
+        ttl: const Duration(hours: 12));
+    return _parseResults(data, forceShow: false).take(limit).toList();
+  }
+
   /// The TMDB genre catalogue for movies (id → name).
   Future<List<TmdbGenre>> genres({bool show = false}) async {
     final data = await _cachedGet('tmdb:genres:${show ? 'tv' : 'movie'}',

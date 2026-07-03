@@ -2,6 +2,8 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Voice search -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
 
     <!-- Google TV / Android TV: declare leanback support and make touchscreen
          optional so the app installs and launches on TV devices. -->
@@ -49,6 +51,9 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
         </intent>
     </queries>
 </manifest>

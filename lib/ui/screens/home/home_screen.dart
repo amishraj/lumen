@@ -12,6 +12,7 @@ import '../../theme/lumen_theme.dart';
 import '../../widgets/nav_rail.dart';
 import '../../widgets/service_status_view.dart';
 import '../../widgets/tv_text_field.dart';
+import '../../widgets/voice_search_button.dart';
 import '../live/live_tv_screen.dart';
 import '../onboarding/add_source_screen.dart';
 import '../search/search_screen.dart';
@@ -249,14 +250,28 @@ class _MasterSearchBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Click-to-type tile so the D-pad never gets trapped in the search box.
-    return TvTextField(
-      controller: controller,
-      hint: 'Search movies, shows & channels',
-      icon: Icons.search,
-      dense: true,
-      onChanged: onChanged,
-      onCleared: () => onChanged(''),
+    return Row(
+      children: [
+        // Click-to-type tile so the D-pad never gets trapped in the search box.
+        // (The OS keyboard's own mic handles voice-typing here too.)
+        Expanded(
+          child: TvTextField(
+            controller: controller,
+            hint: 'Search movies, shows & channels',
+            icon: Icons.search,
+            dense: true,
+            onChanged: onChanged,
+            onCleared: () => onChanged(''),
+          ),
+        ),
+        const SizedBox(width: 4),
+        // One-tap native voice search — streams live partial results.
+        VoiceSearchButton(onText: (text) {
+          controller.text = text;
+          controller.selection = TextSelection.collapsed(offset: text.length);
+          onChanged(text);
+        }),
+      ],
     );
   }
 }
