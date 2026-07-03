@@ -5,6 +5,7 @@ import '../data/models/models.dart';
 import '../data/repositories/library_repository.dart';
 import '../data/sources/tmdb_service.dart';
 import '../state/providers.dart';
+import '../state/sync_hooks.dart';
 
 /// Aurora keeps its own browse state (per-kind categories & selection) so the
 /// classic UI's global kind/category providers stay untouched — both shells
@@ -66,6 +67,7 @@ Future<void> toggleAuroraPin(
   final current = (await repo.pinnedCategories(pl!.id!, kind)).contains(name);
   await repo.setPinned(pl.id!, kind, name, !current);
   ref.read(auroraPinRevProvider.notifier).state++;
+  onUserDataChanged?.call();
 }
 
 /// TMDB genres ordered with pinned ones first — drives the browse chips.

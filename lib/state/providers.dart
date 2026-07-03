@@ -6,6 +6,7 @@ import '../data/models/models.dart';
 import '../data/repositories/library_repository.dart';
 import '../data/sources/tmdb_service.dart';
 import '../data/sources/trakt_service.dart';
+import 'sync_hooks.dart';
 
 /// Database + repository singletons.
 final databaseProvider =
@@ -372,6 +373,7 @@ Future<void> setFavorite(WidgetRef ref, StreamItem item, bool fav) async {
   await repo.toggleFavorite(item.id!, fav);
   ref.invalidate(favoriteIdsProvider);
   ref.invalidate(favoritesListProvider);
+  onUserDataChanged?.call(); // schedule a cloud backup of the new state
   if (item.kind == StreamKind.movie || item.kind == StreamKind.series) {
     // Fire-and-forget: Trakt sync must never block or fail the local toggle.
     ref

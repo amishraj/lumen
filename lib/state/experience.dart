@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'providers.dart';
+import 'sync_hooks.dart';
 
 /// Which UI shell the app boots into. Persisted in app settings so the choice
 /// survives restarts and re-syncs (the settings table is also vault-backed).
@@ -21,4 +22,5 @@ Future<void> setUiExperience(WidgetRef ref, String value) async {
   final repo = await ref.read(repositoryProvider.future);
   await repo.setSetting('ui_experience', value);
   ref.invalidate(uiExperienceProvider);
+  onUserDataChanged?.call();
 }

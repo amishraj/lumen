@@ -6,6 +6,7 @@ import '../data/sources/realdebrid_service.dart';
 import '../data/sources/tmdb_service.dart';
 import '../data/sources/trakt_service.dart';
 import 'providers.dart';
+import 'sync_hooks.dart';
 
 /// Health of one external metadata/account service, for the top-bar status
 /// chip and the Sources screen.
@@ -108,6 +109,9 @@ class SyncController extends StateNotifier<SyncState> {
       ref.invalidate(recentlyWatchedProvider);
       ref.invalidate(kindSampleProvider);
       ref.invalidate(categoriesProvider);
+      // Stream ids were reassigned — let the cloud layer re-apply any pending
+      // account restore (favorites/progress keyed by url) and back up fresh.
+      await onLibrarySynced?.call();
     } catch (_) {/* leave old content in place on failure */} finally {
       state = const SyncState();
     }

@@ -1239,10 +1239,12 @@ class _AuroraTimeline extends StatelessWidget {
                     _pointerTo(d.localPosition, box.maxWidth),
                 child: SizedBox(
                   height: 26,
+                  width: double.infinity,
                   child: Center(
                     child: AnimatedContainer(
                       duration: Aurora.fast,
                       height: active ? 9 : 5,
+                      width: double.infinity,
                       clipBehavior: Clip.antiAlias,
                       decoration: BoxDecoration(
                         color: const Color(0x3DFFFFFF),
@@ -1254,15 +1256,22 @@ class _AuroraTimeline extends StatelessWidget {
                               ]
                             : null,
                       ),
+                      // Explicit left-anchored widths — fills grow strictly
+                      // left → right (never from the centre outward).
                       child: Stack(children: [
-                        FractionallySizedBox(
-                          alignment: Alignment.centerLeft,
-                          widthFactor: _frac(buffered),
-                          child: const ColoredBox(color: Color(0x40FFFFFF)),
+                        Positioned(
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: box.maxWidth * _frac(buffered),
+                          child:
+                              const ColoredBox(color: Color(0x40FFFFFF)),
                         ),
-                        FractionallySizedBox(
-                          alignment: Alignment.centerLeft,
-                          widthFactor: _frac(position),
+                        Positioned(
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: box.maxWidth * _frac(position),
                           child: const DecoratedBox(
                               decoration:
                                   BoxDecoration(gradient: Aurora.gradient)),
