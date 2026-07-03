@@ -299,6 +299,21 @@ class AppDatabase {
     // is what made channels/movies crawl or vanish during startup refresh).
     int written = 0;
     await db.transaction((txn) async {
+      // Favorites and progress reference streams.id with ON DELETE CASCADE, and
+      // ids are reassigned on every re-sync — so a naive delete+reinsert wipes
+      // the user's favorites and watch history. Capture them keyed on the
+      // STABLE stream url, then re-map to the new ids after reinsert.
+      final favRows = await txn.rawQuery(
+          'SELECT s.url AS url, f.added_at AS added_at FROM favorites f '
+          'JOIN streams s ON s.id=f.stream_id WHERE s.playlist_id=?',
+          [playlistId]);
+      final progRows = await txn.rawQuery(
+          'SELECT s.url AS url, p.position_ms AS position_ms, '
+          'p.duration_ms AS duration_ms, p.watched AS watched, '
+          'p.updated_at AS updated_at FROM progress p '
+          'JOIN streams s ON s.id=p.stream_id WHERE s.playlist_id=?',
+          [playlistId]);
+
       if (ftsAvailable) {
         await txn.execute(
             'DELETE FROM streams_fts WHERE rowid IN (SELECT id FROM streams WHERE playlist_id=?)',
@@ -348,6 +363,31 @@ class AppDatabase {
             'INSERT INTO streams_fts(rowid, name) '
             'SELECT id, name FROM streams WHERE playlist_id=?',
             [playlistId]);
+      }
+
+      // Restore favorites + progress against the new ids, matched by url.
+      // INSERT..SELECT so an item that no longer exists in the source is just
+      // skipped (its row finds no matching stream).
+      for (final f in favRows) {
+        await txn.rawInsert(
+            'INSERT OR IGNORE INTO favorites(stream_id, added_at) '
+            'SELECT id, ? FROM streams WHERE playlist_id=? AND url=? LIMIT 1',
+            [f['added_at'], playlistId, f['url']]);
+      }
+      for (final p in progRows) {
+        await txn.rawInsert(
+            'INSERT OR REPLACE INTO progress'
+            '(stream_id, position_ms, duration_ms, watched, updated_at) '
+            'SELECT id, ?, ?, ?, ? FROM streams '
+            'WHERE playlist_id=? AND url=? LIMIT 1',
+            [
+              p['position_ms'],
+              p['duration_ms'],
+              p['watched'],
+              p['updated_at'],
+              playlistId,
+              p['url'],
+            ]);
       }
     });
 

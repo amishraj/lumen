@@ -82,14 +82,22 @@ class SyncController extends StateNotifier<SyncState> {
   Future<void> resync(Playlist pl,
       {Duration minInterval = const Duration(hours: 12)}) async {
     if (state.running || pl.id == null) return;
-    final last = pl.lastSyncedAt;
-    if (last != null && minInterval > Duration.zero) {
-      final age = DateTime.now().millisecondsSinceEpoch - last;
-      if (age < minInterval.inMilliseconds) return;
+    final repo = await ref.read(repositoryProvider.future);
+    // Read the AUTHORITATIVE last-sync time from the DB — the passed-in
+    // Playlist is a snapshot taken at app launch and its lastSyncedAt can be
+    // stale, which made the 12h guard misfire and re-index on every launch.
+    if (minInterval > Duration.zero) {
+      final matches =
+          (await repo.playlists()).where((p) => p.id == pl.id).toList();
+      final last = matches.isEmpty ? null : matches.first.lastSyncedAt;
+      if (last != null &&
+          DateTime.now().millisecondsSinceEpoch - last <
+              minInterval.inMilliseconds) {
+        return; // synced recently — keep the existing index
+      }
     }
     state = SyncState(running: true, stage: 'Refreshing…', playlistId: pl.id);
     try {
-      final repo = await ref.read(repositoryProvider.future);
       await for (final p in repo.sync(pl)) {
         state = SyncState(running: true, stage: p.stage, playlistId: pl.id);
       }

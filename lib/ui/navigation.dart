@@ -34,6 +34,11 @@ void openItem(BuildContext context, WidgetRef ref, StreamItem item) {
         builder: (_) => PlayerScreen(item: item),
       ));
   }
+  // Live channels have no watch progress / continue-watching, so refreshing
+  // those providers on return is pure waste — and each refetch does dozens of
+  // title lookups + Trakt calls, which made "back from a channel" hang. Only
+  // VOD updates watch activity.
+  if (item.kind == StreamKind.live) return;
   route.then((_) {
     try {
       ref.invalidate(continueWatchingProvider);
