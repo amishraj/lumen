@@ -6,86 +6,198 @@
 <title>Lumen — your IPTV, everywhere</title>
 <style>
   :root{
-    --bg:#0A0B0F; --surface:#14161D; --surface-hi:#1C1F29;
-    --accent:#7B9BFF; --warm:#FFB35C; --text:#E6E8EF; --muted:#9AA0B0;
+    --bg:#06070B; --raised:#0D0F16; --glass:rgba(255,255,255,.055);
+    --hairline:rgba(255,255,255,.11);
+    --accent:#4CC2FF; --accent2:#8A7BFF; --warm:#FFB35C;
+    --text:#F3F5F9; --muted:#A7ADBC; --faint:#636A7C;
+    --grad:linear-gradient(90deg,#4CC2FF,#8A7BFF);
   }
   *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
   body{
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     background:var(--bg);color:var(--text);
-    -webkit-font-smoothing:antialiased;line-height:1.5;
+    -webkit-font-smoothing:antialiased;line-height:1.55;
   }
+  a{color:var(--accent)}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+
+  /* ---- Hero ---- */
   .hero{
-    min-height:62vh;display:flex;flex-direction:column;align-items:center;
-    justify-content:center;text-align:center;padding:80px 24px 60px;
-    background:radial-gradient(1200px 600px at 50% -10%, #1B2348 0%, var(--bg) 60%);
+    text-align:center;padding:96px 24px 54px;
+    background:
+      radial-gradient(900px 480px at 30% -20%, rgba(76,194,255,.16) 0%, transparent 60%),
+      radial-gradient(900px 480px at 75% -25%, rgba(138,123,255,.15) 0%, transparent 60%);
   }
-  .logo{font-size:64px;line-height:1}
-  h1{font-size:clamp(40px,8vw,76px);letter-spacing:-2px;font-weight:800;margin:14px 0 6px}
-  .tag{color:var(--muted);font-size:clamp(16px,3vw,21px);max-width:620px}
-  .pill{display:inline-block;margin-top:22px;padding:7px 16px;border-radius:30px;
-    background:var(--surface);color:var(--accent);font-size:13px;font-weight:600}
+  .brand{
+    font-size:52px;font-weight:800;letter-spacing:-2px;
+    background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+    display:inline-block;
+  }
+  h1{font-size:clamp(34px,6vw,58px);letter-spacing:-1.8px;font-weight:800;margin:18px 0 10px}
+  .tag{color:var(--muted);font-size:clamp(15px,2.6vw,18px);max-width:640px;margin:0 auto}
+  .pill{display:inline-block;margin-top:24px;padding:8px 18px;border-radius:30px;
+    background:var(--glass);border:1px solid var(--hairline);color:var(--muted);
+    font-size:13px;font-weight:600}
+
+  /* ---- Experience chooser ---- */
+  .choose{padding:26px 24px 10px}
+  .choose h2{text-align:center;font-size:24px;letter-spacing:-.5px;margin-bottom:6px}
+  .choose .sub{text-align:center;color:var(--muted);font-size:14px;max-width:660px;margin:0 auto 30px}
+  .duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;max-width:1040px;margin:0 auto}
+  .exp{
+    position:relative;background:var(--raised);border:1px solid var(--hairline);
+    border-radius:26px;padding:28px;overflow:hidden;
+  }
+  .exp.aurora{border:1px solid transparent;
+    background:
+      linear-gradient(var(--raised),var(--raised)) padding-box,
+      linear-gradient(120deg,rgba(76,194,255,.75),rgba(138,123,255,.75)) border-box;
+  }
+  .exp .flag{
+    display:inline-block;font-size:10px;font-weight:800;letter-spacing:1.6px;
+    padding:5px 10px;border-radius:6px;margin-bottom:14px;
+  }
+  .exp.aurora .flag{background:var(--grad);color:#06070B}
+  .exp.classic .flag{background:var(--glass);border:1px solid var(--hairline);color:var(--muted)}
+  .exp h3{font-size:26px;letter-spacing:-.6px;margin-bottom:6px}
+  .exp p.desc{color:var(--muted);font-size:13.5px;min-height:42px}
+  .exp ul{list-style:none;margin:14px 0 18px}
+  .exp li{font-size:13px;color:var(--text);padding:3.5px 0 3.5px 24px;position:relative}
+  .exp li::before{content:"✓";position:absolute;left:2px;color:var(--accent);font-weight:800}
+  .exp.classic li::before{color:var(--faint)}
+  .getrow{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch}
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    padding:13px 22px;border-radius:14px;font-weight:700;font-size:14px;
+    text-decoration:none;transition:filter .15s ease,transform .15s ease;
+  }
+  .btn:hover{filter:brightness(1.1);transform:translateY(-1px)}
+  .btn.solid{background:#fff;color:#06070B}
+  .btn.ghost{background:var(--glass);color:var(--text);border:1px solid var(--hairline)}
+  .code{
+    flex:1;min-width:200px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    font-variant-numeric:tabular-nums;letter-spacing:5px;font-weight:800;font-size:26px;
+    color:var(--accent);background:var(--bg);border:1px dashed rgba(76,194,255,.45);
+    border-radius:14px;padding:10px 16px;white-space:nowrap;
+  }
+  .exp.classic .code{color:var(--warm);border-color:rgba(255,179,92,.4)}
+  .code small{letter-spacing:0;font-size:10.5px;font-weight:600;color:var(--faint);margin-top:3px}
+  .swapnote{
+    margin-top:16px;font-size:12px;color:var(--faint);
+    border-top:1px solid var(--hairline);padding-top:14px;
+  }
+  .swapnote strong{color:var(--muted)}
+
+  /* ---- TV install ---- */
+  .tv{max-width:1040px;margin:34px auto 0;padding:0 24px}
+  .tv-inner{
+    background:var(--raised);border:1px solid var(--hairline);border-radius:22px;
+    padding:24px 28px;display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;
+  }
+  .tv-ic{font-size:34px;line-height:1.2}
+  .tv-inner .txt{flex:1;min-width:260px}
+  .tv-inner h2{font-size:19px;margin-bottom:4px}
+  .tv-inner p{color:var(--muted);font-size:13px}
+  .tv-inner code{background:var(--glass);padding:2px 7px;border-radius:6px;color:var(--accent);font-size:12px}
+
+  /* ---- Platform grid ---- */
   .grid{
-    max-width:980px;margin:0 auto;padding:20px 24px 80px;
-    display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;
+    max-width:1040px;margin:0 auto;padding:36px 24px 60px;
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px;
   }
   .card{
-    background:var(--surface);border-radius:22px;padding:28px 24px;
-    border:1px solid #ffffff0d;transition:transform .18s ease, border-color .18s ease;
+    background:var(--raised);border-radius:22px;padding:26px 24px;
+    border:1px solid var(--hairline);transition:transform .18s ease,border-color .18s ease;
   }
-  .card:hover{transform:translateY(-4px);border-color:#7b9bff44}
-  .card .ic{font-size:34px}
-  .card h3{margin:14px 0 4px;font-size:20px}
-  .card p{color:var(--muted);font-size:13.5px;min-height:38px}
-  .btn{
-    display:block;text-align:center;margin-top:16px;padding:13px;border-radius:14px;
-    background:var(--accent);color:#0A0B0F;font-weight:700;text-decoration:none;
-    transition:filter .15s ease;
-  }
-  .btn:hover{filter:brightness(1.08)}
-  .btn.ghost{background:var(--surface-hi);color:var(--text)}
-  .tv{max-width:980px;margin:0 auto;padding:8px 24px 8px}
-  .tv-inner{
-    background:linear-gradient(120deg,#1B2348 0%,var(--surface) 70%);
-    border:1px solid #7b9bff33;border-radius:22px;padding:26px 28px;
-    display:flex;align-items:center;gap:22px;flex-wrap:wrap;
-  }
-  .tv-ic{font-size:40px;line-height:1}
-  .tv-inner .txt{flex:1;min-width:220px}
-  .tv-inner h2{font-size:21px;margin-bottom:4px}
-  .tv-inner p{color:var(--muted);font-size:13.5px}
-  .tv-inner p strong{color:var(--text)}
-  .code{
-    font-variant-numeric:tabular-nums;letter-spacing:6px;font-weight:800;
-    font-size:34px;color:var(--accent);background:var(--bg);
-    border:1px dashed #7b9bff66;border-radius:14px;padding:12px 20px;white-space:nowrap;
-  }
-  .code small{display:block;letter-spacing:0;font-size:11px;font-weight:600;
-    color:var(--muted);margin-top:4px;text-align:center}
-  .note{max-width:720px;margin:24px auto 70px;padding:20px 24px;color:var(--muted);
-    font-size:13px;text-align:center}
-  .note code{background:var(--surface-hi);padding:2px 7px;border-radius:6px;color:var(--accent)}
-  footer{text-align:center;color:#5b6072;font-size:12px;padding:40px 0 60px}
-  a.inline{color:var(--accent)}
+  .card:hover{transform:translateY(-4px);border-color:rgba(76,194,255,.35)}
+  .card .ic{font-size:32px}
+  .card h3{margin:12px 0 4px;font-size:19px}
+  .card p{color:var(--muted);font-size:13px;min-height:40px}
+  .card .btn{display:flex;margin-top:14px}
+  .card .alt{display:block;text-align:center;margin-top:10px;font-size:12px;color:var(--faint)}
+  .card .alt a{color:var(--muted)}
+
+  .note{max-width:760px;margin:0 auto 70px;padding:0 24px;color:var(--faint);
+    font-size:12.5px;text-align:center}
+  footer{text-align:center;color:#454b5c;font-size:12px;padding:30px 0 60px}
 </style>
 </head>
 <body>
+
   <header class="hero">
-    <div class="logo">⚡</div>
-    <h1>Lumen</h1>
-    <p class="tag">Your IPTV — buttery smooth on every screen. Live TV &amp; movies from your own M3U or Xtream account, built to fly through 40,000+ channels.</p>
-    <span class="pill">Android · Google&nbsp;TV · iOS · macOS</span>
+    <span class="brand">lumen</span>
+    <h1>Two experiences. One player.</h1>
+    <p class="tag">Your own M3U or Xtream library — live TV, movies &amp; shows —
+      buttery smooth through 40,000+ channels. Now with a fully redesigned 1.1 experience.</p>
+    <span class="pill">Android · Google&nbsp;TV · Fire&nbsp;TV · iOS · macOS</span>
   </header>
+
+  <section class="choose" id="choose">
+    <h2>Choose your experience</h2>
+    <p class="sub">Aurora is the new Lumen. It ships with Classic built in — pick one below,
+      and switch inside the app whenever you like.</p>
+
+    <div class="duo">
+      <!-- ============ AURORA (1.1 beta) ============ -->
+      <div class="exp aurora">
+        <span class="flag">NEW · AURORA · 1.1 BETA</span>
+        <h3>Lumen Aurora</h3>
+        <p class="desc">The redesign — cinematic home, all-new player with scrub previews
+          &amp; next-up, channel zapping, and a faster browse for huge libraries.</p>
+        <ul>
+          <li>Billboard home with trending &amp; live shelves</li>
+          <li>Redesigned player: previews, speed, next-episode</li>
+          <li>Live TV zapping + channel number entry</li>
+          <li><strong>Classic included</strong> — switch back in Settings, no reinstall</li>
+        </ul>
+        <div class="getrow">
+          <!--
+            AURORA TV CODE — mint at https://aftv.news by shortening:
+            https://github.com/amishraj/lumen/releases/download/v1.1.0/Lumen-universal.apk
+            then replace the dots below with the numeric code.
+          -->
+          <div class="code">·······<small>Downloader code — being minted</small></div>
+          <a class="btn solid" href="https://github.com/amishraj/lumen/releases/download/v1.1.0/Lumen-universal.apk">Download APK (1.1.0)</a>
+        </div>
+        <p class="swapnote"><strong>Trying the beta is safe:</strong> your sources, favorites
+          and watch progress carry over, and the classic interface is one tap away inside
+          Settings. (Android can't downgrade an installed app — the built-in switch is how
+          you go back, instantly.)</p>
+      </div>
+
+      <!-- ============ CLASSIC (1.0 stable) ============ -->
+      <div class="exp classic">
+        <span class="flag">CLASSIC · 1.0 STABLE</span>
+        <h3>Lumen Classic</h3>
+        <p class="desc">The original interface, exactly as it's always worked.
+          Stays on the stable 1.0 line until Aurora graduates.</p>
+        <ul>
+          <li>Familiar sidebar navigation</li>
+          <li>Every 1.0 feature, unchanged</li>
+          <li>Same library format — upgrade to Aurora any time</li>
+        </ul>
+        <div class="getrow">
+          <div class="code">7291112<small>Downloader code</small></div>
+          <a class="btn ghost" href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-universal.apk">Download APK (1.0)</a>
+        </div>
+        <p class="swapnote"><strong>Already on Classic?</strong> Nothing changes — this code
+          keeps serving the stable 1.0 build. When you're curious, Settings →
+          “Try the new Lumen” flips the same app into Aurora.</p>
+      </div>
+    </div>
+  </section>
 
   <section class="tv">
     <div class="tv-inner">
       <div class="tv-ic">📺</div>
       <div class="txt">
-        <h2>Fire TV / Android TV — fastest install</h2>
-        <p>Get the free <strong>Downloader</strong> app (by AFTVnews) from your
-          TV's app store, open it, and enter this code to grab the latest APK:</p>
+        <h2>Fire TV / Google TV — fastest install</h2>
+        <p>Grab the free <strong>Downloader</strong> app (by AFTVnews) from your TV's app
+          store, open it, and enter the code for the experience you want above.
+          No code yet for Aurora? In Downloader you can also type the direct URL:
+          <code>github.com/amishraj/lumen/releases/download/v1.1.0/Lumen-universal.apk</code></p>
       </div>
-      <div class="code">7291112<small>Downloader code</small></div>
     </div>
   </section>
 
@@ -94,33 +206,38 @@
       <div class="ic">🤖</div>
       <h3>Android</h3>
       <p>Phones &amp; tablets. Universal build — installs on anything.</p>
-      <a class="btn" href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-universal.apk">Download APK</a>
+      <a class="btn solid" href="https://github.com/amishraj/lumen/releases/download/v1.1.0/Lumen-universal.apk">Aurora 1.1 beta</a>
+      <span class="alt">or <a href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-universal.apk">Classic 1.0 stable</a></span>
     </div>
     <div class="card">
       <div class="ic">📺</div>
-      <h3>Google TV / Android TV</h3>
-      <p>Use Downloader code <strong style="color:var(--accent)">7291112</strong>, or sideload the universal APK below.</p>
-      <a class="btn ghost" href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-universal.apk">Download APK</a>
+      <h3>Google TV / Fire TV</h3>
+      <p>Use the Downloader codes above, or sideload the universal APK.</p>
+      <a class="btn ghost" href="https://github.com/amishraj/lumen/releases/download/v1.1.0/Lumen-universal.apk">Aurora 1.1 beta</a>
+      <span class="alt">Classic code: <strong style="color:var(--warm)">7291112</strong></span>
     </div>
     <div class="card">
       <div class="ic">🍏</div>
       <h3>iOS</h3>
       <p>Unsigned IPA — install with AltStore or Sideloadly.</p>
-      <a class="btn ghost" href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-iOS-unsigned.ipa">Download IPA</a>
+      <a class="btn ghost" href="https://github.com/amishraj/lumen/releases/download/v1.1.0/Lumen-iOS-unsigned.ipa">Aurora 1.1 beta</a>
+      <span class="alt">or <a href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-iOS-unsigned.ipa">Classic 1.0 stable</a></span>
     </div>
     <div class="card">
       <div class="ic">💻</div>
       <h3>macOS</h3>
       <p>Native desktop app. Unzip and drag to Applications.</p>
-      <a class="btn ghost" href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-macOS.zip">Download for Mac</a>
+      <a class="btn ghost" href="https://github.com/amishraj/lumen/releases/download/v1.1.0/Lumen-macOS.zip">Aurora 1.1 beta</a>
+      <span class="alt">or <a href="https://github.com/amishraj/lumen/releases/latest/download/Lumen-macOS.zip">Classic 1.0 stable</a></span>
     </div>
   </main>
 
   <p class="note">
-    Links point to the latest <a class="inline" href="https://github.com/amishraj/lumen/releases/latest">GitHub Release</a>.
-    iOS unsigned builds need <code>AltStore</code> or <code>Sideloadly</code>.
-    On macOS, right-click → Open the first time (unsigned).
-    All versions are listed on the <a class="inline" href="https://github.com/amishraj/lumen/releases">Releases page</a>.
+    1.1.x releases are marked <em>pre-release</em> on GitHub, so “latest” links (and the
+    classic Downloader code) keep pointing at stable 1.0 until Aurora graduates.
+    All versions live on the <a href="https://github.com/amishraj/lumen/releases">Releases page</a>.
+    iOS unsigned builds need <code style="color:var(--accent)">AltStore</code> or
+    <code style="color:var(--accent)">Sideloadly</code>; on macOS, right-click → Open the first time.
   </p>
 
   <footer>

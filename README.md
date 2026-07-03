@@ -6,6 +6,25 @@ A buttery-smooth personal IPTV player — one Flutter codebase for **Android, Go
 
 ---
 
+## 🌌 1.1 — two experiences, one binary
+
+The 1.1 line ships **Aurora**, a ground-up UI redesign (Apple TV calm × Netflix
+density × Prime clarity), *alongside* the untouched **Classic** 1.0 interface:
+
+- First launch asks once: **Aurora or Classic** — switchable any time from
+  either Settings screen, instantly, with no reinstall. (That in-app switch is
+  also the only way "back": Android won't downgrade an installed APK.)
+- Both shells share the same database, playback engine, favorites, progress
+  and accounts — flipping the switch never touches your data.
+- Aurora highlights: billboard home with trending/live shelves, cinematic
+  detail pages with "More Like This", a redesigned player (scrub previews,
+  buffered timeline, next-episode countdown, speed & aspect), live-TV zapping
+  with channel-number entry, and an all-new search.
+- `v1.1.x` tags publish as **pre-releases**, so `releases/latest` (and the
+  classic TV Downloader code) keeps serving stable 1.0 until Aurora graduates.
+
+---
+
 ## ✨ Features
 
 - **M3U / M3U8 playlists** and **Xtream Codes** accounts
@@ -44,12 +63,23 @@ lib/
 │  ├─ db/             SQLite schema, FTS5, batched ingest, paged queries
 │  ├─ sources/        m3u_parser (isolate) · xtream_client (isolate transform)
 │  └─ repositories/   fetch → parse → persist orchestration
-├─ state/             Riverpod providers + ChannelPager (paged infinite scroll)
-└─ ui/
-   ├─ theme/          Lume-style dark theme
-   ├─ widgets/        LogoImage (downscaled cache) · ChannelTile
-   └─ screens/        onboarding · home · live · search · player · settings
+├─ state/             Riverpod providers + ChannelPager + experience switch
+├─ ui/                CLASSIC (1.0) experience — untouched
+│  ├─ theme/          Lume-style dark theme
+│  ├─ widgets/        LogoImage (downscaled cache) · ChannelTile
+│  └─ screens/        onboarding · home · live · search · player · settings
+└─ aurora/            AURORA (1.1) experience — a parallel UI over the same core
+   ├─ aurora_theme/focus/providers/navigation
+   ├─ widgets/        cards · shelves · panels · badges · search field
+   ├─ pages/          home · movies · shows · live · sports · my stuff · search · settings
+   ├─ screens/        movie detail · series (seasons/episodes)
+   ├─ player/         redesigned player over the same PlaybackEngine
+   └─ gate/           first-run experience chooser
 ```
+
+Both experiences consume the same `data/` + `state/` core; a persisted
+`ui_experience` setting (vault-backed, survives reinstall) decides which
+shell `main.dart` boots.
 
 ---
 

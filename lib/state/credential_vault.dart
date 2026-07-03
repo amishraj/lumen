@@ -38,6 +38,7 @@ class CredentialVault {
     'omdb_key',
     'home_rows',
     'sidebar_width',
+    'ui_experience',
   ];
 
   Future<File> _file() async {

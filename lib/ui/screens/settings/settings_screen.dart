@@ -6,6 +6,7 @@ import '../../../data/sources/omdb_service.dart';
 import '../../../data/sources/realdebrid_service.dart';
 import '../../../data/sources/tmdb_service.dart';
 import '../../../data/sources/trakt_service.dart';
+import '../../../state/experience.dart';
 import '../../../state/providers.dart';
 import '../../../state/service_status.dart';
 import '../../theme/lumen_theme.dart';
@@ -148,6 +149,20 @@ class SettingsScreen extends ConsumerWidget {
           const Text('Settings',
               style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
           const SizedBox(height: 16),
+          // 1.1: the redesigned experience ships alongside classic — one tap
+          // to try it, one tap in its settings to come back.
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.auto_awesome, color: LumenTheme.accent),
+              title: const Text('Try the new Lumen — Aurora (beta)'),
+              subtitle: const Text(
+                  'The redesigned 1.1 experience. Same library, favorites & '
+                  'progress. Switch back here any time.'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => setUiExperience(ref, kExperienceAurora),
+            ),
+          ),
+          const SizedBox(height: 20),
           const Text('Sources',
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
           const SizedBox(height: 12),

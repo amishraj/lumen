@@ -1,0 +1,451 @@
+import 'dart:async';
+
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../data/models/models.dart';
+import '../../data/repositories/library_repository.dart';
+import '../../data/sources/tmdb_service.dart';
+import '../../data/sources/trakt_service.dart';
+import '../../state/detail_bundle.dart';
+import '../../state/providers.dart';
+import '../../ui/title_utils.dart';
+import '../aurora_focus.dart';
+import '../aurora_navigation.dart';
+import '../aurora_providers.dart';
+import '../aurora_theme.dart';
+import '../player/aurora_player.dart';
+import '../widgets/aurora_badges.dart';
+import '../widgets/aurora_buttons.dart';
+import '../widgets/aurora_cards.dart';
+import '../widgets/aurora_image.dart';
+import '../widgets/aurora_shelf.dart';
+
+/// Aurora Home: one cinematic billboard, then dense, calm shelves.
+class AuroraHomePage extends ConsumerWidget {
+  const AuroraHomePage({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final featured = ref.watch(featuredProvider).valueOrNull;
+    final posterW = Aurora.posterWidth(context);
+    final wideW = Aurora.wideWidth(context);
+    final liveW = wideW * 0.82;
+    final posterRow = posterW * 1.5 + 56;
+    final wideRow = wideW * 9 / 16 + 10;
+    final liveRow = liveW * 9 / 16 + 40;
+
+    List<StreamItem>? v(ProviderListenable<AsyncValue<List<StreamItem>>> p) =>
+        ref.watch(p).valueOrNull;
+
+    final genres =
+        (ref.watch(tmdbGenresProvider).valueOrNull ?? const <TmdbGenre>[])
+            .take(3)
+            .toList();
+    final because = ref.watch(tmdbBecauseYouWatchedProvider).valueOrNull;
+    final watchlist = ref.watch(traktWatchlistProvider).valueOrNull;
+
+    Widget posterShelf(String title, List<StreamItem>? items) =>
+        AuroraShelf<StreamItem>(
+          title: title,
+          items: items,
+          rowHeight: posterRow,
+          skeletonWidth: posterW,
+          itemBuilder: (context, it, i) => AuroraPosterCard(
+            item: it,
+            width: posterW,
+            onTap: () => openAuroraItem(context, ref, it),
+          ),
+        );
+
+    Widget wideShelf(String title, List<StreamItem>? items) =>
+        AuroraShelf<StreamItem>(
+          title: title,
+          items: items,
+          rowHeight: wideRow,
+          skeletonWidth: wideW,
+          itemBuilder: (context, it, i) => AuroraWideCard(
+            item: it,
+            width: wideW,
+            onTap: () => openAuroraItem(context, ref, it),
+          ),
+        );
+
+    return CustomScrollView(
+      slivers: [
+        SliverToBoxAdapter(
+          child: featured == null
+              ? const _BillboardSkeleton()
+              : featured.isEmpty
+                  ? const SizedBox(height: 96)
+                  : _Billboard(items: featured),
+        ),
+        SliverList(
+          delegate: SliverChildListDelegate.fixed([
+            wideShelf('Continue Watching', v(continueWatchingProvider)),
+            posterShelf('My List', v(auroraMyListProvider)),
+            AuroraShelf<StreamItem>(
+              title: 'Live Now',
+              items: v(auroraLiveNowProvider),
+              rowHeight: liveRow,
+              skeletonWidth: liveW,
+              itemBuilder: (context, it, i) => AuroraLiveCard(
+                item: it,
+                width: liveW,
+                onTap: () => openAuroraItem(context, ref, it,
+                    liveQueue: v(auroraLiveNowProvider)),
+              ),
+            ),
+            wideShelf('Trending This Week', v(tmdbTrendingProvider)),
+            wideShelf('Popular Now', v(tmdbPopularProvider)),
+            wideShelf('Recently Watched', v(recentlyWatchedProvider)),
+            posterShelf(
+                'Movies for You', v(kindSampleProvider(StreamKind.movie))),
+            posterShelf('TV Shows', v(kindSampleProvider(StreamKind.series))),
+            if (because != null && because.seed != null)
+              posterShelf(
+                  'Because you watched ${cleanTitle(because.seed!).title}',
+                  because.items),
+            for (final g in genres)
+              wideShelf(g.name, v(tmdbGenreRowProvider(g.id))),
+            if (watchlist != null && watchlist.isNotEmpty)
+              _TraktShelf(items: watchlist, width: posterW),
+            const SizedBox(height: 72),
+          ]),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Billboard
+// ---------------------------------------------------------------------------
+
+class _Billboard extends ConsumerStatefulWidget {
+  const _Billboard({required this.items});
+  final List<StreamItem> items;
+
+  @override
+  ConsumerState<_Billboard> createState() => _BillboardState();
+}
+
+class _BillboardState extends ConsumerState<_Billboard> {
+  int _index = 0;
+  bool _heroFocused = false;
+  Timer? _rotate;
+
+  @override
+  void initState() {
+    super.initState();
+    // Slow ambient rotation — never while the user's focus is on the hero.
+    _rotate = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!mounted || _heroFocused || widget.items.length < 2) return;
+      _go(1, manual: false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _rotate?.cancel();
+    super.dispose();
+  }
+
+  void _go(int delta, {bool manual = true}) {
+    final n = widget.items.length;
+    if (n < 2) return;
+    final next = manual ? (_index + delta).clamp(0, n - 1) : (_index + 1) % n;
+    if (next == _index) return;
+    // Warm the next backdrop so the crossfade never shows a loading tile.
+    final after = widget.items[(next + 1) % n];
+    if (after.logo != null && after.logo!.isNotEmpty) {
+      precacheImage(CachedNetworkImageProvider(after.logo!), context);
+    }
+    setState(() => _index = next);
+  }
+
+  void _onHeroFocus(bool f) => _heroFocused = f;
+
+  void _playDirect(StreamItem item) {
+    if (item.kind == StreamKind.movie) {
+      Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => AuroraPlayerScreen(item: item)));
+    } else {
+      openAuroraItem(context, ref, item);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final h = (size.height * 0.72).clamp(430.0, 760.0);
+    final margin = Aurora.margin(context);
+    final item = widget.items[_index.clamp(0, widget.items.length - 1)];
+    final bundle = ref
+        .watch(detailBundleProvider(
+            (title: item.name, isShow: item.kind == StreamKind.series)))
+        .valueOrNull;
+    final art = bundle?.tmdb?.backdrop ?? item.logo;
+    final synopsis = bundle?.overview;
+    final omdb = bundle?.omdb;
+    final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
+    final isFav = item.id != null && favs.contains(item.id);
+    final title = cleanTitle(item.name).title;
+    final meta = <String>[
+      if (omdb?.year != null && omdb!.year!.isNotEmpty) omdb.year!,
+      if (omdb?.rated != null && omdb!.rated!.isNotEmpty) omdb.rated!,
+      if (omdb?.runtime != null && omdb!.runtime!.isNotEmpty) omdb.runtime!,
+      if (omdb?.genre != null && omdb!.genre!.isNotEmpty)
+        omdb.genre!.split(',').take(3).join(' · ').trim(),
+    ];
+
+    return SizedBox(
+      height: h,
+      child: Stack(fit: StackFit.expand, children: [
+        // Backdrop with crossfade + a slow settle (Ken Burns lite).
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 700),
+          switchInCurve: Curves.easeOut,
+          switchOutCurve: Curves.easeIn,
+          child: SizedBox(
+            key: ValueKey(art ?? item.name),
+            width: size.width,
+            height: h,
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 1.055, end: 1.0),
+              duration: const Duration(seconds: 15),
+              curve: Curves.easeOut,
+              builder: (context, scale, child) =>
+                  Transform.scale(scale: scale, child: child),
+              child: AuroraImage(
+                url: art,
+                width: size.width,
+                height: h,
+                radius: 0,
+                fallbackText: title,
+              ),
+            ),
+          ),
+        ),
+        // Legibility gradients — bottom into bg, left for the text column.
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: [Color(0xFF06070B), Color(0x0006070B)],
+              stops: [0.0, 0.55],
+            ),
+          ),
+        ),
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              colors: [Color(0xCC06070B), Color(0x0006070B)],
+              stops: [0.0, 0.62],
+            ),
+          ),
+        ),
+        // Metadata column
+        Positioned(
+          left: margin,
+          right: margin,
+          bottom: 34,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Eyebrow(item.kind == StreamKind.series
+                  ? 'Featured series'
+                  : '#${_index + 1} in movies this week'),
+              const SizedBox(height: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 700),
+                child: Text(title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Aurora.display),
+              ),
+              const SizedBox(height: 12),
+              Row(children: [
+                RatingsStrip(info: omdb, fallbackRating: item.rating),
+                if (omdb != null && meta.isNotEmpty) ...[
+                  const SizedBox(width: 14),
+                  Flexible(child: MetaLine(meta)),
+                ],
+              ]),
+              if (synopsis != null) ...[
+                const SizedBox(height: 12),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 620),
+                  child: Text(synopsis,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Aurora.body),
+                ),
+              ],
+              const SizedBox(height: 20),
+              Row(children: [
+                AuroraPillButton(
+                  label: 'Play',
+                  icon: Icons.play_arrow_rounded,
+                  primary: true,
+                  autofocus: true,
+                  onLeft: () => _go(-1),
+                  onPressed: () => _playDirect(item),
+                ),
+                const SizedBox(width: 12),
+                AuroraPillButton(
+                  label: 'Details',
+                  icon: Icons.info_outline_rounded,
+                  onPressed: () => openAuroraItem(context, ref, item),
+                ),
+                const SizedBox(width: 12),
+                AuroraPillButton(
+                  label: isFav ? 'In My List' : 'My List',
+                  icon: isFav ? Icons.check_rounded : Icons.add_rounded,
+                  onRight: () => _go(1),
+                  onPressed: () => setFavorite(ref, item, !isFav),
+                ),
+              ].map((w) {
+                // Track hero focus through the action row so ambient rotation
+                // pauses the moment the user is interacting.
+                return Focus(
+                  skipTraversal: true,
+                  canRequestFocus: false,
+                  onFocusChange: _onHeroFocus,
+                  child: w,
+                );
+              }).toList()),
+            ],
+          ),
+        ),
+        // Page dots
+        Positioned(
+          right: margin,
+          bottom: 36,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            for (var i = 0; i < widget.items.length; i++)
+              AnimatedContainer(
+                duration: Aurora.normal,
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                width: i == _index ? 20 : 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: i == _index ? Colors.white : const Color(0x4DFFFFFF),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+class _BillboardSkeleton extends StatelessWidget {
+  const _BillboardSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    final h =
+        (MediaQuery.of(context).size.height * 0.72).clamp(430.0, 760.0);
+    return Container(
+      height: h,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF0C0F18), Color(0xFF06070B)],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Trakt watchlist shelf (titles resolved to the library on demand)
+// ---------------------------------------------------------------------------
+
+class _TraktShelf extends ConsumerWidget {
+  const _TraktShelf({required this.items, required this.width});
+  final List<TraktItem> items;
+  final double width;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return AuroraShelf<TraktItem>(
+      title: 'Trakt Watchlist',
+      leading: const Icon(Icons.check_circle, color: Color(0xFFED1C24), size: 16),
+      items: items,
+      rowHeight: width * 1.5 + 56,
+      skeletonWidth: width,
+      itemBuilder: (context, it, i) => _TraktCard(item: it, width: width),
+    );
+  }
+}
+
+class _TraktCard extends ConsumerWidget {
+  const _TraktCard({required this.item, required this.width});
+  final TraktItem item;
+  final double width;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final poster = ref
+        .watch(tmdbDetailProvider(
+            (title: item.title, isShow: item.type == 'show')))
+        .valueOrNull
+        ?.poster;
+
+    return AuroraFocusable(
+      radius: 12,
+      scale: 1.07,
+      onActivate: () async {
+        final repo = await ref.read(repositoryProvider.future);
+        final pl = ref.read(activePlaylistProvider);
+        if (pl?.id == null) return;
+        final hits = await repo.search(playlistId: pl!.id!, query: item.title);
+        final hit = LibraryRepository.preferEnglish(hits);
+        if (!context.mounted) return;
+        if (hit != null) {
+          openAuroraItem(context, ref, hit);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('"${item.title}" isn\'t in your library.')));
+        }
+      },
+      builder: (context, focused) => SizedBox(
+        width: width,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AuroraImage(
+              url: poster,
+              width: width,
+              height: width * 1.5,
+              radius: 12,
+              fallbackText: item.title,
+            ),
+            const SizedBox(height: 7),
+            Text(item.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: focused ? Aurora.text : Aurora.textDim)),
+            Text(
+                '${item.type == 'show' ? 'TV' : 'Movie'}'
+                '${item.year != null ? ' · ${item.year}' : ''}',
+                style: Aurora.caption),
+          ],
+        ),
+      ),
+    );
+  }
+}
