@@ -36,7 +36,7 @@ class AppDatabase {
     final path = p.join(dir.path, 'lumen.db');
     final db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onConfigure: (db) async {
         // journal_mode returns a row ("wal"); on sqflite_darwin (iOS/macOS)
         // running it via execute() throws "not an error" — must use rawQuery.
@@ -49,9 +49,11 @@ class AppDatabase {
       onCreate: (db, v) async {
         await _createSchema(db, v);
         await _createV2(db);
+        await _createV3(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createV2(db);
+        if (from < 3) await _createV3(db);
       },
     );
     return _instance = AppDatabase._(db, _fts);
@@ -144,6 +146,57 @@ class AppDatabase {
     // progress index may not exist on installs created before this index line.
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_progress_updated ON progress(updated_at)');
+  }
+
+  /// v3: per-episode watch progress. Series episodes are resolved on demand
+  /// (no DB stream row) and may play from IPTV or a changing Real-Debrid url,
+  /// so we key on the show title + season/episode (see [episodeKey]). Small
+  /// table — only episodes the user has actually started.
+  static Future<void> _createV3(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS episode_progress (
+        ep_key TEXT PRIMARY KEY,
+        position_ms INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        watched INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      )''');
+  }
+
+  // ---- Episode progress ----------------------------------------------------
+
+  Future<void> saveEpisodeProgress(String key, int posMs, int durMs) async {
+    final watched = durMs > 0 && posMs / durMs >= 0.9 ? 1 : 0;
+    await db.insert(
+      'episode_progress',
+      {
+        'ep_key': key,
+        'position_ms': posMs,
+        'duration_ms': durMs,
+        'watched': watched,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// ep_key → (completed fraction 0..1, watched, last-touched ms) for every
+  /// episode the user has started. Drives the series screen's seen marks,
+  /// resume overlays and "jump to next episode".
+  Future<Map<String, ({double fraction, bool watched, int updatedAt})>>
+      episodeProgressAll() async {
+    final rows = await db.query('episode_progress');
+    final out = <String, ({double fraction, bool watched, int updatedAt})>{};
+    for (final r in rows) {
+      final pos = (r['position_ms'] as num?)?.toDouble() ?? 0;
+      final dur = (r['duration_ms'] as num?)?.toDouble() ?? 0;
+      out[r['ep_key'] as String] = (
+        fraction: dur > 0 ? (pos / dur).clamp(0.0, 1.0) : 0.0,
+        watched: (r['watched'] as int? ?? 0) == 1,
+        updatedAt: (r['updated_at'] as int?) ?? 0,
+      );
+    }
+    return out;
   }
 
   // ---- Settings (key/value) ------------------------------------------------

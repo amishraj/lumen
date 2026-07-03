@@ -406,8 +406,9 @@ class _Chip extends StatelessWidget {
       ring: false,
       scale: 1.0,
       onActivate: onPick,
-      // Nothing sits above the chip rail, so ▲ is free to toggle the pin.
-      onUp: onPin,
+      // ▲ returns to the top nav; long-press (pointer) pins the category.
+      onUp: () => auroraNavFocusNode.requestFocus(),
+      onLongPress: onPin,
       builder: (context, focused) => AnimatedContainer(
         duration: Aurora.fast,
         padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
@@ -445,12 +446,10 @@ class _Chip extends StatelessWidget {
                         ? const Color(0x99060708)
                         : Aurora.textFaint)),
           ],
-          if (onPin != null && focused) ...[
-            const SizedBox(width: 8),
-            Icon(pinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
-                size: 12, color: const Color(0x99060708)),
-            const Text(' ▲',
-                style: TextStyle(fontSize: 9, color: Color(0x99060708))),
+          if (onPin != null && focused && !pinned) ...[
+            const SizedBox(width: 7),
+            const Icon(Icons.push_pin_outlined,
+                size: 12, color: Color(0x99060708)),
           ],
         ]),
       ),

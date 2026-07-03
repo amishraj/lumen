@@ -204,7 +204,10 @@ class _BillboardState extends ConsumerState<_Billboard> {
     return SizedBox(
       height: h,
       child: Stack(fit: StackFit.expand, children: [
-        // Backdrop with crossfade + a slow settle (Ken Burns lite).
+        // Backdrop with crossfade + a slow settle (Ken Burns lite). The
+        // bottom fade is baked into the *pixels* via a ShaderMask (alpha → 0),
+        // so the artwork dissolves into the page with no possible seam — an
+        // overlay gradient could still leave a visible knee against bright art.
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 700),
           switchInCurve: Curves.easeOut,
@@ -213,36 +216,39 @@ class _BillboardState extends ConsumerState<_Billboard> {
             key: ValueKey(art ?? item.name),
             width: size.width,
             height: h,
-            child: TweenAnimationBuilder<double>(
-              tween: Tween(begin: 1.055, end: 1.0),
-              duration: const Duration(seconds: 15),
-              curve: Curves.easeOut,
-              builder: (context, scale, child) =>
-                  Transform.scale(scale: scale, child: child),
-              child: AuroraImage(
-                url: art,
-                width: size.width,
-                height: h,
-                radius: 0,
-                fallbackText: title,
+            child: ShaderMask(
+              shaderCallback: (rect) => const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Colors.white, Colors.white, Colors.transparent],
+                stops: [0.0, 0.5, 0.96],
+              ).createShader(rect),
+              blendMode: BlendMode.dstIn,
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 1.055, end: 1.0),
+                duration: const Duration(seconds: 15),
+                curve: Curves.easeOut,
+                builder: (context, scale, child) =>
+                    Transform.scale(scale: scale, child: child),
+                child: AuroraImage(
+                  url: art,
+                  width: size.width,
+                  height: h,
+                  radius: 0,
+                  fallbackText: title,
+                ),
               ),
             ),
           ),
         ),
-        // Legibility gradients. The bottom stays *solid* bg for its lowest
-        // ~16% so the billboard melts seamlessly into the page below — no hard
-        // horizontal cut where the artwork ends.
+        // Soft scrims for text legibility (no hard knee needed — the art is
+        // already fading out toward the bottom).
         const DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.bottomCenter,
-              end: Alignment.topCenter,
-              colors: [
-                Color(0xFF06070B),
-                Color(0xFF06070B),
-                Color(0x0006070B),
-              ],
-              stops: [0.0, 0.16, 0.62],
+              end: Alignment.center,
+              colors: [Color(0xCC06070B), Color(0x0006070B)],
             ),
           ),
         ),
@@ -302,12 +308,14 @@ class _BillboardState extends ConsumerState<_Billboard> {
                   primary: true,
                   autofocus: true,
                   onLeft: () => _go(-1),
+                  onUp: () => auroraNavFocusNode.requestFocus(),
                   onPressed: () => _playDirect(item),
                 ),
                 const SizedBox(width: 12),
                 AuroraPillButton(
                   label: 'Details',
                   icon: Icons.info_outline_rounded,
+                  onUp: () => auroraNavFocusNode.requestFocus(),
                   onPressed: () => openAuroraItem(context, ref, item),
                 ),
                 const SizedBox(width: 12),
@@ -315,6 +323,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
                   label: isFav ? 'In My List' : 'My List',
                   icon: isFav ? Icons.check_rounded : Icons.add_rounded,
                   onRight: () => _go(1),
+                  onUp: () => auroraNavFocusNode.requestFocus(),
                   onPressed: () => setFavorite(ref, item, !isFav),
                 ),
               ].map((w) {

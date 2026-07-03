@@ -288,6 +288,11 @@ final auroraCatalogPagerProvider = StateNotifierProvider.autoDispose
   return TmdbCatalogPager(svc, repo, pl!.id!, key.show, key.genreId);
 });
 
+/// The top navigation's focus target. The currently-selected tab holds this
+/// node, so any page can send focus "up" to the nav bar (▲ from its top row);
+/// focusing it lands on the active tab, and Left/Right then move across tabs.
+final auroraNavFocusNode = FocusNode(debugLabel: 'aurora-nav');
+
 /// The shell's selected tab.
 final auroraTabProvider = StateProvider<int>((ref) => AuroraTab.home.index);
 

@@ -9,6 +9,13 @@ StreamKind streamKindFromString(String s) => StreamKind.values.firstWhere(
       orElse: () => StreamKind.live,
     );
 
+/// Stable per-episode identity for local watch tracking. Series episodes are
+/// resolved on demand (no DB stream row) and may play from IPTV *or* a
+/// changing Real-Debrid url, so progress is keyed by the show title + S/E
+/// rather than the stream url. Callers pass an already-cleaned title.
+String episodeKey(String cleanShowTitle, int season, int episode) =>
+    '${cleanShowTitle.trim().toLowerCase()}|s${season}e$episode';
+
 /// A configured IPTV source (an M3U URL or Xtream Codes credentials).
 class Playlist {
   final int? id;

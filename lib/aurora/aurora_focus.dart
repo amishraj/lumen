@@ -27,6 +27,7 @@ class AuroraFocusable extends StatefulWidget {
     this.onUp,
     this.onDown,
     this.onFocusChange,
+    this.onLongPress,
     this.centerOnFocus = true,
   });
 
@@ -46,6 +47,9 @@ class AuroraFocusable extends StatefulWidget {
   final VoidCallback? onUp;
   final VoidCallback? onDown;
   final ValueChanged<bool>? onFocusChange;
+
+  /// Pointer long-press (e.g. long-press a category chip to pin it).
+  final VoidCallback? onLongPress;
 
   /// When focused inside a *horizontal* scroller, glide that scroller so this
   /// item eases toward centre — the "cards flow rather than jump" feel. No-op
@@ -140,6 +144,7 @@ class _AuroraFocusableState extends State<AuroraFocusable> {
           final hi = _focused && keyboardMode;
           return GestureDetector(
             onTap: widget.onActivate,
+            onLongPress: widget.onLongPress,
             child: AnimatedScale(
               scale: hi ? widget.scale : 1.0,
               duration: const Duration(milliseconds: 160),

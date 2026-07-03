@@ -121,6 +121,11 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   Duration? _previewPos;
   Timer? _previewTimer;
 
+  // YouTube-style ±30s directional flash that fades in/out on a keyboard seek.
+  int _seekFlashDir = 0; // -1 back, +1 forward
+  bool _seekFlashOn = false;
+  Timer? _seekFlashTimer;
+
   // Live number entry.
   String _digits = '';
   Timer? _digitTimer;
@@ -284,6 +289,17 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       }
       return;
     }
+    // Local per-episode resume first (works offline, no Trakt needed).
+    final ek = _episodeKey();
+    if (ek != null) {
+      final all =
+          await ref.read(repositoryProvider).valueOrNull?.db.episodeProgressAll();
+      final ep = all?[ek];
+      if (ep != null && ep.fraction > 0.02 && ep.fraction < 0.97) {
+        _resume = ep.fraction;
+        return;
+      }
+    }
     final svc = ref.read(traktServiceProvider).valueOrNull;
     _resume = await svc?.resumeProgress(_current.name,
         isShow: _current.kind == StreamKind.series);
@@ -342,13 +358,28 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       await _player.seek(
           Duration(milliseconds: (dur.inMilliseconds * _resume!).round()));
     }
-    if (_current.id != null &&
-        (pos.inMilliseconds - _lastSavedPosMs).abs() >= 5000) {
+    if ((pos.inMilliseconds - _lastSavedPosMs).abs() >= 5000) {
       _lastSavedPosMs = pos.inMilliseconds;
       final repo = ref.read(repositoryProvider).valueOrNull;
-      unawaited(repo?.db
-          .saveProgress(_current.id!, pos.inMilliseconds, dur.inMilliseconds));
+      if (_current.id != null) {
+        unawaited(repo?.db.saveProgress(
+            _current.id!, pos.inMilliseconds, dur.inMilliseconds));
+      } else {
+        final ek = _episodeKey();
+        if (ek != null) {
+          unawaited(repo?.db.saveEpisodeProgress(
+              ek, pos.inMilliseconds, dur.inMilliseconds));
+        }
+      }
     }
+  }
+
+  /// Stable per-episode key for the current item, or null if it isn't a
+  /// season/episode-identified series episode.
+  String? _episodeKey() {
+    final (title, isShow, season, episode) = _scrobbleIdentity();
+    if (!isShow || season == null || episode == null) return null;
+    return episodeKey(title, season, episode);
   }
 
   // ---- Trakt scrobbling ----------------------------------------------------
@@ -383,9 +414,14 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
 
   void _checkpoint() {
     if (_isLive || _lastDurMs <= 0) return;
+    final repo = ref.read(repositoryProvider).valueOrNull;
     if (_current.id != null) {
-      final repo = ref.read(repositoryProvider).valueOrNull;
       unawaited(repo?.db.saveProgress(_current.id!, _lastPosMs, _lastDurMs));
+    } else {
+      final ek = _episodeKey();
+      if (ek != null) {
+        unawaited(repo?.db.saveEpisodeProgress(ek, _lastPosMs, _lastDurMs));
+      }
     }
     _scrobble('stop');
   }
@@ -403,6 +439,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _hideTimer?.cancel();
     _digitTimer?.cancel();
     _previewTimer?.cancel();
+    _seekFlashTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -475,9 +512,20 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     if (_duration > Duration.zero && target > _duration) target = _duration;
     _player.seek(target);
     setState(() => _position = target);
-    _flashPreview(target);
-    _showControls(focusFirst: false);
+    _flashSeek(secs < 0 ? -1 : 1);
     _resetHideTimer();
+  }
+
+  /// Pulse the directional ±30s indicator (fades in, then out).
+  void _flashSeek(int dir) {
+    setState(() {
+      _seekFlashDir = dir;
+      _seekFlashOn = true;
+    });
+    _seekFlashTimer?.cancel();
+    _seekFlashTimer = Timer(const Duration(milliseconds: 620), () {
+      if (mounted) setState(() => _seekFlashOn = false);
+    });
   }
 
   /// Seek to an absolute position (pointer tap/drag on the track).
@@ -536,6 +584,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       season: se?.$1,
       episode: se?.$2,
       iptvUrl: iptvUrl,
+      currentUrl: _urlOverrides[_index] ?? _current.url,
     );
     if (picked == null || !mounted) return;
     final resumeAt = _position;
@@ -784,6 +833,8 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                     ),
                   ),
                 ),
+                // ±30s directional seek flash (keyboard/remote seeks).
+                _SeekFlash(dir: _seekFlashDir, on: _seekFlashOn),
                 if (_nextUpVisible)
                   Positioned(
                     right: 28,
@@ -1081,14 +1132,9 @@ class _Chrome extends StatelessWidget {
         size: 42,
         tooltip: state._playing ? 'Pause' : 'Play',
         onActivity: state._resetHideTimer,
-        // ◀ ▶ from the (default-focused) play button seek immediately, so the
-        // user never has to hunt for the progress bar first.
-        onLeft: state._isLive
-            ? null
-            : () => state._seekBy(-_AuroraPlayerScreenState._seekStep),
-        onRight: state._isLive
-            ? null
-            : () => state._seekBy(_AuroraPlayerScreenState._seekStep),
+        // With the overlay up, ◀ ▶ navigate to the skip buttons / timeline
+        // (which seek) rather than seeking directly — so remote D-pad browses
+        // the visible controls. When the overlay is hidden, ◀ ▶ seek globally.
         onPressed: spinner ? () {} : state._togglePlay,
       ),
       if (!state._isLive) ...[
@@ -1323,6 +1369,53 @@ class _FocusableTrackState extends State<_FocusableTrack> {
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: widget.builder(context, _focused),
+      ),
+    );
+  }
+}
+
+/// YouTube-style ±30s indicator: a rounded glass badge that flashes on the
+/// left (rewind) or right (forward) and fades away.
+class _SeekFlash extends StatelessWidget {
+  const _SeekFlash({required this.dir, required this.on});
+  final int dir;
+  final bool on;
+
+  @override
+  Widget build(BuildContext context) {
+    final back = dir < 0;
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Align(
+          alignment: back ? const Alignment(-0.5, 0) : const Alignment(0.5, 0),
+          child: AnimatedOpacity(
+            opacity: on ? 1 : 0,
+            duration: Duration(milliseconds: on ? 110 : 360),
+            curve: Curves.easeOut,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+              decoration: const BoxDecoration(
+                color: Color(0x80000000),
+                shape: BoxShape.circle,
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Icon(
+                    back
+                        ? Icons.fast_rewind_rounded
+                        : Icons.fast_forward_rounded,
+                    color: Colors.white,
+                    size: 34),
+                const SizedBox(height: 4),
+                const Text('30s',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800)),
+              ]),
+            ),
+          ),
+        ),
       ),
     );
   }

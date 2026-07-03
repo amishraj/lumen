@@ -24,6 +24,7 @@ Future<AuroraPickedSource?> showAuroraSourceSheet(
   int? season,
   int? episode,
   String? iptvUrl,
+  String? currentUrl,
 }) {
   return showModalBottomSheet<AuroraPickedSource>(
     context: context,
@@ -37,6 +38,7 @@ Future<AuroraPickedSource?> showAuroraSourceSheet(
       season: season,
       episode: episode,
       iptvUrl: iptvUrl,
+      currentUrl: currentUrl,
     ),
   );
 }
@@ -48,12 +50,14 @@ class _Sheet extends ConsumerStatefulWidget {
     this.season,
     this.episode,
     this.iptvUrl,
+    this.currentUrl,
   });
   final String title;
   final bool isShow;
   final int? season;
   final int? episode;
   final String? iptvUrl;
+  final String? currentUrl;
 
   @override
   ConsumerState<_Sheet> createState() => _SheetState();
@@ -117,7 +121,10 @@ class _SheetState extends ConsumerState<_Sheet> {
                 children: [
                   if (widget.iptvUrl != null)
                     _SourceRow(
-                      autofocus: true,
+                      autofocus: widget.currentUrl == null ||
+                          widget.currentUrl == widget.iptvUrl,
+                      active: widget.currentUrl != null &&
+                          widget.currentUrl == widget.iptvUrl,
                       badge: 'IPTV',
                       badgeColor: Aurora.accent,
                       title: 'Your IPTV stream',
@@ -154,6 +161,8 @@ class _SheetState extends ConsumerState<_Sheet> {
                   if (streams != null)
                     for (final s in streams.take(12))
                       _SourceRow(
+                        active: widget.currentUrl == s.url,
+                        autofocus: widget.currentUrl == s.url,
                         badge: s.quality,
                         badgeColor: Aurora.accentAlt,
                         title: s.label,
@@ -184,6 +193,7 @@ class _SourceRow extends StatelessWidget {
     required this.subtitle,
     required this.onPick,
     this.autofocus = false,
+    this.active = false,
   });
 
   final String badge;
@@ -192,6 +202,9 @@ class _SourceRow extends StatelessWidget {
   final String subtitle;
   final VoidCallback onPick;
   final bool autofocus;
+
+  /// This is the stream currently playing — marked "Now playing".
+  final bool active;
 
   @override
   Widget build(BuildContext context) {
@@ -204,8 +217,14 @@ class _SourceRow extends StatelessWidget {
         margin: const EdgeInsets.symmetric(vertical: 3),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
         decoration: BoxDecoration(
-          color: focused ? Aurora.glassHi : Colors.transparent,
+          color: focused
+              ? Aurora.glassHi
+              : (active ? Aurora.glass : Colors.transparent),
           borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+              color: active && !focused
+                  ? Aurora.accent.withValues(alpha: 0.5)
+                  : Colors.transparent),
         ),
         child: Row(children: [
           Container(
@@ -215,8 +234,7 @@ class _SourceRow extends StatelessWidget {
             decoration: BoxDecoration(
               color: badgeColor.withValues(alpha: 0.16),
               borderRadius: BorderRadius.circular(8),
-              border:
-                  Border.all(color: badgeColor.withValues(alpha: 0.45)),
+              border: Border.all(color: badgeColor.withValues(alpha: 0.45)),
             ),
             child: Text(badge,
                 style: TextStyle(
@@ -236,11 +254,23 @@ class _SourceRow extends StatelessWidget {
                         fontSize: 13.5, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),
                 Text(subtitle,
-                    style: const TextStyle(
-                        fontSize: 12, color: Aurora.textDim)),
+                    style:
+                        const TextStyle(fontSize: 12, color: Aurora.textDim)),
               ],
             ),
           ),
+          if (active) ...[
+            const SizedBox(width: 10),
+            const Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.equalizer_rounded, size: 15, color: Aurora.accent),
+              SizedBox(width: 5),
+              Text('Now playing',
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                      color: Aurora.accent)),
+            ]),
+          ],
         ]),
       ),
     );

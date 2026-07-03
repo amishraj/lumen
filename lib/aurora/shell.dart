@@ -220,6 +220,11 @@ class _TopBarState extends ConsumerState<_TopBar> {
                   _TabItem(
                     spec: t,
                     selected: widget.selected == t.tab.index,
+                    // The active tab holds the shared nav node so pages can
+                    // send focus back up here (▲ from their top row).
+                    focusNode: widget.selected == t.tab.index
+                        ? auroraNavFocusNode
+                        : null,
                     onFocus: (f) => _focusTab(t.tab, f),
                     onPick: () => _pickTab(t.tab),
                     compact: !wide,
@@ -267,6 +272,7 @@ class _TabItem extends StatelessWidget {
     required this.onFocus,
     required this.onPick,
     required this.compact,
+    this.focusNode,
   });
 
   final AuroraTabSpec spec;
@@ -274,6 +280,7 @@ class _TabItem extends StatelessWidget {
   final ValueChanged<bool> onFocus;
   final VoidCallback onPick;
   final bool compact;
+  final FocusNode? focusNode;
 
   @override
   Widget build(BuildContext context) {
@@ -281,6 +288,7 @@ class _TabItem extends StatelessWidget {
     return AuroraFocusable(
       ring: false,
       scale: 1.0,
+      focusNode: focusNode,
       onActivate: onPick,
       onFocusChange: onFocus,
       builder: (context, focused) => AnimatedContainer(
@@ -333,21 +341,53 @@ class _LazyStack extends StatefulWidget {
   State<_LazyStack> createState() => _LazyStackState();
 }
 
-class _LazyStackState extends State<_LazyStack> {
+class _LazyStackState extends State<_LazyStack>
+    with SingleTickerProviderStateMixin {
   final Map<int, Widget> _built = {};
+
+  // A gentle fade + upward glide replays on every tab change, so pages flow
+  // into place instead of snapping. IndexedStack still preserves each page's
+  // scroll + focus state underneath.
+  late final AnimationController _ctrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 300))
+    ..value = 1;
+  late final Animation<double> _fade =
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+  late final Animation<Offset> _slide = Tween(
+    begin: const Offset(0, 0.02),
+    end: Offset.zero,
+  ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
+
+  @override
+  void didUpdateWidget(covariant _LazyStack old) {
+    super.didUpdateWidget(old);
+    if (old.index != widget.index) _ctrl.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     _built.putIfAbsent(widget.index, () => widget.builders[widget.index]());
-    return IndexedStack(
-      index: widget.index,
-      children: [
-        for (var i = 0; i < widget.builders.length; i++)
-          ExcludeFocus(
-            excluding: i != widget.index,
-            child: _built[i] ?? const SizedBox.shrink(),
-          ),
-      ],
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(
+        position: _slide,
+        child: IndexedStack(
+          index: widget.index,
+          children: [
+            for (var i = 0; i < widget.builders.length; i++)
+              ExcludeFocus(
+                excluding: i != widget.index,
+                child: _built[i] ?? const SizedBox.shrink(),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

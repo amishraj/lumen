@@ -17,6 +17,8 @@ class AuroraPillButton extends StatelessWidget {
     this.focusNode,
     this.onLeft,
     this.onRight,
+    this.onUp,
+    this.onDown,
     this.compact = false,
   });
 
@@ -28,6 +30,8 @@ class AuroraPillButton extends StatelessWidget {
   final FocusNode? focusNode;
   final VoidCallback? onLeft;
   final VoidCallback? onRight;
+  final VoidCallback? onUp;
+  final VoidCallback? onDown;
   final bool compact;
 
   @override
@@ -39,6 +43,8 @@ class AuroraPillButton extends StatelessWidget {
       onActivate: onPressed,
       onLeft: onLeft,
       onRight: onRight,
+      onUp: onUp,
+      onDown: onDown,
       radius: 28,
       scale: 1.04,
       builder: (context, focused) => AnimatedContainer(
