@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../ui/input_mode.dart' show InputMode;
@@ -26,6 +27,7 @@ class AuroraFocusable extends StatefulWidget {
     this.onUp,
     this.onDown,
     this.onFocusChange,
+    this.centerOnFocus = true,
   });
 
   final VoidCallback onActivate;
@@ -45,12 +47,41 @@ class AuroraFocusable extends StatefulWidget {
   final VoidCallback? onDown;
   final ValueChanged<bool>? onFocusChange;
 
+  /// When focused inside a *horizontal* scroller, glide that scroller so this
+  /// item eases toward centre — the "cards flow rather than jump" feel. No-op
+  /// when the nearest scroller is vertical (page scroll stays calm).
+  final bool centerOnFocus;
+
   @override
   State<AuroraFocusable> createState() => _AuroraFocusableState();
 }
 
 class _AuroraFocusableState extends State<AuroraFocusable> {
   bool _focused = false;
+
+  /// Smoothly bring this item toward the centre of its nearest *horizontal*
+  /// scrollable. Flutter's focus traversal snaps (zero-duration ensureVisible);
+  /// easing to centre right after turns that snap into a glide.
+  void _glideIntoView() {
+    if (!widget.centerOnFocus || !mounted) return;
+    final scrollable = Scrollable.maybeOf(context);
+    if (scrollable == null) return;
+    final pos = scrollable.position;
+    if (pos.axis != Axis.horizontal) return;
+    final ro = context.findRenderObject();
+    if (ro is! RenderBox || !ro.attached) return;
+    try {
+      final viewport = RenderAbstractViewport.of(ro);
+      final target = viewport
+          .getOffsetToReveal(ro, 0.5)
+          .offset
+          .clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      if ((target - pos.pixels).abs() < 2) return;
+      pos.animateTo(target,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic);
+    } catch (_) {/* no viewport / detached — nothing to glide */}
+  }
 
   KeyEventResult _onEdgeKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
@@ -86,6 +117,13 @@ class _AuroraFocusableState extends State<AuroraFocusable> {
         if (mounted && v != _focused) {
           setState(() => _focused = v);
           widget.onFocusChange?.call(v);
+        }
+      },
+      onFocusChange: (v) {
+        // Fires on true focus (remote or pointer), so gliding works even when
+        // the highlight is suppressed during pointer use.
+        if (v) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _glideIntoView());
         }
       },
       actions: {

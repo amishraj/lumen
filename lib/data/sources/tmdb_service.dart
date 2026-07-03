@@ -207,6 +207,29 @@ class TmdbService {
     return _parseResults(data, forceShow: show).take(limit).toList();
   }
 
+  /// Paged discovery for the browse grid. [genreId] null → popular overall.
+  /// Each page is cached for a day so paging back and forth is instant. A
+  /// modest vote-count floor keeps the grid free of empty/placeholder entries.
+  Future<List<TmdbItem>> discover({
+    required bool show,
+    int? genreId,
+    int page = 1,
+  }) async {
+    final gk = genreId == null ? 'pop' : 'g$genreId';
+    final data = await _cachedGet(
+      'tmdb:disc:${show ? 'tv' : 'movie'}:$gk:$page',
+      '/discover/${show ? 'tv' : 'movie'}',
+      query: {
+        if (genreId != null) 'with_genres': '$genreId',
+        'sort_by': 'popularity.desc',
+        'page': '$page',
+        'vote_count.gte': genreId == null ? '250' : '60',
+      },
+      ttl: const Duration(hours: 24),
+    );
+    return _parseResults(data, forceShow: show);
+  }
+
   /// "Because you watched X" — TMDB's own recommendations for a title. Resolves
   /// the title to a TMDB id first (cached), then fetches recommendations.
   Future<List<TmdbItem>> recommendationsFor(String title,

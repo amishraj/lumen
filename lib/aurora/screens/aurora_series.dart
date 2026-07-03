@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/models.dart';
+import '../../data/repositories/library_repository.dart';
 import '../../data/sources/tmdb_service.dart';
 import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
@@ -49,7 +50,18 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
 
   Future<List<Episode>> _load() async {
     final repo = await ref.read(repositoryProvider.future);
-    return repo.seriesEpisodes(widget.playlist, widget.series.url);
+    // A TMDB-catalog series carries no Xtream series_id (url is empty) — resolve
+    // the English-preferred library match by title to find its episodes.
+    var seriesUrl = widget.series.url;
+    if (seriesUrl.isEmpty && widget.playlist.id != null) {
+      final hits = await repo.search(
+          playlistId: widget.playlist.id!,
+          kind: StreamKind.series,
+          query: _showTitle);
+      seriesUrl = LibraryRepository.preferEnglish(hits)?.url ?? '';
+    }
+    if (seriesUrl.isEmpty) return const [];
+    return repo.seriesEpisodes(widget.playlist, seriesUrl);
   }
 
   String _titleFor(Episode ep) {

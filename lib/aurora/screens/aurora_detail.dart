@@ -7,47 +7,49 @@ import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
 import '../../ui/title_utils.dart';
 import '../aurora_navigation.dart';
+import '../aurora_playback.dart';
 import '../aurora_providers.dart';
 import '../aurora_theme.dart';
-import '../player/aurora_player.dart';
 import '../widgets/aurora_badges.dart';
 import '../widgets/aurora_buttons.dart';
 import '../widgets/aurora_cards.dart';
 import '../widgets/aurora_image.dart';
 import '../widgets/aurora_shelf.dart';
-import '../widgets/aurora_source_sheet.dart';
 
 /// Movie detail — a full-bleed cinematic page. One bundled metadata fetch
-/// (OMDb ∥ TMDB) so everything lands in a single update, then Play/Resume,
-/// My List, source selection and a "More Like This" rail from your library.
-class AuroraDetailScreen extends ConsumerWidget {
+/// (OMDb ∥ TMDB) so everything lands in a single update.
+///
+/// Playback: the primary **Play** prefers a smart Real-Debrid stream (a 1080p,
+/// non-junk release, ideally subtitled), falling back to the library's IPTV
+/// match. A secondary **Play on IPTV** forces the English-preferred library
+/// stream. Both resolve asynchronously with an inline spinner.
+class AuroraDetailScreen extends ConsumerStatefulWidget {
   const AuroraDetailScreen({super.key, required this.item});
   final StreamItem item;
 
-  void _play(BuildContext context, {double? resumeFraction}) {
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => AuroraPlayerScreen(
-        item: item,
-        resumeFraction: resumeFraction,
-      ),
-    ));
-  }
+  @override
+  ConsumerState<AuroraDetailScreen> createState() =>
+      _AuroraDetailScreenState();
+}
 
-  Future<void> _pickSource(BuildContext context, WidgetRef ref) async {
-    final picked = await showAuroraSourceSheet(
-      context,
-      ref,
-      title: item.name,
-      iptvUrl: item.url,
-    );
-    if (picked == null || !context.mounted) return;
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => AuroraPlayerScreen(item: item.copyWith(url: picked.url)),
-    ));
+class _AuroraDetailScreenState extends ConsumerState<AuroraDetailScreen> {
+  bool _resolving = false;
+
+  StreamItem get item => widget.item;
+
+  Future<void> _play(PlayPreference pref, {double? resumeFraction}) async {
+    if (_resolving) return;
+    setState(() => _resolving = true);
+    try {
+      await AuroraPlayback.play(context, ref, item,
+          preference: pref, resumeFraction: resumeFraction);
+    } finally {
+      if (mounted) setState(() => _resolving = false);
+    }
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final margin = Aurora.margin(context);
     final heroH = (size.height * 0.82).clamp(430.0, 860.0);
@@ -65,10 +67,8 @@ class AuroraDetailScreen extends ConsumerWidget {
     final resumable = fraction != null && fraction >= 0.02 && fraction <= 0.97;
     final rdOn = ref.watch(rdEnabledProvider).valueOrNull ?? false;
     final recs = ref
-        .watch(auroraRecsProvider((
-      title: cleanTitle(item.name).title,
-      isShow: false,
-    )))
+        .watch(auroraRecsProvider(
+            (title: cleanTitle(item.name).title, isShow: false)))
         .valueOrNull;
 
     final backdrop = tmdb?.backdrop ?? info?.poster ?? item.logo;
@@ -109,8 +109,8 @@ class AuroraDetailScreen extends ConsumerWidget {
                   gradient: LinearGradient(
                     begin: Alignment.bottomCenter,
                     end: Alignment.topCenter,
-                    colors: [Color(0xFF06070B), Color(0x0006070B)],
-                    stops: [0.0, 0.6],
+                    colors: [Color(0xFF06070B), Color(0xFF06070B), Color(0x0006070B)],
+                    stops: [0.0, 0.14, 0.62],
                   ),
                 ),
               ),
@@ -124,7 +124,6 @@ class AuroraDetailScreen extends ConsumerWidget {
                   ),
                 ),
               ),
-              // Back affordance for pointer users; remote Back just pops.
               Positioned(
                 top: 18,
                 left: margin - 8,
@@ -144,8 +143,7 @@ class AuroraDetailScreen extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (genres.isNotEmpty)
-                      Eyebrow(genres.take(3).join(' · ')),
+                    if (genres.isNotEmpty) Eyebrow(genres.take(3).join(' · ')),
                     const SizedBox(height: 10),
                     ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 760),
@@ -181,8 +179,8 @@ class AuroraDetailScreen extends ConsumerWidget {
                               FractionallySizedBox(
                                 widthFactor: fraction,
                                 child: const DecoratedBox(
-                                    decoration: BoxDecoration(
-                                        gradient: Aurora.gradient)),
+                                    decoration:
+                                        BoxDecoration(gradient: Aurora.gradient)),
                               ),
                             ]),
                           ),
@@ -192,34 +190,44 @@ class AuroraDetailScreen extends ConsumerWidget {
                     const SizedBox(height: 20),
                     Wrap(spacing: 12, runSpacing: 12, children: [
                       AuroraPillButton(
-                        label: resumable
-                            ? 'Resume · ${(fraction * 100).round()}%'
-                            : 'Play',
+                        label: _resolving
+                            ? 'Finding stream…'
+                            : (resumable
+                                ? 'Resume · ${(fraction * 100).round()}%'
+                                : 'Play'),
                         icon: Icons.play_arrow_rounded,
                         primary: true,
                         autofocus: true,
-                        onPressed: () => _play(context,
+                        onPressed: () => _play(PlayPreference.auto,
+                            resumeFraction: resumable ? fraction : null),
+                      ),
+                      AuroraPillButton(
+                        label: 'Play on IPTV',
+                        icon: Icons.live_tv_rounded,
+                        onPressed: () => _play(PlayPreference.iptv,
                             resumeFraction: resumable ? fraction : null),
                       ),
                       if (resumable)
                         AuroraPillButton(
                           label: 'From beginning',
                           icon: Icons.replay_rounded,
-                          onPressed: () => _play(context, resumeFraction: 0),
+                          onPressed: () =>
+                              _play(PlayPreference.auto, resumeFraction: 0),
                         ),
                       AuroraPillButton(
                         label: isFav ? 'In My List' : 'My List',
-                        icon:
-                            isFav ? Icons.check_rounded : Icons.add_rounded,
-                        onPressed: () => setFavorite(ref, item, !isFav),
+                        icon: isFav ? Icons.check_rounded : Icons.add_rounded,
+                        onPressed: () => _toggleList(isFav),
                       ),
-                      if (rdOn)
-                        AuroraPillButton(
-                          label: 'Sources',
-                          icon: Icons.swap_horiz_rounded,
-                          onPressed: () => _pickSource(context, ref),
-                        ),
                     ]),
+                    if (rdOn)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 10),
+                        child: Text(
+                          'Play uses a smart Real-Debrid stream · switch sources any time in the player',
+                          style: Aurora.caption,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -270,5 +278,33 @@ class AuroraDetailScreen extends ConsumerWidget {
         ),
       ]),
     );
+  }
+
+  Future<void> _toggleList(bool isFav) async {
+    if (item.id != null) {
+      await setFavorite(ref, item, !isFav);
+      return;
+    }
+    // A TMDB-catalog title that isn't matched in the library — resolve the
+    // English IPTV match so My List stays library-backed, else say so.
+    final messenger = ScaffoldMessenger.of(context);
+    final repo = await ref.read(repositoryProvider.future);
+    final pl = ref.read(activePlaylistProvider);
+    if (pl?.id == null) return;
+    final hits = await repo.search(
+        playlistId: pl!.id!, kind: item.kind, query: cleanTitle(item.name).title);
+    final match = hits.isEmpty ? null : hits.first;
+    if (match?.id != null) {
+      await setFavorite(ref, match!, true);
+      messenger.showSnackBar(const SnackBar(
+          backgroundColor: Aurora.bgRaised,
+          content:
+              Text('Added to My List', style: TextStyle(color: Aurora.text))));
+    } else {
+      messenger.showSnackBar(const SnackBar(
+          backgroundColor: Aurora.bgRaised,
+          content: Text('This title isn\'t in your IPTV library.',
+              style: TextStyle(color: Aurora.text))));
+    }
   }
 }

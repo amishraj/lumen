@@ -84,6 +84,10 @@ class AuroraIconButton extends StatelessWidget {
     this.autofocus = false,
     this.focusNode,
     this.onActivity,
+    this.onLeft,
+    this.onRight,
+    this.onUp,
+    this.onDown,
   });
 
   final IconData icon;
@@ -100,6 +104,12 @@ class AuroraIconButton extends StatelessWidget {
   /// Fired on every activation — lets the player keep its hide-timer alive.
   final VoidCallback? onActivity;
 
+  /// Edge-arrow intercepts (e.g. the player's big play button seeks on ◀ ▶).
+  final VoidCallback? onLeft;
+  final VoidCallback? onRight;
+  final VoidCallback? onUp;
+  final VoidCallback? onDown;
+
   @override
   Widget build(BuildContext context) {
     final btn = AuroraFocusable(
@@ -107,6 +117,10 @@ class AuroraIconButton extends StatelessWidget {
       focusNode: focusNode,
       radius: 40,
       scale: 1.08,
+      onLeft: onLeft,
+      onRight: onRight,
+      onUp: onUp,
+      onDown: onDown,
       onActivate: () {
         onActivity?.call();
         if (enabled) onPressed();

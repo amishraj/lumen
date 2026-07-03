@@ -32,7 +32,9 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
     }
     final margin = Aurora.margin(context);
     final cats =
-        ref.watch(auroraCategoriesProvider(StreamKind.live)).valueOrNull;
+        ref.watch(auroraOrderedCategoriesProvider(StreamKind.live)).valueOrNull;
+    final pinned = ref.watch(auroraPinnedProvider(StreamKind.live)).valueOrNull ??
+        const <String>{};
     final favs = ref
             .watch(favoritesByKindProvider(StreamKind.live))
             .valueOrNull ??
@@ -77,10 +79,14 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                             name: name,
                             count: count,
                             selected: name == selected,
+                            pinnable: !isFavRow,
+                            pinned: pinned.contains(name),
                             onPick: () => ref
                                 .read(auroraGroupProvider(StreamKind.live)
                                     .notifier)
                                 .state = name,
+                            onPin: () =>
+                                toggleAuroraPin(ref, StreamKind.live, name),
                           );
                         },
                       ),
@@ -108,55 +114,117 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
   }
 }
 
-class _CategoryRow extends StatelessWidget {
+class _CategoryRow extends StatefulWidget {
   const _CategoryRow({
     required this.name,
     required this.count,
     required this.selected,
     required this.onPick,
+    this.pinnable = false,
+    this.pinned = false,
+    this.onPin,
   });
   final String name;
   final int count;
   final bool selected;
+  final bool pinnable;
+  final bool pinned;
   final VoidCallback onPick;
+  final VoidCallback? onPin;
+
+  @override
+  State<_CategoryRow> createState() => _CategoryRowState();
+}
+
+class _CategoryRowState extends State<_CategoryRow> {
+  // Dedicated node so Right from the name lands exactly on the pin toggle.
+  final FocusNode _pinFocus = FocusNode(debugLabel: 'live-cat-pin');
+
+  @override
+  void dispose() {
+    _pinFocus.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return AuroraFocusable(
-      ring: false,
-      scale: 1.0,
-      onActivate: onPick,
-      builder: (context, focused) => AnimatedContainer(
-        duration: Aurora.fast,
-        margin: const EdgeInsets.symmetric(vertical: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        decoration: BoxDecoration(
-          color: focused
-              ? Colors.white
-              : (selected ? Aurora.glassHi : Colors.transparent),
-          borderRadius: BorderRadius.circular(12),
+    final selected = widget.selected;
+    return AnimatedContainer(
+      duration: Aurora.fast,
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: selected ? Aurora.glassHi : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        border: Border(
+          left: BorderSide(
+              color: selected ? Aurora.accent : Colors.transparent, width: 3),
         ),
-        child: Row(children: [
-          Expanded(
-            child: Text(name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 13.5,
-                    fontWeight:
-                        selected || focused ? FontWeight.w800 : FontWeight.w500,
-                    color: focused
-                        ? Aurora.bg
-                        : (selected ? Aurora.text : Aurora.textDim))),
-          ),
-          const SizedBox(width: 8),
-          Text('$count',
-              style: TextStyle(
-                  fontSize: 11,
-                  color:
-                      focused ? const Color(0x99060708) : Aurora.textFaint)),
-        ]),
       ),
+      child: Row(children: [
+        Expanded(
+          child: AuroraFocusable(
+            ring: false,
+            scale: 1.0,
+            centerOnFocus: false,
+            onActivate: widget.onPick,
+            onRight: widget.pinnable ? _pinFocus.requestFocus : null,
+            builder: (context, focused) => Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: focused ? Colors.white : Colors.transparent,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(children: [
+                if (widget.pinned) ...[
+                  Icon(Icons.push_pin_rounded,
+                      size: 12,
+                      color: focused ? Aurora.bg : Aurora.accent),
+                  const SizedBox(width: 5),
+                ],
+                Expanded(
+                  child: Text(widget.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: selected || focused
+                              ? FontWeight.w800
+                              : FontWeight.w500,
+                          color: focused
+                              ? Aurora.bg
+                              : (selected ? Aurora.text : Aurora.textDim))),
+                ),
+                const SizedBox(width: 8),
+                Text('${widget.count}',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: focused
+                            ? const Color(0x99060708)
+                            : Aurora.textFaint)),
+              ]),
+            ),
+          ),
+        ),
+        if (widget.pinnable)
+          AuroraFocusable(
+            focusNode: _pinFocus,
+            radius: 18,
+            centerOnFocus: false,
+            onActivate: widget.onPin ?? () {},
+            builder: (context, focused) => Padding(
+              padding: const EdgeInsets.all(7),
+              child: Icon(
+                widget.pinned
+                    ? Icons.push_pin_rounded
+                    : Icons.push_pin_outlined,
+                size: 16,
+                color: widget.pinned
+                    ? Aurora.accent
+                    : (focused ? Aurora.text : Aurora.textFaint),
+              ),
+            ),
+          ),
+      ]),
     );
   }
 }

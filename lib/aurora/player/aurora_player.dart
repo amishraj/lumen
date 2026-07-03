@@ -20,33 +20,37 @@ import '../widgets/aurora_image.dart';
 import '../widgets/aurora_panel.dart';
 import '../widgets/aurora_source_sheet.dart';
 
-/// Structured identity of what's playing (for scrobbling + Real-Debrid).
-/// [episodes] holds (season, episode) per queue index for series.
+/// Structured identity of what's playing (for scrobbling + Real-Debrid switch).
+/// [episodes] holds (season, episode) per queue index for series; [iptvUrl] is
+/// the library's IPTV stream for the current title so the in-player source
+/// switch can always offer "Play on IPTV" even when we started on Debrid.
 class AuroraPlayContext {
   const AuroraPlayContext({
     required this.title,
     this.isShow = false,
     this.episodes,
+    this.iptvUrl,
   });
   final String title;
   final bool isShow;
   final List<(int, int)>? episodes;
+  final String? iptvUrl;
 }
 
 enum _Panel { none, queue, audio, subtitles }
 
 /// Aurora's full-screen player. The playback core is a straight port of the
-/// battle-tested 1.0 pipeline — the app-lifetime libmpv engine, verified
-/// stop, live reconnect with backoff, 5s progress persistence, Trakt
-/// scrobbling, English-audio auto-pick, background scrub previews — under a
-/// completely new control surface:
+/// battle-tested 1.0 pipeline — the app-lifetime libmpv engine, verified stop,
+/// live reconnect with backoff, 5s progress persistence, Trakt scrobbling,
+/// English-audio auto-pick, background scrub previews — under a new, simpler
+/// control surface:
 ///
-/// - Netflix-style timeline with buffered range + frame-preview scrubbing
-/// - next-episode countdown card in the final 45 seconds
-/// - playback speed + aspect toggles
-/// - live TV: channel banner with EPG now/next, up/down zapping from the
-///   channel keys, and direct number entry
-/// - remote media keys (play/pause, FF/RW, next/prev) work everywhere
+/// - an always-visible progress bar pinned to the bottom
+/// - Space / OK toggles play; ◀ ▶ seek ±30s straight away (no "enter scrub"
+///   step); a brief frame preview shows where you're landing
+/// - next-episode countdown card in the final 45s
+/// - fit/fill aspect + 1x/1.5x/2x/0.5x speed
+/// - live TV: channel banner with EPG now/next, CH±/▲▼ zapping, number entry
 class AuroraPlayerScreen extends ConsumerStatefulWidget {
   const AuroraPlayerScreen({
     super.key,
@@ -63,7 +67,7 @@ class AuroraPlayerScreen extends ConsumerStatefulWidget {
   final AuroraPlayContext? playContext;
 
   /// Explicit resume point (0 = force from beginning). Null lets Trakt's
-  /// cross-device resume decide, as in 1.0.
+  /// cross-device resume decide.
   final double? resumeFraction;
 
   @override
@@ -89,6 +93,8 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   bool get _isLive => _current.kind == StreamKind.live;
   bool get _hasQueue => _queue.length > 1;
 
+  static const _seekStep = 30; // seconds — ◀ ▶ and the skip buttons
+
   String? _error;
   bool _sought = false;
   bool _reconnecting = false;
@@ -109,7 +115,11 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   _Panel _panel = _Panel.none;
   Timer? _hideTimer;
   double _rate = 1.0;
-  BoxFit _fit = BoxFit.contain;
+  bool _fill = false; // false = fit (contain), true = fill (cover)
+
+  // Brief seek preview (position bubble) shown for ~1.1s after a ◀ ▶ seek.
+  Duration? _previewPos;
+  Timer? _previewTimer;
 
   // Live number entry.
   String _digits = '';
@@ -125,6 +135,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     LogicalKeyboardKey.arrowRight,
     LogicalKeyboardKey.select,
     LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.space,
     LogicalKeyboardKey.gameButtonA,
   };
 
@@ -155,8 +166,6 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   void initState() {
     super.initState();
     _active = this;
-    // Every listener is stored and cancelled in dispose — the global player
-    // outlives this screen, so an unstored listener would fire forever.
     _subs.add(_player.stream.position.listen(_onPosition));
     _subs.add(_player.stream.completed.listen(_onCompleted));
     _subs.add(_player.stream.buffering.listen((b) {
@@ -200,9 +209,8 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     await _openAt(_index);
   }
 
-  /// Tune libmpv for flaky/slow IPTV networks: big caches, safe hardware
-  /// decode, FFmpeg-level auto-reconnect on dropped sockets. Identical to the
-  /// proven 1.0 configuration.
+  /// Tune libmpv for flaky/slow IPTV networks — identical to the proven 1.0
+  /// configuration (big caches, safe hwdec, FFmpeg auto-reconnect).
   Future<void> _configureMpv() async {
     final p = _player.platform;
     if (p is! NativePlayer) return;
@@ -242,9 +250,9 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       _buffered = Duration.zero;
       _position = Duration.zero;
       _duration = Duration.zero;
+      _previewPos = null;
     });
     await _load();
-    // A per-title speed choice never carries over to the next item.
     if (_rate != 1.0) {
       if (mounted) setState(() => _rate = 1.0);
       unawaited(_player.setRate(1.0));
@@ -256,7 +264,6 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       await _player.open(Media(_urlOverrides[_index] ?? _current.url),
           play: true);
     } catch (e) {
-      // Live: keep trying. VOD: surface the error.
       if (_isLive) {
         _scheduleLiveReconnect();
       } else if (mounted) {
@@ -268,8 +275,6 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _liveRetries = 0;
     if (_isLive) return;
     _scrobble('start');
-    // Resume priority: explicit request from the caller (detail screen /
-    // "from beginning"), else Trakt's cross-device position.
     final requested = widget.resumeFraction;
     if (requested != null && _index == widget.startIndex) {
       if (requested <= 0.005) {
@@ -284,8 +289,6 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
         isShow: _current.kind == StreamKind.series);
   }
 
-  /// Live streams have no real end — if the server closes the socket,
-  /// reconnect with backoff instead of sitting paused. VOD auto-advances.
   void _onCompleted(bool done) {
     if (!done || !mounted || !_ownsPlayback) return;
     if (_isLive) {
@@ -320,8 +323,6 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _lastPosMs = pos.inMilliseconds;
     _lastDurMs = dur.inMilliseconds;
 
-    // Background scrub previews — start well after playback settles so the
-    // secondary connection never competes with initial buffering.
     if (!_thumbsScheduled) {
       _thumbsScheduled = true;
       final url = _urlOverrides[_index] ?? _current.url;
@@ -341,7 +342,6 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       await _player.seek(
           Duration(milliseconds: (dur.inMilliseconds * _resume!).round()));
     }
-    // Persist progress every ~5s (never per position tick).
     if (_current.id != null &&
         (pos.inMilliseconds - _lastSavedPosMs).abs() >= 5000) {
       _lastSavedPosMs = pos.inMilliseconds;
@@ -351,7 +351,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     }
   }
 
-  // ---- Trakt scrobbling (start / pause / stop with exact position) --------
+  // ---- Trakt scrobbling ----------------------------------------------------
 
   (String, bool, int?, int?) _scrobbleIdentity() {
     final ctx = widget.playContext;
@@ -402,6 +402,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _checkpoint();
     _hideTimer?.cancel();
     _digitTimer?.cancel();
+    _previewTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -409,12 +410,11 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _playFocus.dispose();
     if (_active == this) _active = null;
     ScrubThumbs.instance.cancel();
-    // Stop the shared pipeline — verified & retried inside the engine.
     unawaited(PlaybackEngine.instance.stopPlayback());
     super.dispose();
   }
 
-  // ---- Controls visibility --------------------------------------------------
+  // ---- Controls visibility -------------------------------------------------
 
   void _showControls({bool focusFirst = true}) {
     if (!mounted) return;
@@ -436,8 +436,8 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
 
   void _hideControls() {
     if (!mounted || !_controlsVisible) return;
-    // Never auto-hide while paused — a paused player with no chrome reads
-    // as frozen (a 1.0 paper-cut this redesign fixes).
+    // Never auto-hide while paused — a paused player with no chrome reads as
+    // frozen (a 1.0 paper-cut this redesign fixes).
     if (!_playing && !_isLive) {
       _resetHideTimer();
       return;
@@ -459,7 +459,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _showControls(focusFirst: true);
   }
 
-  // ---- Playback actions -----------------------------------------------------
+  // ---- Playback actions ----------------------------------------------------
 
   void _togglePlay() {
     final wasPlaying = _playing;
@@ -475,25 +475,39 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     if (_duration > Duration.zero && target > _duration) target = _duration;
     _player.seek(target);
     setState(() => _position = target);
+    _flashPreview(target);
+    _showControls(focusFirst: false);
     _resetHideTimer();
   }
 
+  /// Seek to an absolute position (pointer tap/drag on the track).
+  void _seekTo(Duration d) {
+    if (_isLive) return;
+    _player.seek(d);
+    setState(() => _position = d);
+    _flashPreview(d);
+    _resetHideTimer();
+  }
+
+  /// Show the position/frame preview bubble briefly after a keyboard seek.
+  void _flashPreview(Duration at) {
+    setState(() => _previewPos = at);
+    _previewTimer?.cancel();
+    _previewTimer = Timer(const Duration(milliseconds: 1100), () {
+      if (mounted) setState(() => _previewPos = null);
+    });
+  }
+
   void _cycleRate() {
-    const rates = [1.0, 1.25, 1.5, 2.0];
+    const rates = [1.0, 1.5, 2.0, 0.5];
     final next = rates[(rates.indexOf(_rate) + 1) % rates.length];
     setState(() => _rate = next);
     unawaited(_player.setRate(next));
     _resetHideTimer();
   }
 
-  void _cycleFit() {
-    setState(() {
-      _fit = switch (_fit) {
-        BoxFit.contain => BoxFit.cover,
-        BoxFit.cover => BoxFit.fill,
-        _ => BoxFit.contain,
-      };
-    });
+  void _toggleFill() {
+    setState(() => _fill = !_fill);
     _resetHideTimer();
   }
 
@@ -511,6 +525,9 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     final se = ctx?.episodes != null && _index < ctx!.episodes!.length
         ? ctx.episodes![_index]
         : null;
+    // For a series episode the current url IS the IPTV stream; for a movie the
+    // context carries the resolved library url (we may be on Debrid right now).
+    final iptvUrl = isShow ? _current.url : (ctx?.iptvUrl ?? _current.url);
     final picked = await showAuroraSourceSheet(
       context,
       ref,
@@ -518,11 +535,11 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       isShow: isShow,
       season: se?.$1,
       episode: se?.$2,
-      iptvUrl: _current.url,
+      iptvUrl: iptvUrl,
     );
     if (picked == null || !mounted) return;
     final resumeAt = _position;
-    _sought = true; // suppress auto-resume; we restore manually
+    _sought = true;
     setState(() {
       _urlOverrides[_index] = picked.url;
       _buffering = true;
@@ -541,20 +558,21 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _showControls(focusFirst: false);
   }
 
-  // ---- Live zapping ----------------------------------------------------------
+  // ---- Live zapping --------------------------------------------------------
 
   void _zap(int delta) {
     if (!_isLive || !_hasQueue) return;
-    final next = (_index + delta) % _queue.length;
-    _openAt(next < 0 ? _queue.length - 1 : next);
+    var next = (_index + delta) % _queue.length;
+    if (next < 0) next = _queue.length - 1;
+    _openAt(next);
     _showControls(focusFirst: false);
   }
 
   void _onDigit(String d) {
     if (!_isLive) return;
     _digitTimer?.cancel();
-    setState(() => _digits = (_digits + d).substring(
-        0, (_digits.length + 1).clamp(0, 4)));
+    setState(() =>
+        _digits = (_digits + d).substring(0, (_digits.length + 1).clamp(0, 4)));
     _digitTimer = Timer(const Duration(milliseconds: 1600), _commitDigits);
   }
 
@@ -570,7 +588,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     }
   }
 
-  // ---- Root key handling ------------------------------------------------------
+  // ---- Root key handling ---------------------------------------------------
 
   KeyEventResult _onRootKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
@@ -578,6 +596,12 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     }
     final k = event.logicalKey;
 
+    // Space toggles play/pause everywhere.
+    if (k == LogicalKeyboardKey.space) {
+      _togglePlay();
+      _showControls(focusFirst: false);
+      return KeyEventResult.handled;
+    }
     // Media keys work regardless of chrome state.
     if (k == LogicalKeyboardKey.mediaPlayPause ||
         k == LogicalKeyboardKey.mediaPlay ||
@@ -587,24 +611,22 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.mediaFastForward) {
-      _seekBy(30);
-      _showControls(focusFirst: false);
+      _seekBy(_seekStep);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.mediaRewind) {
-      _seekBy(-30);
-      _showControls(focusFirst: false);
+      _seekBy(-_seekStep);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.mediaTrackNext) {
-      _skip(1);
+      _isLive ? _zap(1) : _skip(1);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.mediaTrackPrevious) {
-      _skip(-1);
+      _isLive ? _zap(-1) : _skip(-1);
       return KeyEventResult.handled;
     }
-    // Channel zapping + number entry (live).
+    // Live: channel keys + number entry.
     if (_isLive) {
       if (k == LogicalKeyboardKey.channelUp) {
         _zap(1);
@@ -617,6 +639,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       final digit = _digitKeys[k];
       if (digit != null) {
         _onDigit(digit);
+        _showControls(focusFirst: false);
         return KeyEventResult.handled;
       }
     }
@@ -624,15 +647,13 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     if (!_wakeKeys.contains(k)) return KeyEventResult.ignored;
 
     if (!_controlsVisible) {
-      // Chrome hidden: give the arrows immediate meaning before waking it.
+      // Chrome hidden: give arrows immediate meaning, then wake.
       if (!_isLive && k == LogicalKeyboardKey.arrowLeft) {
-        _seekBy(-10);
-        _showControls(focusFirst: false);
+        _seekBy(-_seekStep);
         return KeyEventResult.handled;
       }
       if (!_isLive && k == LogicalKeyboardKey.arrowRight) {
-        _seekBy(10);
-        _showControls(focusFirst: false);
+        _seekBy(_seekStep);
         return KeyEventResult.handled;
       }
       if (_isLive && k == LogicalKeyboardKey.arrowUp) {
@@ -643,11 +664,6 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
         _zap(-1);
         return KeyEventResult.handled;
       }
-      if (k == LogicalKeyboardKey.arrowDown && _hasQueue) {
-        _openPanel(_Panel.queue);
-        return KeyEventResult.handled;
-      }
-      // Next-up shortcut: OK while the countdown card shows plays it now.
       if (_nextUpVisible &&
           (k == LogicalKeyboardKey.select ||
               k == LogicalKeyboardKey.enter ||
@@ -677,7 +693,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
   }
 
-  // ---- Build ------------------------------------------------------------------
+  // ---- Build ---------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -686,16 +702,12 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     final rdOn = ref.watch(rdEnabledProvider).valueOrNull ?? false;
     final showSpinner = _buffering && !_reconnecting && _error == null;
     final panelOpen = _panel != _Panel.none;
-
-    // While paused the chrome is pinned (never auto-hides), so Back must
-    // exit directly instead of trying to dismiss it — otherwise a paused
-    // player traps the user.
     final pausedPinned = !_playing && !_isLive && _error == null;
+
     return PopScope(
       canPop: !panelOpen && (!_controlsVisible || pausedPinned),
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) {
-          // Real back: silence instantly, don't wait for the command queue.
           PlaybackEngine.instance.pauseNow();
         } else if (panelOpen) {
           _closePanel();
@@ -721,17 +733,15 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
               onTap: () =>
                   _controlsVisible ? _hideControls() : _showControls(),
               child: Stack(children: [
-                // ---- Video ----
                 Center(
                   child: _error != null
                       ? _ErrorView(message: _error!, name: _current.name)
                       : Video(
                           controller: _controller,
                           controls: NoVideoControls,
-                          fit: _fit,
+                          fit: _fill ? BoxFit.cover : BoxFit.contain,
                         ),
                 ),
-                // ---- Reconnect / buffering feedback ----
                 if (_reconnecting)
                   const ColoredBox(
                     color: Color(0x8C000000),
@@ -748,14 +758,13 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                 else if (showSpinner && !_controlsVisible)
                   const Center(
                       child: CircularProgressIndicator(color: Colors.white)),
-                // ---- Paused dim (calm, movie-poster feel) ----
                 IgnorePointer(
                   child: AnimatedOpacity(
                     duration: Aurora.slow,
                     opacity: (!_playing && !_buffering && _error == null)
                         ? 1
                         : 0,
-                    child: const ColoredBox(color: Color(0x59000000)),
+                    child: const ColoredBox(color: Color(0x40000000)),
                   ),
                 ),
                 // ---- Controls ----
@@ -766,16 +775,19 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                     child: AnimatedOpacity(
                       opacity: _controlsVisible ? 1 : 0,
                       duration: Aurora.normal,
-                      child: _buildControls(
-                          isFav: isFav, rdOn: rdOn, spinner: showSpinner),
+                      child: _Chrome(
+                        isFav: isFav,
+                        rdOn: rdOn,
+                        spinner: showSpinner,
+                        state: this,
+                      ),
                     ),
                   ),
                 ),
-                // ---- Next-episode countdown card ----
                 if (_nextUpVisible)
                   Positioned(
                     right: 28,
-                    bottom: _controlsVisible ? 148 : 36,
+                    bottom: _controlsVisible ? 150 : 36,
                     child: _NextUpCard(
                       item: _queue[_index + 1],
                       secondsLeft: (_duration - _position).inSeconds,
@@ -783,7 +795,6 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                       onPlay: () => _skip(1),
                     ),
                   ),
-                // ---- Live number-entry HUD ----
                 if (_digits.isNotEmpty)
                   Positioned(
                     top: 40,
@@ -802,12 +813,9 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                               fontWeight: FontWeight.w800,
                               letterSpacing: 6,
                               color: Colors.white,
-                              fontFeatures: [
-                                FontFeature.tabularFigures()
-                              ])),
+                              fontFeatures: [FontFeature.tabularFigures()])),
                     ),
                   ),
-                // ---- Panels ----
                 if (_hasQueue)
                   AuroraSidePanel(
                     open: _panel == _Panel.queue,
@@ -876,499 +884,445 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     ];
     return parts.isEmpty ? 'Track $id' : parts.join(' · ');
   }
+}
 
-  Widget _buildControls(
-      {required bool isFav, required bool rdOn, required bool spinner}) {
-    final (title, _, season, episode) = _scrobbleIdentity();
-    final sub = !_isLive && season != null && episode != null
-        ? 'S$season · E$episode'
-        : (_isLive ? (_current.groupTitle ?? '') : null);
+// ---------------------------------------------------------------------------
+// Chrome — top bar, centre transport, bottom progress. A Stack (not a Column
+// of Spacers) so the progress bar is *always* pinned to the bottom edge and
+// can never be pushed off-screen.
+// ---------------------------------------------------------------------------
 
-    return Container(
+class _Chrome extends StatelessWidget {
+  const _Chrome({
+    required this.isFav,
+    required this.rdOn,
+    required this.spinner,
+    required this.state,
+  });
+
+  final bool isFav;
+  final bool rdOn;
+  final bool spinner;
+  final _AuroraPlayerScreenState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Color(0xB3000000),
-            Color(0x14000000),
-            Color(0xCC000000),
-          ],
-          stops: [0.0, 0.45, 1.0],
+          colors: [Color(0xC2000000), Color(0x00000000), Color(0xD9000000)],
+          stops: [0.0, 0.4, 1.0],
         ),
       ),
       child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
-          child: Column(children: [
-            // ---- Top row: back · title · actions ----
-            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              AuroraIconButton(
-                icon: Icons.arrow_back_rounded,
-                tooltip: 'Back',
-                onActivity: _resetHideTimer,
-                onPressed: () {
-                  PlaybackEngine.instance.pauseNow();
-                  Navigator.of(context).pop();
-                },
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 2),
-                    Row(children: [
-                      if (_isLive) ...[
-                        const LiveBadge(),
-                        const SizedBox(width: 10),
-                      ],
-                      Flexible(
-                        child: Text(
-                          _isLive ? _current.name : title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w800,
-                              color: Colors.white,
-                              letterSpacing: -0.3),
-                        ),
-                      ),
-                    ]),
-                    if (sub != null && sub.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 2),
-                        child: Text(sub,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 12.5, color: Aurora.textDim)),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              // Actions — Flexible so a narrow (portrait phone) player wraps
-              // to a second row instead of overflowing.
-              Flexible(
-                  child:
-                      Wrap(spacing: 8, runSpacing: 8, alignment: WrapAlignment.end, children: [
-                if (_hasQueue)
-                  AuroraIconButton(
-                    icon: _isLive
-                        ? Icons.format_list_bulleted_rounded
-                        : Icons.video_library_outlined,
-                    tooltip: _isLive ? 'Channels' : 'Episodes',
-                    onActivity: _resetHideTimer,
-                    onPressed: () => _openPanel(_Panel.queue),
-                  ),
-                if (!_isLive)
-                  AuroraIconButton(
-                    icon: Icons.speed_rounded,
-                    tooltip: 'Speed (${_rate}x)',
-                    active: _rate != 1.0,
-                    onActivity: _resetHideTimer,
-                    onPressed: _cycleRate,
-                  ),
-                AuroraIconButton(
-                  icon: switch (_fit) {
-                    BoxFit.cover => Icons.crop_free_rounded,
-                    BoxFit.fill => Icons.fit_screen_rounded,
-                    _ => Icons.aspect_ratio_rounded,
-                  },
-                  tooltip: 'Aspect',
-                  active: _fit != BoxFit.contain,
-                  onActivity: _resetHideTimer,
-                  onPressed: _cycleFit,
-                ),
-                if (!_isLive)
-                  AuroraIconButton(
-                    icon: Icons.closed_caption_outlined,
-                    tooltip: 'Subtitles',
-                    onActivity: _resetHideTimer,
-                    onPressed: () => _openPanel(_Panel.subtitles),
-                  ),
-                AuroraIconButton(
-                  icon: Icons.multitrack_audio_rounded,
-                  tooltip: 'Audio',
-                  onActivity: _resetHideTimer,
-                  onPressed: () => _openPanel(_Panel.audio),
-                ),
-                if (!_isLive && rdOn)
-                  AuroraIconButton(
-                    icon: Icons.swap_horiz_rounded,
-                    tooltip: 'Source',
-                    onActivity: _resetHideTimer,
-                    onPressed: _pickSource,
-                  ),
-                if (_current.id != null)
-                  AuroraIconButton(
-                    icon: isFav
-                        ? Icons.favorite_rounded
-                        : Icons.favorite_border_rounded,
-                    active: isFav,
-                    tooltip:
-                        isFav ? 'Remove from My List' : 'Add to My List',
-                    onActivity: _resetHideTimer,
-                    onPressed: _toggleFavorite,
-                  ),
-              ])),
-            ]),
-            const Spacer(),
-            // ---- Center transport ----
-            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              if (!_isLive) ...[
-                AuroraIconButton(
-                  icon: Icons.replay_10_rounded,
-                  size: 26,
-                  tooltip: 'Back 10 seconds',
-                  onActivity: _resetHideTimer,
-                  onPressed: () => _seekBy(-10),
-                ),
-                const SizedBox(width: 34),
-              ],
-              _BigPlayButton(
-                focusNode: _playFocus,
-                playing: _playing,
-                spinner: spinner,
-                onActivity: _resetHideTimer,
-                onPressed: spinner ? () {} : _togglePlay,
-              ),
-              if (!_isLive) ...[
-                const SizedBox(width: 34),
-                AuroraIconButton(
-                  icon: Icons.forward_10_rounded,
-                  size: 26,
-                  tooltip: 'Forward 10 seconds',
-                  onActivity: _resetHideTimer,
-                  onPressed: () => _seekBy(10),
-                ),
-              ],
-            ]),
-            const Spacer(),
-            // ---- Bottom cluster ----
-            if (_isLive)
-              _LiveBanner(item: _current)
-            else
-              _AuroraTimeline(
-                position: _position,
-                duration: _duration,
-                buffered: _buffered,
-                rate: _rate,
-                fmt: _fmt,
-                onSeek: (d) {
-                  _player.seek(d);
-                  setState(() => _position = d);
-                  _resetHideTimer();
-                },
-                onScrubStart: () => _hideTimer?.cancel(),
-                onScrubEnd: _resetHideTimer,
-              ),
-          ]),
-        ),
+        child: Stack(children: [
+          Positioned(top: 8, left: 20, right: 20, child: _topBar(context)),
+          Center(child: _centreTransport()),
+          Positioned(
+            left: 24,
+            right: 24,
+            bottom: 14,
+            child: state._isLive ? _LiveBanner(item: state._current) : _timeline(),
+          ),
+        ]),
       ),
     );
   }
-}
 
-// ---------------------------------------------------------------------------
-// Big play/pause
-// ---------------------------------------------------------------------------
+  Widget _topBar(BuildContext context) {
+    final (title, _, season, episode) = state._scrobbleIdentity();
+    final sub = !state._isLive && season != null && episode != null
+        ? 'S$season · E$episode'
+        : (state._isLive ? (state._current.groupTitle ?? '') : null);
 
-class _BigPlayButton extends StatelessWidget {
-  const _BigPlayButton({
-    required this.playing,
-    required this.spinner,
-    required this.onPressed,
-    required this.onActivity,
-    this.focusNode,
-  });
+    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      AuroraIconButton(
+        icon: Icons.arrow_back_rounded,
+        tooltip: 'Back',
+        onActivity: state._resetHideTimer,
+        onPressed: () {
+          PlaybackEngine.instance.pauseNow();
+          Navigator.of(context).pop();
+        },
+      ),
+      const SizedBox(width: 16),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 4),
+            Row(children: [
+              if (state._isLive) ...[
+                const LiveBadge(),
+                const SizedBox(width: 10),
+              ],
+              Flexible(
+                child: Text(
+                  state._isLive ? state._current.name : title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                      letterSpacing: -0.3),
+                ),
+              ),
+            ]),
+            if (sub != null && sub.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(sub,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12.5, color: Aurora.textDim)),
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(width: 12),
+      // Actions hug the top-right corner: a fixed-size Row (not a Flexible that
+      // would split the row's free space with the title and drift to centre).
+      Row(mainAxisSize: MainAxisSize.min, children: _actions()),
+    ]);
+  }
 
-  final bool playing;
-  final bool spinner;
-  final VoidCallback onPressed;
-  final VoidCallback onActivity;
-  final FocusNode? focusNode;
+  List<Widget> _actions() {
+    const gap = SizedBox(width: 8);
+    return [
+      if (state._hasQueue) ...[
+        AuroraIconButton(
+          icon: state._isLive
+              ? Icons.format_list_bulleted_rounded
+              : Icons.video_library_outlined,
+          tooltip: state._isLive ? 'Channels' : 'Episodes',
+          onActivity: state._resetHideTimer,
+          onPressed: () => state._openPanel(_Panel.queue),
+        ),
+        gap,
+      ],
+      if (!state._isLive) ...[
+        AuroraIconButton(
+          icon: Icons.speed_rounded,
+          tooltip: 'Speed (${state._rate}x)',
+          active: state._rate != 1.0,
+          onActivity: state._resetHideTimer,
+          onPressed: state._cycleRate,
+        ),
+        gap,
+      ],
+      AuroraIconButton(
+        icon: state._fill ? Icons.fit_screen_rounded : Icons.aspect_ratio_rounded,
+        tooltip: state._fill ? 'Fill' : 'Fit',
+        active: state._fill,
+        onActivity: state._resetHideTimer,
+        onPressed: state._toggleFill,
+      ),
+      gap,
+      if (!state._isLive) ...[
+        AuroraIconButton(
+          icon: Icons.closed_caption_outlined,
+          tooltip: 'Subtitles',
+          onActivity: state._resetHideTimer,
+          onPressed: () => state._openPanel(_Panel.subtitles),
+        ),
+        gap,
+      ],
+      AuroraIconButton(
+        icon: Icons.multitrack_audio_rounded,
+        tooltip: 'Audio',
+        onActivity: state._resetHideTimer,
+        onPressed: () => state._openPanel(_Panel.audio),
+      ),
+      if (!state._isLive && rdOn) ...[
+        gap,
+        AuroraIconButton(
+          icon: Icons.swap_horiz_rounded,
+          tooltip: 'Switch source',
+          onActivity: state._resetHideTimer,
+          onPressed: state._pickSource,
+        ),
+      ],
+      if (state._current.id != null) ...[
+        gap,
+        AuroraIconButton(
+          icon: isFav
+              ? Icons.favorite_rounded
+              : Icons.favorite_border_rounded,
+          active: isFav,
+          tooltip: isFav ? 'Remove from My List' : 'Add to My List',
+          onActivity: state._resetHideTimer,
+          onPressed: state._toggleFavorite,
+        ),
+      ],
+    ];
+  }
 
-  @override
-  Widget build(BuildContext context) {
-    return AuroraIconButton(
-      focusNode: focusNode,
-      icon: playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-      size: 42,
-      tooltip: playing ? 'Pause' : 'Play',
-      onActivity: onActivity,
-      onPressed: onPressed,
+  Widget _centreTransport() {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      if (!state._isLive) ...[
+        AuroraIconButton(
+          icon: Icons.replay_30_rounded,
+          size: 26,
+          tooltip: 'Back 30 seconds',
+          onActivity: state._resetHideTimer,
+          onPressed: () => state._seekBy(-_AuroraPlayerScreenState._seekStep),
+        ),
+        const SizedBox(width: 34),
+      ],
+      AuroraIconButton(
+        focusNode: state._playFocus,
+        icon: state._playing
+            ? Icons.pause_rounded
+            : Icons.play_arrow_rounded,
+        size: 42,
+        tooltip: state._playing ? 'Pause' : 'Play',
+        onActivity: state._resetHideTimer,
+        // ◀ ▶ from the (default-focused) play button seek immediately, so the
+        // user never has to hunt for the progress bar first.
+        onLeft: state._isLive
+            ? null
+            : () => state._seekBy(-_AuroraPlayerScreenState._seekStep),
+        onRight: state._isLive
+            ? null
+            : () => state._seekBy(_AuroraPlayerScreenState._seekStep),
+        onPressed: spinner ? () {} : state._togglePlay,
+      ),
+      if (!state._isLive) ...[
+        const SizedBox(width: 34),
+        AuroraIconButton(
+          icon: Icons.forward_30_rounded,
+          size: 26,
+          tooltip: 'Forward 30 seconds',
+          onActivity: state._resetHideTimer,
+          onPressed: () => state._seekBy(_AuroraPlayerScreenState._seekStep),
+        ),
+      ],
+    ]);
+  }
+
+  Widget _timeline() {
+    return _AuroraTimeline(
+      position: state._position,
+      duration: state._duration,
+      buffered: state._buffered,
+      rate: state._rate,
+      previewPos: state._previewPos,
+      fmt: _AuroraPlayerScreenState._fmt,
+      onSeekBy: state._seekBy,
+      onSeekTo: state._seekTo,
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Timeline — buffered range, focus-to-scrub with acceleration + previews
+// Timeline — always visible, scrub-free. Focus it and ◀ ▶ seek ±30s (with a
+// frame preview); pointer users can also tap/drag anywhere on the track.
 // ---------------------------------------------------------------------------
 
-class _AuroraTimeline extends StatefulWidget {
+class _AuroraTimeline extends StatelessWidget {
   const _AuroraTimeline({
     required this.position,
     required this.duration,
     required this.buffered,
     required this.rate,
-    required this.onSeek,
+    required this.previewPos,
     required this.fmt,
-    this.onScrubStart,
-    this.onScrubEnd,
+    required this.onSeekBy,
+    required this.onSeekTo,
   });
 
   final Duration position;
   final Duration duration;
   final Duration buffered;
   final double rate;
-  final ValueChanged<Duration> onSeek;
+  final Duration? previewPos;
   final String Function(Duration) fmt;
-  final VoidCallback? onScrubStart;
-  final VoidCallback? onScrubEnd;
+  final ValueChanged<int> onSeekBy;
+  final ValueChanged<Duration> onSeekTo;
+
+  double _frac(Duration d) {
+    final max = duration.inMilliseconds;
+    if (max <= 0) return 0;
+    return (d.inMilliseconds / max).clamp(0.0, 1.0);
+  }
+
+  void _pointerTo(Offset local, double width) {
+    final max = duration.inMilliseconds;
+    if (max <= 0) return;
+    final f = (local.dx / width).clamp(0.0, 1.0);
+    onSeekTo(Duration(milliseconds: (max * f).round()));
+  }
 
   @override
-  State<_AuroraTimeline> createState() => _AuroraTimelineState();
+  Widget build(BuildContext context) {
+    final remaining = duration - position;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Preview bubble (after a keyboard seek).
+        SizedBox(
+          height: previewPos != null ? 132 : 0,
+          child: previewPos != null
+              ? LayoutBuilder(builder: (context, box) {
+                  const bw = 200.0;
+                  final x = (_frac(previewPos!) * box.maxWidth - bw / 2)
+                      .clamp(0.0, (box.maxWidth - bw).clamp(0.0, 1e9));
+                  return Stack(children: [
+                    Positioned(
+                      left: x,
+                      bottom: 8,
+                      child: _PreviewBubble(position: previewPos!, fmt: fmt),
+                    ),
+                  ]);
+                })
+              : null,
+        ),
+        _FocusableTrack(
+          builder: (context, focused) {
+            final active = focused;
+            return LayoutBuilder(builder: (context, box) {
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (d) => _pointerTo(d.localPosition, box.maxWidth),
+                onHorizontalDragUpdate: (d) =>
+                    _pointerTo(d.localPosition, box.maxWidth),
+                child: SizedBox(
+                  height: 26,
+                  child: Center(
+                    child: AnimatedContainer(
+                      duration: Aurora.fast,
+                      height: active ? 9 : 5,
+                      clipBehavior: Clip.antiAlias,
+                      decoration: BoxDecoration(
+                        color: const Color(0x3DFFFFFF),
+                        borderRadius: BorderRadius.circular(5),
+                        boxShadow: active
+                            ? const [
+                                BoxShadow(
+                                    color: Color(0x55FFFFFF), blurRadius: 12)
+                              ]
+                            : null,
+                      ),
+                      child: Stack(children: [
+                        FractionallySizedBox(
+                          alignment: Alignment.centerLeft,
+                          widthFactor: _frac(buffered),
+                          child: const ColoredBox(color: Color(0x40FFFFFF)),
+                        ),
+                        FractionallySizedBox(
+                          alignment: Alignment.centerLeft,
+                          widthFactor: _frac(position),
+                          child: const DecoratedBox(
+                              decoration:
+                                  BoxDecoration(gradient: Aurora.gradient)),
+                        ),
+                      ]),
+                    ),
+                  ),
+                ),
+              );
+            });
+          },
+          onLeft: () => onSeekBy(-30),
+          onRight: () => onSeekBy(30),
+        ),
+        const SizedBox(height: 7),
+        Row(children: [
+          Text(fmt(position),
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: [FontFeature.tabularFigures()])),
+          const SizedBox(width: 10),
+          if (rate != 1.0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: Aurora.hairline),
+              ),
+              child: Text('${rate}x',
+                  style: const TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      color: Aurora.textDim)),
+            ),
+          const Spacer(),
+          Text('-${fmt(remaining < Duration.zero ? Duration.zero : remaining)}',
+              style: const TextStyle(
+                  color: Aurora.textDim,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: [FontFeature.tabularFigures()])),
+        ]),
+      ],
+    );
+  }
 }
 
-class _AuroraTimelineState extends State<_AuroraTimeline> {
-  final FocusNode _focus = FocusNode(debugLabel: 'aurora-timeline');
+/// A focus stop over the progress track. ◀ ▶ seek; it never "enters" a mode —
+/// the arrows act immediately, matching the "no click" ask.
+class _FocusableTrack extends StatefulWidget {
+  const _FocusableTrack({
+    required this.builder,
+    required this.onLeft,
+    required this.onRight,
+  });
+  final Widget Function(BuildContext, bool focused) builder;
+  final VoidCallback onLeft;
+  final VoidCallback onRight;
+
+  @override
+  State<_FocusableTrack> createState() => _FocusableTrackState();
+}
+
+class _FocusableTrackState extends State<_FocusableTrack> {
+  final FocusNode _node = FocusNode(debugLabel: 'aurora-track');
   bool _focused = false;
-  bool _scrubbing = false;
-  Duration _scrubPos = Duration.zero;
-  int _streak = 0;
 
   @override
   void initState() {
     super.initState();
-    _focus.addListener(() {
-      if (mounted) setState(() => _focused = _focus.hasFocus);
-      if (!_focus.hasFocus && _scrubbing) _endScrub(commit: false);
+    _node.addListener(() {
+      if (mounted) setState(() => _focused = _node.hasFocus);
     });
   }
 
   @override
   void dispose() {
-    _focus.dispose();
+    _node.dispose();
     super.dispose();
   }
 
-  void _startScrub() {
-    setState(() {
-      _scrubbing = true;
-      _scrubPos = widget.position;
-      _streak = 0;
-    });
-    widget.onScrubStart?.call();
-  }
-
-  void _endScrub({required bool commit}) {
-    if (commit) widget.onSeek(_scrubPos);
-    if (mounted) setState(() => _scrubbing = false);
-    widget.onScrubEnd?.call();
-  }
-
-  /// Slow-then-fast: first presses nudge 5s for precision; a held key ramps
-  /// through 15s/30s to 60s jumps.
-  int get _stepSecs {
-    if (_streak < 4) return 5;
-    if (_streak < 12) return 15;
-    if (_streak < 24) return 30;
-    return 60;
-  }
-
-  void _nudge(int direction) {
-    _streak++;
-    var t = _scrubPos + Duration(seconds: _stepSecs * direction);
-    if (t < Duration.zero) t = Duration.zero;
-    if (t > widget.duration) t = widget.duration;
-    setState(() => _scrubPos = t);
-  }
-
-  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    final key = event.logicalKey;
-    if (event is KeyUpEvent) {
-      _streak = 0;
+  KeyEventResult _onKey(FocusNode node, KeyEvent e) {
+    if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    final isSelect = key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.gameButtonA;
-    if (!_scrubbing) {
-      if (isSelect) {
-        _startScrub();
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-    if (key == LogicalKeyboardKey.arrowLeft) {
-      _nudge(-1);
+    if (e.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      widget.onLeft();
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.arrowRight) {
-      _nudge(1);
+    if (e.logicalKey == LogicalKeyboardKey.arrowRight) {
+      widget.onRight();
       return KeyEventResult.handled;
     }
-    if (isSelect) {
-      _endScrub(commit: true);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
-      _endScrub(commit: false);
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.handled; // swallow up/down while scrubbing
-  }
-
-  double _frac(Duration d) {
-    final max = widget.duration.inMilliseconds;
-    if (max <= 0) return 0;
-    return (d.inMilliseconds / max).clamp(0.0, 1.0);
-  }
-
-  double get _fraction => _frac(_scrubbing ? _scrubPos : widget.position);
-
-  void _pointerTo(Offset local, double width, {required bool commit}) {
-    final max = widget.duration.inMilliseconds;
-    if (max <= 0) return;
-    final f = (local.dx / width).clamp(0.0, 1.0);
-    final t = Duration(milliseconds: (max * f).round());
-    if (commit) {
-      widget.onSeek(t);
-      if (_scrubbing) _endScrub(commit: false);
-    } else {
-      if (!_scrubbing) _startScrub();
-      setState(() => _scrubPos = t);
-    }
+    return KeyEventResult.ignored; // up/down leave the track
   }
 
   @override
   Widget build(BuildContext context) {
-    final active = _focused || _scrubbing;
-    final showPos = _scrubbing ? _scrubPos : widget.position;
-    final remaining = widget.duration - showPos;
-
     return Focus(
-      focusNode: _focus,
+      focusNode: _node,
       onKeyEvent: _onKey,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Preview bubble while scrubbing.
-          SizedBox(
-            height: _scrubbing ? 138 : 0,
-            child: _scrubbing
-                ? LayoutBuilder(builder: (context, box) {
-                    const bw = 200.0;
-                    final x = (_fraction * box.maxWidth - bw / 2)
-                        .clamp(0.0, (box.maxWidth - bw).clamp(0.0, 1e9));
-                    return Stack(children: [
-                      Positioned(
-                        left: x,
-                        bottom: 10,
-                        child: _PreviewBubble(
-                            position: _scrubPos, fmt: widget.fmt),
-                      ),
-                    ]);
-                  })
-                : null,
-          ),
-          LayoutBuilder(builder: (context, box) {
-            return GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTapUp: (d) =>
-                  _pointerTo(d.localPosition, box.maxWidth, commit: true),
-              onHorizontalDragUpdate: (d) =>
-                  _pointerTo(d.localPosition, box.maxWidth, commit: false),
-              onHorizontalDragEnd: (_) => _endScrub(commit: true),
-              child: SizedBox(
-                height: 26,
-                child: Center(
-                  child: AnimatedContainer(
-                    duration: Aurora.fast,
-                    height: active ? 8 : 4.5,
-                    clipBehavior: Clip.antiAlias,
-                    decoration: BoxDecoration(
-                      color: const Color(0x30FFFFFF),
-                      borderRadius: BorderRadius.circular(5),
-                    ),
-                    child: Stack(children: [
-                      // Buffered range.
-                      FractionallySizedBox(
-                        alignment: Alignment.centerLeft,
-                        widthFactor: _frac(widget.buffered),
-                        child:
-                            const ColoredBox(color: Color(0x38FFFFFF)),
-                      ),
-                      // Played range.
-                      FractionallySizedBox(
-                        alignment: Alignment.centerLeft,
-                        widthFactor: _fraction,
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            boxShadow: active
-                                ? const [
-                                    BoxShadow(
-                                        color: Color(0x66FFFFFF),
-                                        blurRadius: 12),
-                                  ]
-                                : null,
-                          ),
-                        ),
-                      ),
-                    ]),
-                  ),
-                ),
-              ),
-            );
-          }),
-          const SizedBox(height: 6),
-          Row(children: [
-            Text(widget.fmt(showPos),
-                style: TextStyle(
-                    color: _scrubbing ? Colors.white : Aurora.textDim,
-                    fontWeight:
-                        _scrubbing ? FontWeight.w800 : FontWeight.w600,
-                    fontSize: 12.5,
-                    fontFeatures: const [FontFeature.tabularFigures()])),
-            const SizedBox(width: 10),
-            if (widget.rate != 1.0)
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: Aurora.hairline),
-                ),
-                child: Text('${widget.rate}x',
-                    style: const TextStyle(
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w700,
-                        color: Aurora.textDim)),
-              ),
-            const Spacer(),
-            AnimatedOpacity(
-              opacity: _focused && !_scrubbing ? 1 : 0,
-              duration: Aurora.fast,
-              child: const Text('OK to scrub · hold ◀ ▶ to speed up',
-                  style: TextStyle(color: Aurora.textFaint, fontSize: 11)),
-            ),
-            const Spacer(),
-            Text('-${widget.fmt(remaining < Duration.zero ? Duration.zero : remaining)}',
-                style: const TextStyle(
-                    color: Aurora.textDim,
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    fontFeatures: [FontFeature.tabularFigures()])),
-          ]),
-        ],
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: widget.builder(context, _focused),
       ),
     );
   }
@@ -1393,9 +1347,7 @@ class _PreviewBubble extends StatelessWidget {
             color: const Color(0xF20C0E15),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: const Color(0x66FFFFFF)),
-            boxShadow: const [
-              BoxShadow(color: Colors.black87, blurRadius: 22)
-            ],
+            boxShadow: const [BoxShadow(color: Colors.black87, blurRadius: 22)],
           ),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (frame != null)
@@ -1501,8 +1453,6 @@ class _EpgNow extends ConsumerStatefulWidget {
 }
 
 class _EpgNowState extends ConsumerState<_EpgNow> {
-  // Cached — the surrounding controls rebuild on every position tick, and a
-  // fresh future per build would hammer the DB several times a second.
   late Future<EpgEntry?> _future = _lookup();
 
   Future<EpgEntry?> _lookup() => ref
@@ -1525,8 +1475,7 @@ class _EpgNowState extends ConsumerState<_EpgNow> {
           return const Text('Live broadcast',
               style: TextStyle(fontSize: 12.5, color: Aurora.textDim));
         }
-        final progress =
-            e.progress(DateTime.now().millisecondsSinceEpoch);
+        final progress = e.progress(DateTime.now().millisecondsSinceEpoch);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -1534,8 +1483,7 @@ class _EpgNowState extends ConsumerState<_EpgNow> {
             Text(e.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style:
-                    const TextStyle(fontSize: 12.5, color: Aurora.text)),
+                style: const TextStyle(fontSize: 12.5, color: Aurora.text)),
             const SizedBox(height: 5),
             ClipRRect(
               borderRadius: BorderRadius.circular(2),
@@ -1584,9 +1532,7 @@ class _NextUpCard extends StatelessWidget {
         color: const Color(0xE60C0E15),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Aurora.hairline),
-        boxShadow: const [
-          BoxShadow(color: Colors.black54, blurRadius: 24),
-        ],
+        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 24)],
       ),
       child: Row(children: [
         AuroraImage(
@@ -1623,23 +1569,20 @@ class _NextUpCard extends StatelessWidget {
     );
 
     if (!focusable) return card;
-    return AuroraFocusableShim(onActivate: onPlay, child: card);
+    return _NextUpFocus(onActivate: onPlay, child: card);
   }
 }
 
-/// Minimal focus wrapper for the next-up card (a full ring would fight the
-/// card's own border).
-class AuroraFocusableShim extends StatefulWidget {
-  const AuroraFocusableShim(
-      {super.key, required this.onActivate, required this.child});
+class _NextUpFocus extends StatefulWidget {
+  const _NextUpFocus({required this.onActivate, required this.child});
   final VoidCallback onActivate;
   final Widget child;
 
   @override
-  State<AuroraFocusableShim> createState() => _AuroraFocusableShimState();
+  State<_NextUpFocus> createState() => _NextUpFocusState();
 }
 
-class _AuroraFocusableShimState extends State<AuroraFocusableShim> {
+class _NextUpFocusState extends State<_NextUpFocus> {
   bool _focused = false;
 
   @override
@@ -1665,7 +1608,7 @@ class _AuroraFocusableShimState extends State<AuroraFocusableShim> {
 }
 
 // ---------------------------------------------------------------------------
-// Queue (episodes / channels) panel content
+// Queue (episodes / channels) panel
 // ---------------------------------------------------------------------------
 
 class _QueueList extends StatefulWidget {
@@ -1705,7 +1648,6 @@ class _QueueListState extends State<_QueueList> {
           ? widget.episodes![i].$1
           : null;
 
-  /// Queue indexes + season-header markers (negative encodings: -(season+1)).
   List<int> _entries() {
     if (widget.episodes == null) {
       return [for (var i = 0; i < widget.queue.length; i++) i];
@@ -1760,13 +1702,11 @@ class _QueueListState extends State<_QueueList> {
 }
 
 // ---------------------------------------------------------------------------
-// Track panel content
+// Track panel
 // ---------------------------------------------------------------------------
 
 class _TrackList extends StatelessWidget {
   const _TrackList({required this.options, required this.onDone});
-
-  /// (label, selected, apply)
   final List<(String, bool, VoidCallback)> options;
   final VoidCallback onDone;
 
@@ -1775,8 +1715,8 @@ class _TrackList extends StatelessWidget {
     if (options.isEmpty) {
       return const Padding(
         padding: EdgeInsets.all(24),
-        child: Text('No tracks available.',
-            style: TextStyle(color: Aurora.textDim)),
+        child:
+            Text('No tracks available.', style: TextStyle(color: Aurora.textDim)),
       );
     }
     return ListView(
@@ -1811,8 +1751,7 @@ class _ErrorView extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.all(30),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Icon(Icons.error_outline_rounded,
-            color: Aurora.live, size: 46),
+        const Icon(Icons.error_outline_rounded, color: Aurora.live, size: 46),
         const SizedBox(height: 16),
         Text('Couldn\'t play "$name"',
             textAlign: TextAlign.center,

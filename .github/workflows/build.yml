@@ -1,11 +1,8 @@
 name: Build & Release Lumen
 
-# Push a tag like v1.0.0 to cut a release, or run manually from the Actions tab.
-#
-# 1.1.x (Aurora beta) tags are published as PRE-releases: GitHub's
-# releases/latest — and therefore the classic Downloader code that points at
-# it — keeps serving the stable 1.0 line until Aurora graduates. When it
-# does, drop the v1.1. prefix from the prerelease expressions below.
+# Push a tag like v1.1.0 to cut a release, or run manually from the Actions tab.
+# One app ships both experiences (Aurora + Classic, chosen in-app), so every
+# tag is a normal release and releases/latest always points at the newest build.
 on:
   push:
     tags: ["v*"]
@@ -47,7 +44,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ startsWith(github.ref_name, 'v1.1.') }}
           files: dist/*.apk
 
   macos:
@@ -76,7 +72,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ startsWith(github.ref_name, 'v1.1.') }}
           files: dist/*.zip
 
   ios:
@@ -104,5 +99,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ startsWith(github.ref_name, 'v1.1.') }}
           files: dist/*.ipa

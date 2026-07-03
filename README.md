@@ -9,19 +9,23 @@ A buttery-smooth personal IPTV player — one Flutter codebase for **Android, Go
 ## 🌌 1.1 — two experiences, one binary
 
 The 1.1 line ships **Aurora**, a ground-up UI redesign (Apple TV calm × Netflix
-density × Prime clarity), *alongside* the untouched **Classic** 1.0 interface:
+density × Prime clarity), *alongside* the untouched **Classic** 1.0 interface —
+**one app, two experiences**:
 
 - First launch asks once: **Aurora or Classic** — switchable any time from
   either Settings screen, instantly, with no reinstall. (That in-app switch is
-  also the only way "back": Android won't downgrade an installed APK.)
+  also how you go "back": Android won't downgrade an installed APK.)
 - Both shells share the same database, playback engine, favorites, progress
   and accounts — flipping the switch never touches your data.
-- Aurora highlights: billboard home with trending/live shelves, cinematic
-  detail pages with "More Like This", a redesigned player (scrub previews,
-  buffered timeline, next-episode countdown, speed & aspect), live-TV zapping
-  with channel-number entry, and an all-new search.
-- `v1.1.x` tags publish as **pre-releases**, so `releases/latest` (and the
-  classic TV Downloader code) keeps serving stable 1.0 until Aurora graduates.
+- Aurora highlights: cinematic billboard home with a preloaded category wall
+  and trending/live shelves; **TMDB-governed** Movies/TV Shows browsing when a
+  key is set; cinematic detail pages where **Play** prefers a smart Real-Debrid
+  stream (1080p, non-junk, subtitle-preferred) with a **Play on IPTV** fallback;
+  a redesigned player (always-on progress bar, ◀ ▶ = ±30s, frame-preview seeks,
+  next-episode countdown, fit/fill + speed) and live-TV zapping with channel
+  numbers.
+- Everything ships in a single build; `releases/latest` always points at the
+  newest version, and the same TV Downloader code installs it.
 
 ---
 

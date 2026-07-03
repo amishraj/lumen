@@ -157,33 +157,9 @@ class AuroraSettingsPage extends ConsumerWidget {
                       ref.invalidate(serviceHealthProvider);
                     },
                   ),
-                  onTap: () async {
-                    final svc =
-                        await ref.read(realDebridServiceProvider.future);
-                    final hasToken = (await svc.token())?.isNotEmpty ?? false;
-                    if (!context.mounted) return;
-                    if (hasToken) {
-                      await _editKey(
-                        context,
-                        ref,
-                        title: 'Real-Debrid token',
-                        help:
-                            'Your private API token from real-debrid.com/apitoken. '
-                            'It stays on this device.',
-                        obscure: true,
-                        read: () => svc.token(),
-                        save: (v) async {
-                          await svc.saveToken(v);
-                          await svc.setEnabled(v.trim().isNotEmpty);
-                          ref.read(rdRevProvider.notifier).state++;
-                          ref.invalidate(rdEnabledProvider);
-                          ref.invalidate(serviceHealthProvider);
-                        },
-                      );
-                    } else {
-                      await showRdConnectSheet(context, ref);
-                    }
-                  },
+                  // Always the code-based device flow (enter a code at
+                  // real-debrid.com/device) — never a raw token paste.
+                  onTap: () => showRdConnectSheet(context, ref),
                 );
               }),
               const AuroraSectionHeader('About'),

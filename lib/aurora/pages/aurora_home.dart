@@ -97,6 +97,7 @@ class AuroraHomePage extends ConsumerWidget {
                     liveQueue: v(auroraLiveNowProvider)),
               ),
             ),
+            const _CategoriesRail(),
             wideShelf('Trending This Week', v(tmdbTrendingProvider)),
             wideShelf('Popular Now', v(tmdbPopularProvider)),
             wideShelf('Recently Watched', v(recentlyWatchedProvider)),
@@ -228,14 +229,20 @@ class _BillboardState extends ConsumerState<_Billboard> {
             ),
           ),
         ),
-        // Legibility gradients — bottom into bg, left for the text column.
+        // Legibility gradients. The bottom stays *solid* bg for its lowest
+        // ~16% so the billboard melts seamlessly into the page below — no hard
+        // horizontal cut where the artwork ends.
         const DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.bottomCenter,
               end: Alignment.topCenter,
-              colors: [Color(0xFF06070B), Color(0x0006070B)],
-              stops: [0.0, 0.55],
+              colors: [
+                Color(0xFF06070B),
+                Color(0xFF06070B),
+                Color(0x0006070B),
+              ],
+              stops: [0.0, 0.16, 0.62],
             ),
           ),
         ),
@@ -364,6 +371,224 @@ class _BillboardSkeleton extends StatelessWidget {
       ),
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Categories rail — large Hulu-style colour tiles under Live Now. Preloaded
+// (genres/categories are cheap), each tile a distinct aesthetic gradient with
+// an abstract mark; tapping jumps to Movies filtered to that category.
+// ---------------------------------------------------------------------------
+
+/// One category tile: gradient, colour name, gradient id, and a mark.
+class _CatStyle {
+  final List<Color> gradient;
+  final IconData mark;
+  const _CatStyle(this.gradient, this.mark);
+}
+
+const _catPalette = <_CatStyle>[
+  _CatStyle([Color(0xFFFF6A5B), Color(0xFF7A1F3D)], Icons.local_fire_department_rounded),
+  _CatStyle([Color(0xFF4CC2FF), Color(0xFF1B3A7A)], Icons.bolt_rounded),
+  _CatStyle([Color(0xFF8A7BFF), Color(0xFF3A2E7A)], Icons.auto_awesome_rounded),
+  _CatStyle([Color(0xFF34D399), Color(0xFF105948)], Icons.forest_rounded),
+  _CatStyle([Color(0xFFFFB35C), Color(0xFF7A431B)], Icons.wb_sunny_rounded),
+  _CatStyle([Color(0xFFFF7BC2), Color(0xFF7A1F5D)], Icons.favorite_rounded),
+  _CatStyle([Color(0xFF00D4C8), Color(0xFF0B4A57)], Icons.water_rounded),
+  _CatStyle([Color(0xFFB8C24C), Color(0xFF4A551B)], Icons.eco_rounded),
+  _CatStyle([Color(0xFF9AA0FF), Color(0xFF2E317A)], Icons.nights_stay_rounded),
+  _CatStyle([Color(0xFFFF8A5B), Color(0xFF7A2E1B)], Icons.explore_rounded),
+];
+
+IconData _markFor(String name) {
+  final n = name.toLowerCase();
+  if (n.contains('action')) return Icons.local_fire_department_rounded;
+  if (n.contains('comedy')) return Icons.sentiment_very_satisfied_rounded;
+  if (n.contains('drama')) return Icons.theater_comedy_rounded;
+  if (n.contains('horror')) return Icons.dark_mode_rounded;
+  if (n.contains('thriller') || n.contains('crime')) return Icons.gpp_maybe_rounded;
+  if (n.contains('sci') || n.contains('fantasy')) return Icons.rocket_launch_rounded;
+  if (n.contains('romance')) return Icons.favorite_rounded;
+  if (n.contains('animation') || n.contains('kids') || n.contains('family')) {
+    return Icons.child_care_rounded;
+  }
+  if (n.contains('doc')) return Icons.menu_book_rounded;
+  if (n.contains('adventure')) return Icons.explore_rounded;
+  if (n.contains('music')) return Icons.music_note_rounded;
+  if (n.contains('war')) return Icons.military_tech_rounded;
+  if (n.contains('west')) return Icons.landscape_rounded;
+  if (n.contains('myst')) return Icons.search_rounded;
+  return Icons.movie_rounded;
+}
+
+class _CategoriesRail extends ConsumerWidget {
+  const _CategoriesRail();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final governs = ref.watch(auroraTmdbGovernsProvider).valueOrNull ?? false;
+    final margin = Aurora.margin(context);
+
+    // (label, onTap) pairs.
+    final entries = <(String, VoidCallback)>[];
+    if (governs) {
+      final genres =
+          ref.watch(auroraTmdbGenresProvider(StreamKind.movie)).valueOrNull;
+      if (genres == null || genres.isEmpty) return const SizedBox.shrink();
+      for (final g in genres.take(12)) {
+        entries.add((g.name, () {
+          ref.read(auroraGenreProvider(StreamKind.movie).notifier).state = g.id;
+          ref.read(auroraTabProvider.notifier).state = AuroraTab.movies.index;
+        }));
+      }
+    } else {
+      final cats =
+          ref.watch(auroraCategoriesProvider(StreamKind.movie)).valueOrNull;
+      if (cats == null || cats.isEmpty) return const SizedBox.shrink();
+      for (final c in cats.take(12)) {
+        entries.add((c.name, () {
+          ref.read(auroraGroupProvider(StreamKind.movie).notifier).state =
+              c.name;
+          ref.read(auroraTabProvider.notifier).state = AuroraTab.movies.index;
+        }));
+      }
+    }
+    if (entries.isEmpty) return const SizedBox.shrink();
+
+    const cardW = 160.0;
+    const cardH = 208.0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: EdgeInsets.fromLTRB(margin, 26, margin, 12),
+          child: const Text('Browse Categories', style: Aurora.shelfTitle),
+        ),
+        SizedBox(
+          height: cardH + 8,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            clipBehavior: Clip.none,
+            padding: EdgeInsets.symmetric(horizontal: margin, vertical: 4),
+            itemCount: entries.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 14),
+            itemBuilder: (context, i) {
+              final (label, onTap) = entries[i];
+              final style = _catPalette[label.hashCode.abs() % _catPalette.length];
+              return _CategoryTile(
+                label: label,
+                gradient: style.gradient,
+                mark: _markFor(label),
+                width: cardW,
+                height: cardH,
+                onTap: onTap,
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CategoryTile extends StatelessWidget {
+  const _CategoryTile({
+    required this.label,
+    required this.gradient,
+    required this.mark,
+    required this.width,
+    required this.height,
+    required this.onTap,
+  });
+
+  final String label;
+  final List<Color> gradient;
+  final IconData mark;
+  final double width;
+  final double height;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return AuroraFocusable(
+      radius: 18,
+      scale: 1.06,
+      onActivate: onTap,
+      builder: (context, focused) => SizedBox(
+        width: width,
+        height: height,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: Stack(fit: StackFit.expand, children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: gradient,
+                ),
+              ),
+            ),
+            // Abstract depiction — overlapping translucent shapes + a big mark.
+            Positioned(
+              right: -26,
+              top: -20,
+              child: _blob(96, const Color(0x26FFFFFF)),
+            ),
+            Positioned(
+              left: -30,
+              bottom: 30,
+              child: _blob(120, const Color(0x1AFFFFFF)),
+            ),
+            Positioned(
+              right: 12,
+              top: 14,
+              child: Icon(mark,
+                  size: 46, color: Colors.white.withValues(alpha: 0.28)),
+            ),
+            // Legibility scrim + label.
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.center,
+                  colors: [Color(0x99000000), Color(0x00000000)],
+                ),
+              ),
+            ),
+            Positioned(
+              left: 14,
+              right: 14,
+              bottom: 14,
+              child: Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.3,
+                    height: 1.1),
+              ),
+            ),
+            if (focused)
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: Colors.white, width: 2.4),
+                ),
+              ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _blob(double size, Color color) => Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      );
 }
 
 // ---------------------------------------------------------------------------
