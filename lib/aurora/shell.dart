@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -148,16 +150,46 @@ class _TopBarState extends ConsumerState<_TopBar> {
     AuroraTabSpec(AuroraTab.myStuff, 'My Stuff'),
   ];
 
-  // Tabs switch only on OK/click — never merely on focus. Auto-switching on
-  // focus made a left/right sweep flicker through every page and "navigate on
-  // its own"; now Left/Right just move the highlight and OK commits.
-  void _pickTab(AuroraTab tab) => widget.onSelect(tab);
+  // Stable per-tab focus nodes — created once, never swapped. The selected
+  // tab's node is published as [auroraNavTarget] so pages can return focus here.
+  final Map<AuroraTab, FocusNode> _nodes = {
+    for (final t in AuroraTab.values)
+      t: FocusNode(debugLabel: 'aurora-tab-${t.name}'),
+  };
+  Timer? _debounce;
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    for (final n in _nodes.values) {
+      n.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Focusing a tab switches to it — a quick debounce coalesces a fast
+  /// left/right sweep so only the tab you settle on commits (and its page
+  /// cross-dissolves in). This is the "auto fade switch on focus" behaviour.
+  void _focusTab(AuroraTab tab, bool focused) {
+    if (!focused) return;
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 90), () {
+      if (mounted) widget.onSelect(tab);
+    });
+  }
+
+  void _pickTab(AuroraTab tab) {
+    _debounce?.cancel();
+    widget.onSelect(tab);
+  }
 
   @override
   Widget build(BuildContext context) {
     final margin = Aurora.margin(context);
     final sync = ref.watch(syncControllerProvider);
     final wide = MediaQuery.of(context).size.width >= 760;
+    // Publish the selected tab's node so pages can return focus here (▲).
+    auroraNavTarget = _nodes[AuroraTab.values[widget.selected]];
 
     return Container(
       height: 64,
@@ -199,11 +231,8 @@ class _TopBarState extends ConsumerState<_TopBar> {
                   _TabItem(
                     spec: t,
                     selected: widget.selected == t.tab.index,
-                    // The active tab holds the shared nav node so pages can
-                    // send focus back up here (▲ from their top row).
-                    focusNode: widget.selected == t.tab.index
-                        ? auroraNavFocusNode
-                        : null,
+                    focusNode: _nodes[t.tab],
+                    onFocus: (f) => _focusTab(t.tab, f),
                     onPick: () => _pickTab(t.tab),
                     compact: !wide,
                   ),
@@ -234,9 +263,8 @@ class _TopBarState extends ConsumerState<_TopBar> {
           spec: const AuroraTabSpec(
               AuroraTab.settings, 'Settings', Icons.settings_outlined),
           selected: widget.selected == AuroraTab.settings.index,
-          focusNode: widget.selected == AuroraTab.settings.index
-              ? auroraNavFocusNode
-              : null,
+          focusNode: _nodes[AuroraTab.settings],
+          onFocus: (f) => _focusTab(AuroraTab.settings, f),
           onPick: () => _pickTab(AuroraTab.settings),
           compact: true, // icon-only, always
         ),
@@ -249,6 +277,7 @@ class _TabItem extends StatelessWidget {
   const _TabItem({
     required this.spec,
     required this.selected,
+    required this.onFocus,
     required this.onPick,
     required this.compact,
     this.focusNode,
@@ -256,6 +285,7 @@ class _TabItem extends StatelessWidget {
 
   final AuroraTabSpec spec;
   final bool selected;
+  final ValueChanged<bool> onFocus;
   final VoidCallback onPick;
   final bool compact;
   final FocusNode? focusNode;
@@ -268,6 +298,7 @@ class _TabItem extends StatelessWidget {
       scale: 1.0,
       focusNode: focusNode,
       onActivate: onPick,
+      onFocusChange: onFocus,
       builder: (context, focused) => AnimatedContainer(
         duration: Aurora.fast,
         margin: const EdgeInsets.symmetric(horizontal: 3),
@@ -307,8 +338,12 @@ class _TabItem extends StatelessWidget {
   }
 }
 
-/// IndexedStack that builds children on first visit only and keeps hidden
-/// pages focus-inert (an offstage page must never catch remote focus).
+/// Lazy, state-preserving page host with a true cross-dissolve between tabs.
+///
+/// Like an IndexedStack, pages build on first visit and stay mounted (Offstage)
+/// so scroll + focus state survives — but on a tab change the outgoing and
+/// incoming pages are painted together with crossfading opacity, so switching
+/// is a seamless fade rather than a blank-then-appear flicker.
 class _LazyStack extends StatefulWidget {
   const _LazyStack({required this.index, required this.builders});
   final int index;
@@ -321,24 +356,21 @@ class _LazyStack extends StatefulWidget {
 class _LazyStackState extends State<_LazyStack>
     with SingleTickerProviderStateMixin {
   final Map<int, Widget> _built = {};
-
-  // A gentle fade + upward glide replays on every tab change, so pages flow
-  // into place instead of snapping. IndexedStack still preserves each page's
-  // scroll + focus state underneath.
   late final AnimationController _ctrl = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 300))
+      vsync: this, duration: const Duration(milliseconds: 260))
     ..value = 1;
-  late final Animation<double> _fade =
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
-  late final Animation<Offset> _slide = Tween(
-    begin: const Offset(0, 0.02),
-    end: Offset.zero,
-  ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
+
+  late int _to = widget.index; // fading in / shown
+  int _from = 0; // fading out during a transition
 
   @override
   void didUpdateWidget(covariant _LazyStack old) {
     super.didUpdateWidget(old);
-    if (old.index != widget.index) _ctrl.forward(from: 0);
+    if (old.index != widget.index) {
+      _from = _to;
+      _to = widget.index;
+      _ctrl.forward(from: 0);
+    }
   }
 
   @override
@@ -349,20 +381,48 @@ class _LazyStackState extends State<_LazyStack>
 
   @override
   Widget build(BuildContext context) {
-    _built.putIfAbsent(widget.index, () => widget.builders[widget.index]());
-    return FadeTransition(
-      opacity: _fade,
-      child: SlideTransition(
-        position: _slide,
-        child: IndexedStack(
-          index: widget.index,
-          children: [
-            for (var i = 0; i < widget.builders.length; i++)
-              ExcludeFocus(
-                excluding: i != widget.index,
-                child: _built[i] ?? const SizedBox.shrink(),
-              ),
-          ],
+    _built.putIfAbsent(_to, () => widget.builders[_to]());
+    // Build the outgoing page only while actually transitioning (not on first
+    // mount) so we don't eagerly build a page the user never opened.
+    if (_from != _to && _ctrl.value < 1) {
+      _built.putIfAbsent(_from, () => widget.builders[_from]());
+    }
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, _) {
+        final t = Curves.easeInOut.transform(_ctrl.value);
+        final settled = _ctrl.value >= 1;
+        return Stack(fit: StackFit.expand, children: [
+          for (var i = 0; i < widget.builders.length; i++)
+            _layer(i, t, settled),
+        ]);
+      },
+    );
+  }
+
+  Widget _layer(int i, double t, bool settled) {
+    final child = _built[i];
+    if (child == null) return const SizedBox.shrink();
+    double opacity;
+    if (settled) {
+      opacity = i == _to ? 1 : 0;
+    } else if (i == _to) {
+      opacity = t;
+    } else if (i == _from) {
+      opacity = 1 - t;
+    } else {
+      opacity = 0;
+    }
+    final visible = opacity > 0.001;
+    // Only the destination page is interactive/focusable; the fading-out page
+    // is inert. Offstage keeps hidden pages mounted (state preserved).
+    return Offstage(
+      offstage: !visible,
+      child: IgnorePointer(
+        ignoring: i != _to,
+        child: ExcludeFocus(
+          excluding: i != _to,
+          child: Opacity(opacity: opacity.clamp(0.0, 1.0), child: child),
         ),
       ),
     );

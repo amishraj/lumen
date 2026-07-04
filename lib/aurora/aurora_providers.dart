@@ -288,10 +288,13 @@ final auroraCatalogPagerProvider = StateNotifierProvider.autoDispose
   return TmdbCatalogPager(svc, repo, pl!.id!, key.show, key.genreId);
 });
 
-/// The top navigation's focus target. The currently-selected tab holds this
-/// node, so any page can send focus "up" to the nav bar (▲ from its top row);
-/// focusing it lands on the active tab, and Left/Right then move across tabs.
-final auroraNavFocusNode = FocusNode(debugLabel: 'aurora-nav');
+/// The nav's focus target — the currently-selected tab's *stable* focus node,
+/// published by the top bar each build. Pages call
+/// `auroraNavTarget?.requestFocus()` to send focus back up to the active tab
+/// (▲ from their top row). Kept as a plain field (not a per-tab focusNode swap)
+/// so selecting a tab never re-parents a focus node mid-navigation — that swap
+/// was what made the bar flicker.
+FocusNode? auroraNavTarget;
 
 /// The shell's selected tab.
 final auroraTabProvider = StateProvider<int>((ref) => AuroraTab.home.index);

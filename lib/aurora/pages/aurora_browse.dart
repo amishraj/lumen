@@ -407,7 +407,7 @@ class _Chip extends StatelessWidget {
       scale: 1.0,
       onActivate: onPick,
       // ▲ returns to the top nav; long-press (pointer) pins the category.
-      onUp: () => auroraNavFocusNode.requestFocus(),
+      onUp: () => auroraNavTarget?.requestFocus(),
       onLongPress: onPin,
       builder: (context, focused) => AnimatedContainer(
         duration: Aurora.fast,

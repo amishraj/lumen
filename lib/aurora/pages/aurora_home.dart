@@ -203,7 +203,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
 
   void _upToNav() {
     widget.onFocusTop?.call();
-    auroraNavFocusNode.requestFocus();
+    auroraNavTarget?.requestFocus();
   }
 
   void _playDirect(StreamItem item) {
