@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -140,8 +138,6 @@ class _TopBar extends ConsumerStatefulWidget {
 }
 
 class _TopBarState extends ConsumerState<_TopBar> {
-  Timer? _debounce;
-
   static const _mainTabs = [
     AuroraTabSpec(AuroraTab.search, 'Search', Icons.search_rounded),
     AuroraTabSpec(AuroraTab.home, 'Home'),
@@ -152,27 +148,10 @@ class _TopBarState extends ConsumerState<_TopBar> {
     AuroraTabSpec(AuroraTab.myStuff, 'My Stuff'),
   ];
 
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    super.dispose();
-  }
-
-  /// Focusing a tab switches to it after a beat (Apple TV behaviour); OK
-  /// switches instantly. The debounce keeps a fast left-right sweep from
-  /// churning through every page in between.
-  void _focusTab(AuroraTab tab, bool focused) {
-    if (!focused) return;
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 260), () {
-      if (mounted) widget.onSelect(tab);
-    });
-  }
-
-  void _pickTab(AuroraTab tab) {
-    _debounce?.cancel();
-    widget.onSelect(tab);
-  }
+  // Tabs switch only on OK/click — never merely on focus. Auto-switching on
+  // focus made a left/right sweep flicker through every page and "navigate on
+  // its own"; now Left/Right just move the highlight and OK commits.
+  void _pickTab(AuroraTab tab) => widget.onSelect(tab);
 
   @override
   Widget build(BuildContext context) {
@@ -225,7 +204,6 @@ class _TopBarState extends ConsumerState<_TopBar> {
                     focusNode: widget.selected == t.tab.index
                         ? auroraNavFocusNode
                         : null,
-                    onFocus: (f) => _focusTab(t.tab, f),
                     onPick: () => _pickTab(t.tab),
                     compact: !wide,
                   ),
@@ -256,7 +234,9 @@ class _TopBarState extends ConsumerState<_TopBar> {
           spec: const AuroraTabSpec(
               AuroraTab.settings, 'Settings', Icons.settings_outlined),
           selected: widget.selected == AuroraTab.settings.index,
-          onFocus: (f) => _focusTab(AuroraTab.settings, f),
+          focusNode: widget.selected == AuroraTab.settings.index
+              ? auroraNavFocusNode
+              : null,
           onPick: () => _pickTab(AuroraTab.settings),
           compact: true, // icon-only, always
         ),
@@ -269,7 +249,6 @@ class _TabItem extends StatelessWidget {
   const _TabItem({
     required this.spec,
     required this.selected,
-    required this.onFocus,
     required this.onPick,
     required this.compact,
     this.focusNode,
@@ -277,7 +256,6 @@ class _TabItem extends StatelessWidget {
 
   final AuroraTabSpec spec;
   final bool selected;
-  final ValueChanged<bool> onFocus;
   final VoidCallback onPick;
   final bool compact;
   final FocusNode? focusNode;
@@ -290,7 +268,6 @@ class _TabItem extends StatelessWidget {
       scale: 1.0,
       focusNode: focusNode,
       onActivate: onPick,
-      onFocusChange: onFocus,
       builder: (context, focused) => AnimatedContainer(
         duration: Aurora.fast,
         margin: const EdgeInsets.symmetric(horizontal: 3),

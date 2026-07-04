@@ -5,7 +5,6 @@ import '../../data/models/models.dart';
 import '../../data/sources/omdb_service.dart';
 import '../../data/sources/realdebrid_service.dart';
 import '../../data/sources/tmdb_service.dart';
-import '../../state/cloud_sync.dart';
 import '../../state/experience.dart';
 import '../../state/providers.dart';
 import '../../state/service_status.dart';
@@ -38,8 +37,6 @@ class AuroraSettingsPage extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const AuroraSectionHeader('Account'),
-              const _AccountRow(),
               const AuroraSectionHeader('Experience'),
               AuroraListRow(
                 icon: Icons.swap_horiz_rounded,
@@ -240,111 +237,6 @@ class AuroraSettingsPage extends ConsumerWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// Google account backup: sign in once and the whole setup — sources,
-/// credentials, favorites, watch state, pins — lives in the account's own
-/// Drive app storage and follows the user to any device.
-class _AccountRow extends ConsumerStatefulWidget {
-  const _AccountRow();
-
-  @override
-  ConsumerState<_AccountRow> createState() => _AccountRowState();
-}
-
-class _AccountRowState extends ConsumerState<_AccountRow> {
-  bool _working = false;
-
-  Future<void> _signIn() async {
-    if (_working) return;
-    setState(() => _working = true);
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final cs = await ref.read(cloudSyncProvider.future);
-      final acct = await cs.signIn();
-      if (acct != null) {
-        ref.read(cloudAccountProvider.notifier).state = acct;
-        messenger.showSnackBar(SnackBar(
-            content: Text(
-                'Signed in as ${acct.email} — your setup is backed up.')));
-      }
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('$e')));
-    } finally {
-      if (mounted) setState(() => _working = false);
-    }
-  }
-
-  Future<void> _backupNow() async {
-    if (_working) return;
-    setState(() => _working = true);
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final cs = await ref.read(cloudSyncProvider.future);
-      final ok = await cs.pushNow();
-      messenger.showSnackBar(SnackBar(
-          content: Text(ok
-              ? 'Backed up to your Google account.'
-              : 'Backup failed — check your connection and try again.')));
-    } finally {
-      if (mounted) setState(() => _working = false);
-    }
-  }
-
-  Future<void> _signOut() async {
-    final cs = await ref.read(cloudSyncProvider.future);
-    await cs.signOut();
-    ref.read(cloudAccountProvider.notifier).state = null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final acct = ref.watch(cloudAccountProvider);
-
-    if (acct == null) {
-      return AuroraListRow(
-        icon: Icons.account_circle_outlined,
-        iconColor: Aurora.accent,
-        title: _working ? 'Signing in…' : 'Sign in with Google',
-        subtitle:
-            'Back up your sources, accounts, favorites & watch progress — '
-            'restore everything on any device with one sign-in.',
-        trailing: _working
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2))
-            : const Icon(Icons.chevron_right_rounded, color: Aurora.textFaint),
-        onTap: _signIn,
-      );
-    }
-
-    return AuroraListRow(
-      icon: Icons.cloud_done_rounded,
-      iconColor: Aurora.good,
-      title: acct.email,
-      subtitle: _working
-          ? 'Backing up…'
-          : 'Backed up automatically · tap to back up now',
-      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-        if (_working)
-          const Padding(
-            padding: EdgeInsets.only(right: 10),
-            child: SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(strokeWidth: 2)),
-          ),
-        AuroraIconButton(
-          icon: Icons.logout_rounded,
-          size: 16,
-          tooltip: 'Sign out',
-          onPressed: _signOut,
-        ),
-      ]),
-      onTap: _backupNow,
     );
   }
 }

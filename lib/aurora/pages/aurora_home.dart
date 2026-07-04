@@ -23,11 +23,35 @@ import '../widgets/aurora_image.dart';
 import '../widgets/aurora_shelf.dart';
 
 /// Aurora Home: one cinematic billboard, then dense, calm shelves.
-class AuroraHomePage extends ConsumerWidget {
+class AuroraHomePage extends ConsumerStatefulWidget {
   const AuroraHomePage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AuroraHomePage> createState() => _AuroraHomePageState();
+}
+
+class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Snap fully to the top (full billboard, nav clear of the buttons). Used
+  /// whenever focus lands back on the hero — so pressing Up repeatedly always
+  /// ends at offset 0 instead of leaving a button tucked under the nav bar.
+  void _toTop() {
+    if (_scroll.hasClients && _scroll.offset > 0) {
+      _scroll.animateTo(0,
+          duration: const Duration(milliseconds: 360),
+          curve: Curves.easeOutCubic);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final featured = ref.watch(featuredProvider).valueOrNull;
     final posterW = Aurora.posterWidth(context);
     final wideW = Aurora.wideWidth(context);
@@ -73,13 +97,14 @@ class AuroraHomePage extends ConsumerWidget {
         );
 
     return CustomScrollView(
+      controller: _scroll,
       slivers: [
         SliverToBoxAdapter(
           child: featured == null
               ? const _BillboardSkeleton()
               : featured.isEmpty
                   ? const SizedBox(height: 96)
-                  : _Billboard(items: featured),
+                  : _Billboard(items: featured, onFocusTop: _toTop),
         ),
         SliverList(
           delegate: SliverChildListDelegate.fixed([
@@ -125,8 +150,11 @@ class AuroraHomePage extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _Billboard extends ConsumerStatefulWidget {
-  const _Billboard({required this.items});
+  const _Billboard({required this.items, this.onFocusTop});
   final List<StreamItem> items;
+
+  /// Called when focus lands on the hero — snaps the page to the very top.
+  final VoidCallback? onFocusTop;
 
   @override
   ConsumerState<_Billboard> createState() => _BillboardState();
@@ -166,7 +194,17 @@ class _BillboardState extends ConsumerState<_Billboard> {
     setState(() => _index = next);
   }
 
-  void _onHeroFocus(bool f) => _heroFocused = f;
+  void _onHeroFocus(bool f) {
+    _heroFocused = f;
+    // Landing back on the hero snaps the page fully to the top, so the buttons
+    // are never left tucked under the nav bar after scrolling up.
+    if (f) widget.onFocusTop?.call();
+  }
+
+  void _upToNav() {
+    widget.onFocusTop?.call();
+    auroraNavFocusNode.requestFocus();
+  }
 
   void _playDirect(StreamItem item) {
     if (item.kind == StreamKind.movie) {
@@ -308,14 +346,14 @@ class _BillboardState extends ConsumerState<_Billboard> {
                   primary: true,
                   autofocus: true,
                   onLeft: () => _go(-1),
-                  onUp: () => auroraNavFocusNode.requestFocus(),
+                  onUp: _upToNav,
                   onPressed: () => _playDirect(item),
                 ),
                 const SizedBox(width: 12),
                 AuroraPillButton(
                   label: 'Details',
                   icon: Icons.info_outline_rounded,
-                  onUp: () => auroraNavFocusNode.requestFocus(),
+                  onUp: _upToNav,
                   onPressed: () => openAuroraItem(context, ref, item),
                 ),
                 const SizedBox(width: 12),
@@ -323,7 +361,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
                   label: isFav ? 'In My List' : 'My List',
                   icon: isFav ? Icons.check_rounded : Icons.add_rounded,
                   onRight: () => _go(1),
-                  onUp: () => auroraNavFocusNode.requestFocus(),
+                  onUp: _upToNav,
                   onPressed: () => setFavorite(ref, item, !isFav),
                 ),
               ].map((w) {

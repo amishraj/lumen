@@ -106,33 +106,6 @@ Releases are built **in the cloud** by GitHub Actions — no local toolchain nee
 
 ---
 
-## ☁️ Google account backup
-
-Settings → Account → **Sign in with Google** backs the user's whole setup into
-their own Google Drive **appData** folder (hidden per-app storage — no backend
-of ours): sources, all settings/credentials (Trakt, Real-Debrid, TMDB, UI
-choice, layout), favorites, watch progress, per-episode progress and pinned
-categories. Favorites/progress are keyed by stream *url* so they survive
-re-syncs and restore on a brand-new device.
-
-- **First sign-in** (no snapshot yet): the current local setup is uploaded
-  immediately.
-- **Returning sign-in**: the account snapshot is merged in (newer-wins for
-  progress) and the merged state re-uploaded. Anything that needs the library
-  index (favorites on a fresh install) re-applies automatically after the
-  first source sync.
-- Afterwards every relevant change re-uploads automatically (debounced ~20s).
-
-> **One-time setup to enable it on your builds:** Google Sign-In requires an
-> OAuth client registered for the app. In Google Cloud Console create OAuth
-> clients for **Android** (package `com.example.lumen`-equivalent + the
-> signing certificate's SHA-1 — use a fixed keystore in CI, not the default
-> debug key) and **iOS/macOS** (add the reversed client id to Info.plist).
-> Until that's configured, the Sign in row shows a clear error and everything
-> else works normally.
-
----
-
 ## 🛠️ Building locally
 
 ```bash

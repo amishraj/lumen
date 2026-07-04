@@ -6,7 +6,6 @@ import 'package:media_kit/media_kit.dart';
 import 'aurora/aurora_theme.dart';
 import 'aurora/gate/experience_gate.dart';
 import 'aurora/shell.dart';
-import 'state/cloud_sync.dart';
 import 'state/credential_vault.dart';
 import 'state/experience.dart';
 import 'state/providers.dart';
@@ -81,9 +80,6 @@ class LumenRoot extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final playlists = ref.watch(playlistsProvider);
-    // Boot the Google-account backup layer (silent session restore + hook
-    // registration) regardless of which shell loads.
-    ref.watch(cloudSyncProvider);
 
     return playlists.when(
       loading: () => const _Splash(),
