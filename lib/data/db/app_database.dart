@@ -216,6 +216,11 @@ class AppDatabase {
     }
   }
 
+  /// Drop every setting whose key starts with [prefix] — used to invalidate a
+  /// whole family of caches (e.g. all `trakt:*` snapshots on disconnect).
+  Future<void> deleteSettingsPrefix(String prefix) =>
+      db.delete('app_settings', where: 'key LIKE ?', whereArgs: ['$prefix%']);
+
   // ---- Pinned categories ---------------------------------------------------
 
   Future<List<String>> pinnedCategories(int playlistId, StreamKind kind) async {

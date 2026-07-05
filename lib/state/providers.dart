@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' hide Category;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -217,18 +219,19 @@ final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return {};
-  try {
-    final connected = await ref.watch(traktConnectedProvider.future);
-    if (connected) {
-      final last =
-          int.tryParse(await repo.getSetting('trakt_watched_sync_at') ?? '') ??
-              0;
-      final nowMs = DateTime.now().millisecondsSinceEpoch;
-      if (nowMs - last > 3600 * 1000) {
-        final svc = await ref.watch(traktServiceProvider.future);
-        // Movies AND shows — matched to the library with the EN-preferring
-        // title search, so a watch on any language variant marks the same
-        // title here.
+
+  // Return the locally-known "seen" set IMMEDIATELY so the marks paint on the
+  // first frame. The hourly Trakt reconciliation (title-matching 300 entries)
+  // runs in the BACKGROUND and re-invalidates this provider when it lands —
+  // it must never gate app load.
+  final last =
+      int.tryParse(await repo.getSetting('trakt_watched_sync_at') ?? '') ?? 0;
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+  if (nowMs - last > 3600 * 1000) {
+    unawaited(() async {
+      try {
+        if (!await ref.read(traktConnectedProvider.future)) return;
+        final svc = await ref.read(traktServiceProvider.future);
         for (final w in (await svc.watchedMovies()).take(150)) {
           final hit = await repo.findByTitle(pl!.id!, w.title);
           if (hit?.id != null && hit!.kind == StreamKind.movie) {
@@ -242,9 +245,10 @@ final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
           }
         }
         await repo.setSetting('trakt_watched_sync_at', '$nowMs');
-      }
-    }
-  } catch (_) {/* best effort */}
+        ref.invalidateSelf(); // re-read with the freshly-marked ids
+      } catch (_) {/* best effort — keep the local set */}
+    }());
+  }
   return repo.watchedIds(pl!.id!);
 });
 

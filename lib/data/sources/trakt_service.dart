@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -62,6 +63,7 @@ class TraktService {
     await _repo.setSetting('trakt_access_token', null);
     await _repo.setSetting('trakt_refresh_token', null);
     await _repo.setSetting('trakt_username', null);
+    await _clearCaches();
   }
 
   /// Step 1 of the device flow — get a code for the user to enter.
@@ -101,6 +103,7 @@ class TraktService {
         final d = res.data is String ? jsonDecode(res.data) : res.data;
         await _repo.setSetting('trakt_access_token', d['access_token']);
         await _repo.setSetting('trakt_refresh_token', d['refresh_token']);
+        await _clearCaches(); // fresh account — drop any prior snapshots
         await _fetchUsername();
         return true;
       case 400:
@@ -179,6 +182,56 @@ class TraktService {
     return res;
   }
 
+  /// DB-backed **stale-while-revalidate** cache for a Trakt read.
+  ///
+  /// Returns the cached response instantly when present — even if stale — and
+  /// kicks a background refresh so the next launch is up to date (the "content
+  /// is populated the moment the app opens, updates land on the once-a-day
+  /// strategy" behaviour). Only a cold cache blocks on the network; a failed
+  /// refresh keeps the last good snapshot, so the home stays populated offline.
+  Future<dynamic> _cachedJson(
+    String cacheKey,
+    Future<Response<dynamic>> Function() fetcher, {
+    Duration ttl = const Duration(hours: 24),
+    bool requireConnected = true,
+  }) async {
+    if (requireConnected && !await isConnected()) return null;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    dynamic stale;
+    final raw = await _repo.getSetting(cacheKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final wrap = jsonDecode(raw) as Map<String, dynamic>;
+        stale = wrap['v'];
+        if (now - (wrap['at'] as int? ?? 0) < ttl.inMilliseconds) return stale;
+      } catch (_) {/* corrupt — refetch */}
+    }
+
+    Future<dynamic> fetchStore() async {
+      try {
+        final res = await fetcher();
+        if (res.statusCode != 200) return stale;
+        final data = res.data is String ? jsonDecode(res.data) : res.data;
+        await _repo.setSetting(
+            cacheKey, jsonEncode({'at': now, 'v': data}));
+        return data;
+      } catch (_) {
+        return stale; // keep showing the last good snapshot
+      }
+    }
+
+    // Have a stale copy → show it now, refresh in the background.
+    if (stale != null) {
+      unawaited(fetchStore());
+      return stale;
+    }
+    return fetchStore();
+  }
+
+  /// Clear all cached Trakt snapshots (on connect/disconnect so a different or
+  /// freshly-linked account never shows the previous one's rows).
+  Future<void> _clearCaches() => _repo.db.deleteSettingsPrefix('trakt:cache:');
+
   Future<void> _fetchUsername() async {
     try {
       final res = await _authGet('$_api/users/settings');
@@ -226,11 +279,13 @@ class TraktService {
   Future<List<TraktItem>> trendingMovies({int limit = 30}) async {
     final clientId = await _clientId();
     if (clientId == null || clientId.isEmpty) return [];
-    final res = await _dio.get('$_api/movies/trending',
-        queryParameters: {'limit': '$limit'},
-        options: Options(headers: {'trakt-api-key': clientId}));
-    if (res.statusCode != 200) return [];
-    final list = res.data is String ? jsonDecode(res.data) : res.data;
+    final list = await _cachedJson(
+      'trakt:cache:trending',
+      () => _dio.get('$_api/movies/trending',
+          queryParameters: {'limit': '$limit'},
+          options: Options(headers: {'trakt-api-key': clientId})),
+      requireConnected: false, // public endpoint
+    );
     final out = <TraktItem>[];
     if (list is List) {
       for (final e in list) {
@@ -247,14 +302,14 @@ class TraktService {
   }
 
   /// The user's Trakt watchlist (movies + shows), as discovery items.
-  Future<List<TraktItem>> watchlist() => _itemsFrom('$_api/sync/watchlist');
+  Future<List<TraktItem>> watchlist() =>
+      _itemsFrom('$_api/sync/watchlist', 'trakt:cache:watchlist');
 
   /// Movies the user has marked watched on Trakt.
   Future<List<TraktItem>> watchedMovies() async {
-    if (!await isConnected()) return [];
     try {
-      final res = await _authGet('$_api/sync/watched/movies');
-      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final list = await _cachedJson('trakt:cache:watched:movies',
+          () => _authGet('$_api/sync/watched/movies'));
       final out = <TraktItem>[];
       if (list is List) {
         for (final e in list) {
@@ -275,10 +330,9 @@ class TraktService {
 
   /// Shows the user has watched (any episodes) on Trakt.
   Future<List<TraktItem>> watchedShows() async {
-    if (!await isConnected()) return [];
     try {
-      final res = await _authGet('$_api/sync/watched/shows');
-      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final list = await _cachedJson('trakt:cache:watched:shows',
+          () => _authGet('$_api/sync/watched/shows'));
       final out = <TraktItem>[];
       if (list is List) {
         for (final e in list) {
@@ -299,10 +353,9 @@ class TraktService {
 
   /// The user's custom Trakt lists.
   Future<List<TraktList>> lists() async {
-    if (!await isConnected()) return [];
     try {
-      final res = await _authGet('$_api/users/me/lists');
-      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final list = await _cachedJson(
+          'trakt:cache:lists', () => _authGet('$_api/users/me/lists'));
       final out = <TraktList>[];
       if (list is List) {
         for (final e in list) {
@@ -320,8 +373,9 @@ class TraktService {
     }
   }
 
-  Future<List<TraktItem>> listItems(String listId) =>
-      _itemsFrom('$_api/users/me/lists/$listId/items/movies,shows');
+  Future<List<TraktItem>> listItems(String listId) => _itemsFrom(
+      '$_api/users/me/lists/$listId/items/movies,shows',
+      'trakt:cache:list:$listId');
 
   /// Live end-to-end sanity check: verifies the token, forces a refresh if the
   /// account call 401s, and reports real HTTP status + counts for each Trakt
@@ -385,12 +439,14 @@ class TraktService {
     return out;
   }
 
-  /// In-progress playback (resume points) across the user's devices.
+  /// In-progress playback (resume points) across the user's devices. Cached
+  /// for a few hours — local watch progress covers the current session, this
+  /// only adds cross-device resume points.
   Future<List<TraktPlayback>> playback() async {
-    if (!await isConnected()) return [];
     try {
-      final res = await _authGet('$_api/sync/playback');
-      final list = res.data is String ? jsonDecode(res.data) : res.data;
+      final list = await _cachedJson('trakt:cache:playback',
+          () => _authGet('$_api/sync/playback'),
+          ttl: const Duration(hours: 6));
       final out = <TraktPlayback>[];
       if (list is List) {
         for (final e in list) {
@@ -415,31 +471,24 @@ class TraktService {
     }
   }
 
-  Future<List<TraktItem>> _itemsFrom(String url) async {
-    if (!await isConnected()) return [];
-    try {
-      final res = await _authGet(url);
-      if (res.statusCode != 200) return [];
-      final list = res.data is String ? jsonDecode(res.data) : res.data;
-      final out = <TraktItem>[];
-      if (list is List) {
-        for (final e in list) {
-          if (e is! Map) continue;
-          final type = '${e['type']}';
-          final node = e[type];
-          if (node is Map && node['title'] != null) {
-            out.add(TraktItem(
-              title: '${node['title']}',
-              year: (node['year'] as num?)?.toInt(),
-              type: type,
-            ));
-          }
+  Future<List<TraktItem>> _itemsFrom(String url, String cacheKey) async {
+    final list = await _cachedJson(cacheKey, () => _authGet(url));
+    final out = <TraktItem>[];
+    if (list is List) {
+      for (final e in list) {
+        if (e is! Map) continue;
+        final type = '${e['type']}';
+        final node = e[type];
+        if (node is Map && node['title'] != null) {
+          out.add(TraktItem(
+            title: '${node['title']}',
+            year: (node['year'] as num?)?.toInt(),
+            type: type,
+          ));
         }
       }
-      return out;
-    } catch (_) {
-      return [];
     }
+    return out;
   }
 
   /// Resume point (0..1) for a title from Trakt's cross-device playback store.
@@ -592,6 +641,8 @@ class TraktService {
             ]
           }),
           options: Options(headers: await _authHeaders()));
+      // The watchlist changed — drop its snapshot so the next read reflects it.
+      await _repo.setSetting('trakt:cache:watchlist', null);
     } catch (_) {/* best effort */}
   }
 }
