@@ -37,9 +37,10 @@ class AuroraMyStuffPage extends ConsumerWidget {
         (recent?.isEmpty ?? false);
 
     return AuroraNavScrollView(
-      builder: (scroll) => FocusTraversalGroup(
-        // Row-aware Up/Down — a single column of horizontal shelves, like Home.
-        policy: AuroraRowTraversalPolicy(),
+      builder: (scroll) => AuroraRowScope(
+        // Row-aware Up/Down — a single column of horizontal shelves, like
+        // Home. AuroraRowScope bounds the search to this page's own FocusScope
+        // so it never leaks into the top nav bar's shared scope.
         child: CustomScrollView(controller: scroll, slivers: [
       SliverToBoxAdapter(
         child: Padding(

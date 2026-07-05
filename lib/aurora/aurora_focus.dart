@@ -258,6 +258,13 @@ class _AuroraFocusableState extends State<AuroraFocusable> {
 /// through to the default policy, so it can never trap focus or regress tab
 /// order. Focus is moved with a bare requestFocus() (no zero-duration
 /// ensureVisible), leaving [AuroraFocusable]'s glide to scroll smoothly.
+/// Must be paired with a [FocusScope] around the page content (not just this
+/// [FocusTraversalGroup]) — the search below is bounded by
+/// `currentNode.nearestScope`, and without a page-local scope that resolves to
+/// the whole route's scope, which also contains the top nav bar. A shelf card
+/// near the left margin can then line up closer to the leftmost nav tab than
+/// to the actual row above it, and Up escapes to the nav bar instead of
+/// moving within the page. See [AuroraRowScope].
 class AuroraRowTraversalPolicy extends ReadingOrderTraversalPolicy {
   @override
   bool inDirection(FocusNode currentNode, TraversalDirection direction) {
@@ -295,5 +302,28 @@ class AuroraRowTraversalPolicy extends ReadingOrderTraversalPolicy {
       }
     }
     return super.inDirection(currentNode, direction);
+  }
+}
+
+/// Applies [AuroraRowTraversalPolicy] to a page of vertically-stacked
+/// horizontal rails (Home, My Stuff). Wraps the content in its own
+/// [FocusScope] so the policy's search is bounded to the page — never the top
+/// nav bar, which lives in the same route but must stay untouched by Up/Down.
+///
+/// Don't use this on pages with side-by-side vertical lists (e.g. Live's
+/// category rail + channel list) — row-nearest logic would jump between the
+/// columns instead of moving within one, breaking Left/Right.
+class AuroraRowScope extends StatelessWidget {
+  const AuroraRowScope({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusScope(
+      child: FocusTraversalGroup(
+        policy: AuroraRowTraversalPolicy(),
+        child: child,
+      ),
+    );
   }
 }
