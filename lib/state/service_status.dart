@@ -77,10 +77,11 @@ class SyncController extends StateNotifier<SyncState> {
   ///
   /// [minInterval] skips the sync if the source was refreshed recently —
   /// playlists rarely change, and re-downloading + re-parsing 40k channels on
-  /// every launch made browsing feel slow. Manual re-sync (Settings) always
-  /// forces it with Duration.zero.
+  /// every launch made browsing feel slow. Defaults to **once a day**: an
+  /// index at most every 24h, so repeated opens are instant off the persisted
+  /// SQLite library. Manual re-sync (Settings) forces it with Duration.zero.
   Future<void> resync(Playlist pl,
-      {Duration minInterval = const Duration(hours: 12)}) async {
+      {Duration minInterval = const Duration(hours: 24)}) async {
     if (state.running || pl.id == null) return;
     final repo = await ref.read(repositoryProvider.future);
     // Read the AUTHORITATIVE last-sync time from the DB — the passed-in

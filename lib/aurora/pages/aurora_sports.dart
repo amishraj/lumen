@@ -6,6 +6,7 @@ import '../aurora_theme.dart';
 import '../player/aurora_player.dart';
 import '../widgets/aurora_cards.dart';
 import '../widgets/aurora_shelf.dart';
+import '../widgets/aurora_up_to_nav.dart';
 
 /// Sports hub: event channels ("TEAM vs TEAM" + sports categories) grouped by
 /// sport, each group a zappable rail.
@@ -27,7 +28,8 @@ class AuroraSportsPage extends ConsumerWidget {
               child: CircularProgressIndicator(strokeWidth: 2)));
     }
 
-    return CustomScrollView(slivers: [
+    return AuroraNavScrollView(
+      builder: (scroll) => CustomScrollView(controller: scroll, slivers: [
       SliverToBoxAdapter(
         child: Padding(
           padding: EdgeInsets.fromLTRB(margin, 92, margin, 0),
@@ -69,6 +71,7 @@ class AuroraSportsPage extends ConsumerWidget {
           ),
         ),
       const SliverToBoxAdapter(child: SizedBox(height: 72)),
-    ]);
+    ]),
+    );
   }
 }

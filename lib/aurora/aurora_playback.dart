@@ -31,26 +31,6 @@ enum PlayPreference {
 class AuroraPlayback {
   AuroraPlayback._();
 
-  /// Choose the best cached Debrid stream. The service already caps at 1080p,
-  /// drops CAM/TS/screener/3D, and sorts best-quality-then-smallest-file; here
-  /// we nudge toward a 1080p pick that advertises subtitles.
-  static RdStream? bestStream(List<RdStream> streams) {
-    if (streams.isEmpty) return null;
-    bool hasSubs(RdStream s) {
-      final l = s.label.toLowerCase();
-      return l.contains('sub') || l.contains('.srt') || l.contains('multi');
-    }
-
-    final hd = streams.where((s) => s.quality == '1080p').toList();
-    final pool = hd.isNotEmpty ? hd : streams;
-    // Prefer a subtitled release among the top few compact picks; otherwise
-    // the first (already the smallest good-quality file).
-    for (final s in pool.take(6)) {
-      if (hasSubs(s)) return s;
-    }
-    return pool.first;
-  }
-
   /// The library's English-preferred IPTV stream for [title], if the user's
   /// source carries it. Returns the item's own url when it already is one.
   static Future<String?> iptvUrlFor(
@@ -94,7 +74,7 @@ class AuroraPlayback {
               isShow: item.kind == StreamKind.series);
           if (imdb != null) {
             final svc = await ref.read(realDebridServiceProvider.future);
-            final best = bestStream(await svc.streams(imdb));
+            final best = await svc.bestStream(imdb);
             if (best != null) {
               playUrl = best.url;
               viaDebrid = true;

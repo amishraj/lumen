@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
+import '../../data/image_cache.dart';
 import '../aurora_theme.dart';
 
 /// Artwork with Aurora's loading/fallback treatment. Same performance rules
@@ -35,6 +36,7 @@ class AuroraImage extends StatelessWidget {
       borderRadius: BorderRadius.circular(radius),
       child: CachedNetworkImage(
         imageUrl: url!,
+        cacheManager: LumenImageCache.instance,
         width: width,
         height: height,
         fit: fit,
@@ -88,6 +90,7 @@ class AuroraLogoTile extends StatelessWidget {
           ? _glyph(fallbackText)
           : CachedNetworkImage(
               imageUrl: url!,
+              cacheManager: LumenImageCache.instance,
               fit: BoxFit.contain,
               memCacheWidth: (width * dpr).round(),
               fadeInDuration: const Duration(milliseconds: 200),

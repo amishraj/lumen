@@ -221,6 +221,37 @@ class RealDebridService {
     }
   }
 
+  /// Fetch cached streams for a title and return the smart default pick.
+  Future<RdStream?> bestStream(String imdbId,
+          {int? season, int? episode}) async =>
+      pickBest(await streams(imdbId, season: season, episode: episode));
+
+  /// The smart default among candidate streams: a 1080p, non-junk release —
+  /// preferring one that advertises English / multi subtitles — then the most
+  /// compact file so playback starts fast without a needless 40 GB remux.
+  static RdStream? pickBest(List<RdStream> list) {
+    if (list.isEmpty) return null;
+    bool hasEnglishSubs(RdStream s) {
+      final l = '${s.label} ${s.size ?? ''}'.toLowerCase();
+      return l.contains('multi') ||
+          l.contains('.eng') ||
+          l.contains('engsub') ||
+          l.contains('esub') ||
+          l.contains('eng.sub') ||
+          l.contains('english') ||
+          RegExp(r'\bsubs?\b').hasMatch(l);
+    }
+
+    // streams() already sorts best-quality-then-smallest; keep that ordering
+    // but float a subtitled 1080p pick to the front when one exists.
+    final hd = list.where((s) => s.quality == '1080p').toList();
+    final pool = hd.isNotEmpty ? hd : list;
+    for (final s in pool.take(8)) {
+      if (hasEnglishSubs(s)) return s;
+    }
+    return pool.first;
+  }
+
   static String _quality(String name, String title) {
     final all = '$name $title'.toLowerCase();
     if (all.contains('2160') || all.contains('4k')) return '4K';

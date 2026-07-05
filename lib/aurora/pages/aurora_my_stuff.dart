@@ -7,6 +7,7 @@ import '../aurora_navigation.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_cards.dart';
 import '../widgets/aurora_shelf.dart';
+import '../widgets/aurora_up_to_nav.dart';
 
 /// Everything that's *yours*: in-progress, favorites by type, recent history.
 class AuroraMyStuffPage extends ConsumerWidget {
@@ -34,7 +35,8 @@ class AuroraMyStuffPage extends ConsumerWidget {
         (channels?.isEmpty ?? false) &&
         (recent?.isEmpty ?? false);
 
-    return CustomScrollView(slivers: [
+    return AuroraNavScrollView(
+      builder: (scroll) => CustomScrollView(controller: scroll, slivers: [
       SliverToBoxAdapter(
         child: Padding(
           padding: EdgeInsets.fromLTRB(margin, 92, margin, 0),
@@ -115,6 +117,7 @@ class AuroraMyStuffPage extends ConsumerWidget {
             const SizedBox(height: 72),
           ]),
         ),
-    ]);
+    ]),
+    );
   }
 }

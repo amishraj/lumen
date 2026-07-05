@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart';
+import 'package:media_kit/media_kit.dart' hide Playlist;
 
 import 'aurora/aurora_theme.dart';
 import 'aurora/gate/experience_gate.dart';
 import 'aurora/shell.dart';
+import 'data/models/models.dart';
 import 'state/credential_vault.dart';
 import 'state/experience.dart';
 import 'state/providers.dart';
@@ -81,6 +82,14 @@ class LumenRoot extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final playlists = ref.watch(playlistsProvider);
 
+    // Remember which source was active across launches, so multi-source users
+    // aren't reset to the first one every time.
+    ref.listen<Playlist?>(activePlaylistProvider, (_, next) async {
+      if (next?.id == null) return;
+      final repo = await ref.read(repositoryProvider.future);
+      await repo.setSetting('active_playlist_id', '${next!.id}');
+    });
+
     return playlists.when(
       loading: () => const _Splash(),
       error: (e, _) => Scaffold(body: Center(child: Text('$e'))),
@@ -105,11 +114,17 @@ class LumenRoot extends ConsumerWidget {
           );
         }
 
-        // Default the active source so every shell (and the gate) has one.
+        // Default the active source so every shell (and the gate) has one —
+        // restoring the last-used source when it still exists.
         final active = ref.watch(activePlaylistProvider);
         if (active == null) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            ref.read(activePlaylistProvider.notifier).state = list.first;
+          WidgetsBinding.instance.addPostFrameCallback((_) async {
+            final repo = await ref.read(repositoryProvider.future);
+            final savedId =
+                int.tryParse(await repo.getSetting('active_playlist_id') ?? '');
+            final chosen = list.firstWhere((p) => p.id == savedId,
+                orElse: () => list.first);
+            ref.read(activePlaylistProvider.notifier).state = chosen;
           });
         }
 

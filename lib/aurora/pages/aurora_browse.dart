@@ -8,6 +8,7 @@ import '../aurora_navigation.dart';
 import '../aurora_providers.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_cards.dart';
+import '../widgets/aurora_up_to_nav.dart';
 
 /// Movies / TV Shows browse.
 ///
@@ -80,7 +81,9 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
       final cellW = (avail - (cols - 1) * gap) / cols;
       final cellH = cellW * 1.5 + 58;
 
-      return CustomScrollView(
+      return AuroraUpToNav(
+        controller: _scroll,
+        child: CustomScrollView(
         controller: _scroll,
         slivers: [
           SliverToBoxAdapter(
@@ -126,6 +129,7 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
                     cellH: cellH, cellW: cellW),
           ),
         ],
+      ),
       );
     });
   }
@@ -406,8 +410,8 @@ class _Chip extends StatelessWidget {
       ring: false,
       scale: 1.0,
       onActivate: onPick,
-      // ▲ returns to the top nav; long-press (pointer) pins the category.
-      onUp: () => auroraNavTarget?.requestFocus(),
+      // ▲ at the top escapes to the nav (handled by AuroraUpToNav, which also
+      // snaps to offset 0); long-press (pointer) pins the category.
       onLongPress: onPin,
       builder: (context, focused) => AnimatedContainer(
         duration: Aurora.fast,

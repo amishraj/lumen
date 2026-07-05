@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../data/models/models.dart';
+import '../../data/sources/opensubtitles_service.dart';
 import '../../data/sources/realdebrid_service.dart';
 import '../../data/sources/trakt_service.dart';
 import '../../state/playback_engine.dart';
@@ -116,6 +117,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   Timer? _hideTimer;
   double _rate = 1.0;
   bool _fill = false; // false = fit (contain), true = fill (cover)
+  bool _fetchingSubs = false; // OpenSubtitles online fetch in flight
 
   // Brief seek preview (position bubble) shown for ~1.1s after a ◀ ▶ seek.
   Duration? _previewPos;
@@ -257,11 +259,39 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       _duration = Duration.zero;
       _previewPos = null;
     });
+    // Series episodes prefer a smart Real-Debrid stream by default (like
+    // movies) — resolved per episode so skips get it too, capped so a slow
+    // lookup falls back to the IPTV episode url quickly.
+    await _maybeResolveDebrid();
     await _load();
     if (_rate != 1.0) {
       if (mounted) setState(() => _rate = 1.0);
       unawaited(_player.setRate(1.0));
     }
+  }
+
+  Future<void> _maybeResolveDebrid() async {
+    final ctx = widget.playContext;
+    if (_isLive || ctx?.episodes == null) return; // only series episodes
+    if (_urlOverrides.containsKey(_index)) return; // already chosen a source
+    bool rdOn;
+    try {
+      rdOn = await ref.read(rdEnabledProvider.future);
+    } catch (_) {
+      return;
+    }
+    if (!rdOn) return;
+    final se = _index < ctx!.episodes!.length ? ctx.episodes![_index] : null;
+    if (se == null) return;
+    try {
+      final imdb = await imdbIdForTitle(ref, ctx.title, isShow: true);
+      if (imdb == null) return;
+      final svc = await ref.read(realDebridServiceProvider.future);
+      final best = await svc
+          .bestStream(imdb, season: se.$1, episode: se.$2)
+          .timeout(const Duration(seconds: 8));
+      if (best != null && mounted) _urlOverrides[_index] = best.url;
+    } catch (_) {/* fall back to the IPTV episode url */}
   }
 
   Future<void> _load() async {
@@ -599,6 +629,39 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     }
   }
 
+  /// Fetch an English subtitle track from OpenSubtitles and attach it — the
+  /// "else" path when a stream ships without English subs baked in.
+  Future<void> _fetchOnlineSubs() async {
+    if (_fetchingSubs) return;
+    setState(() => _fetchingSubs = true);
+    final messenger = ScaffoldMessenger.of(context);
+    void toast(String m) => messenger.showSnackBar(SnackBar(
+        backgroundColor: Aurora.bgRaised,
+        content: Text(m, style: const TextStyle(color: Aurora.text))));
+    try {
+      final (title, isShow, season, episode) = _scrobbleIdentity();
+      final imdb = await imdbIdForTitle(ref, title, isShow: isShow);
+      if (imdb == null) {
+        toast('Couldn\'t match this title for subtitles.');
+        return;
+      }
+      final srt = await OpenSubtitlesService()
+          .englishSrt(imdb, season: season, episode: episode);
+      if (srt == null) {
+        toast('No English subtitles found online.');
+        return;
+      }
+      await _player.setSubtitleTrack(
+          SubtitleTrack.data(srt, title: 'English (online)', language: 'en'));
+      toast('English subtitles loaded.');
+      _closePanel();
+    } catch (_) {
+      toast('Subtitle search failed.');
+    } finally {
+      if (mounted) setState(() => _fetchingSubs = false);
+    }
+  }
+
   void _switchTo(int i) {
     _closePanel();
     if (i == _index) return;
@@ -901,24 +964,40 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                   open: _panel == _Panel.subtitles,
                   title: 'Subtitles',
                   onClose: _closePanel,
-                  child: _TrackList(
-                    options: [
-                      (
-                        'Off',
-                        _player.state.track.subtitle == SubtitleTrack.no(),
-                        () => _player.setSubtitleTrack(SubtitleTrack.no())
-                      ),
-                      for (final t in _player.state.tracks.subtitle)
-                        if (t != SubtitleTrack.no() &&
-                            t != SubtitleTrack.auto())
+                  child: Column(children: [
+                    // Online fetch — the fallback when no English subs are baked
+                    // into the stream.
+                    AuroraOptionRow(
+                      label: _fetchingSubs
+                          ? 'Searching OpenSubtitles…'
+                          : 'Search online (English)',
+                      sublabel: 'Fetch & attach from OpenSubtitles',
+                      selected: false,
+                      onSelect: _fetchingSubs ? () {} : _fetchOnlineSubs,
+                    ),
+                    const Divider(
+                        height: 12, color: Aurora.hairline, indent: 16, endIndent: 16),
+                    Expanded(
+                      child: _TrackList(
+                        options: [
                           (
-                            _trackLabel(t.title, t.language, t.id),
-                            _player.state.track.subtitle == t,
-                            () => _player.setSubtitleTrack(t)
+                            'Off',
+                            _player.state.track.subtitle == SubtitleTrack.no(),
+                            () => _player.setSubtitleTrack(SubtitleTrack.no())
                           ),
-                    ],
-                    onDone: _closePanel,
-                  ),
+                          for (final t in _player.state.tracks.subtitle)
+                            if (t != SubtitleTrack.no() &&
+                                t != SubtitleTrack.auto())
+                              (
+                                _trackLabel(t.title, t.language, t.id),
+                                _player.state.track.subtitle == t,
+                                () => _player.setSubtitleTrack(t)
+                              ),
+                        ],
+                        onDone: _closePanel,
+                      ),
+                    ),
+                  ]),
                 ),
               ]),
             ),

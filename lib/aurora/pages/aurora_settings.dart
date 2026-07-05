@@ -14,6 +14,7 @@ import '../../ui/widgets/rd_connect_sheet.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_buttons.dart';
 import '../widgets/aurora_shelf.dart';
+import '../widgets/aurora_up_to_nav.dart';
 
 /// Aurora settings. Account/key *flows* (add source, Trakt device auth,
 /// Real-Debrid connect) reuse the proven 1.0 screens — same data, same vault —
@@ -28,7 +29,9 @@ class AuroraSettingsPage extends ConsumerWidget {
     final active = ref.watch(activePlaylistProvider);
     final health = ref.watch(serviceHealthProvider).valueOrNull;
 
-    return ListView(
+    return AuroraNavScrollView(
+      builder: (scroll) => ListView(
+      controller: scroll,
       padding: EdgeInsets.fromLTRB(margin, 92, margin, 64),
       children: [
         Text('Settings', style: Aurora.display.copyWith(fontSize: 30)),
@@ -176,6 +179,7 @@ class AuroraSettingsPage extends ConsumerWidget {
           ),
         ),
       ],
+    ),
     );
   }
 

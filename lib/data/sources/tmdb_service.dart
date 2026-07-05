@@ -160,14 +160,14 @@ class TmdbService {
   Future<List<TmdbItem>> popular({bool show = false, int limit = 20}) async {
     final data = await _cachedGet('tmdb:popular:${show ? 'tv' : 'movie'}',
         '/${show ? 'tv' : 'movie'}/popular',
-        ttl: const Duration(hours: 12));
+        ttl: const Duration(hours: 24));
     return _parseResults(data, forceShow: show).take(limit).toList();
   }
 
   /// Trending across the week (mixed movies + shows).
   Future<List<TmdbItem>> trending({int limit = 20}) async {
     final data = await _cachedGet('tmdb:trending:all', '/trending/all/week',
-        ttl: const Duration(hours: 12));
+        ttl: const Duration(hours: 24));
     return _parseResults(data).take(limit).toList();
   }
 
@@ -175,7 +175,7 @@ class TmdbService {
   Future<List<TmdbItem>> trendingMoviesWeek({int limit = 30}) async {
     final data = await _cachedGet(
         'tmdb:trending:movieweek', '/trending/movie/week',
-        ttl: const Duration(hours: 12));
+        ttl: const Duration(hours: 24));
     return _parseResults(data, forceShow: false).take(limit).toList();
   }
 

@@ -10,6 +10,7 @@ import '../player/aurora_player.dart';
 import '../widgets/aurora_badges.dart';
 import '../widgets/aurora_image.dart';
 import '../widgets/aurora_search_field.dart';
+import '../widgets/aurora_up_to_nav.dart';
 
 const _kFavGroup = '★ Favorites';
 
@@ -24,6 +25,14 @@ class AuroraLivePage extends ConsumerStatefulWidget {
 }
 
 class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
+  final _railScroll = ScrollController();
+
+  @override
+  void dispose() {
+    _railScroll.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final pl = ref.watch(activePlaylistProvider);
@@ -64,7 +73,10 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                           height: 18,
                           child: CircularProgressIndicator(strokeWidth: 2)))
                   : FocusTraversalGroup(
-                      child: ListView.builder(
+                      child: AuroraUpToNav(
+                        controller: _railScroll,
+                        child: ListView.builder(
+                        controller: _railScroll,
                         padding: const EdgeInsets.only(bottom: 24, right: 6),
                         itemExtent: 54,
                         itemCount: cats.length + (favs.isNotEmpty ? 1 : 0),
@@ -89,6 +101,7 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                                 toggleAuroraPin(ref, StreamKind.live, name),
                           );
                         },
+                      ),
                       ),
                     ),
             ),

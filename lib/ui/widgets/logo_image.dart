@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
+import '../../data/image_cache.dart';
 import '../theme/lumen_theme.dart';
 
 /// Channel/movie artwork. Disk-cached and decoded at a capped resolution so a
@@ -36,6 +37,7 @@ class LogoImage extends StatelessWidget {
       borderRadius: BorderRadius.circular(radius),
       child: CachedNetworkImage(
         imageUrl: url!,
+        cacheManager: LumenImageCache.instance,
         width: size,
         height: height,
         fit: BoxFit.cover,
