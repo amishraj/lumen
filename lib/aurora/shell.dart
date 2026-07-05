@@ -81,8 +81,12 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
       child: Scaffold(
         body: Stack(children: [
           // ---- Pages ----
+          // Row-aware Up/Down within the page content only (the nav bar lives
+          // outside this group and keeps default traversal).
           Positioned.fill(
-            child: _LazyStack(
+            child: FocusTraversalGroup(
+              policy: AuroraRowTraversalPolicy(),
+              child: _LazyStack(
               index: tab,
               builders: [
                 () => const AuroraSearchPage(),
@@ -94,6 +98,7 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
                 () => const AuroraMyStuffPage(),
                 () => const AuroraSettingsPage(),
               ],
+            ),
             ),
           ),
           // ---- Top scrim so the bar reads over any artwork ----

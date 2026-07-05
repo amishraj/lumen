@@ -351,6 +351,46 @@ class TraktService {
     }
   }
 
+  /// The (season, episode) pairs the user has watched on Trakt for the show
+  /// matching [title]. Empty when disconnected, on a cache miss, or when no
+  /// show matches. Reuses the same cached `/sync/watched/shows` payload as
+  /// [watchedShows], so it's effectively free once that's warm.
+  Future<Set<(int, int)>> watchedEpisodesFor(String title) async {
+    try {
+      final list = await _cachedJson('trakt:cache:watched:shows',
+          () => _authGet('$_api/sync/watched/shows'));
+      if (list is! List) return {};
+      final want = _titleKey(title);
+      for (final e in list) {
+        final show = e is Map ? e['show'] : null;
+        if (show is! Map || show['title'] == null) continue;
+        if (_titleKey('${show['title']}') != want) continue;
+        final out = <(int, int)>{};
+        final seasons = e['seasons'];
+        if (seasons is List) {
+          for (final s in seasons) {
+            final sn = (s is Map ? s['number'] : null) as num?;
+            final eps = s is Map ? s['episodes'] : null;
+            if (sn == null || eps is! List) continue;
+            for (final ep in eps) {
+              final en = (ep is Map ? ep['number'] : null) as num?;
+              if (en != null) out.add((sn.toInt(), en.toInt()));
+            }
+          }
+        }
+        return out;
+      }
+      return {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Loose title key for matching a library show against a Trakt show —
+  /// l-case, alphanumerics only (drops punctuation, spacing, year suffixes).
+  static String _titleKey(String s) =>
+      s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+
   /// The user's custom Trakt lists.
   Future<List<TraktList>> lists() async {
     try {

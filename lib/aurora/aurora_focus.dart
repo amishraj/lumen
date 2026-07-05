@@ -63,17 +63,40 @@ class AuroraFocusable extends StatefulWidget {
 class _AuroraFocusableState extends State<AuroraFocusable> {
   bool _focused = false;
 
-  /// Smoothly bring this item toward the centre of its nearest *horizontal*
-  /// scrollable. Flutter's focus traversal snaps (zero-duration ensureVisible);
-  /// easing to centre right after turns that snap into a glide.
+  /// Smoothly bring this item into view when it gains focus. Flutter's focus
+  /// traversal snaps (zero-duration ensureVisible); easing right after turns
+  /// that snap into a glide. We walk *every* enclosing scrollable so a card
+  /// glides toward the centre of its horizontal rail **and** the page eases
+  /// vertically to keep the focused row clear of the nav bar and bottom edge —
+  /// the fix that makes vertical navigation feel as smooth as horizontal.
   void _glideIntoView() {
-    if (!widget.centerOnFocus || !mounted) return;
-    final scrollable = Scrollable.maybeOf(context);
-    if (scrollable == null) return;
-    final pos = scrollable.position;
-    if (pos.axis != Axis.horizontal) return;
+    if (!mounted) return;
     final ro = context.findRenderObject();
     if (ro is! RenderBox || !ro.attached) return;
+
+    var didHorizontal = false;
+    var didVertical = false;
+    ScrollableState? s = Scrollable.maybeOf(context);
+    while (s != null && (!didHorizontal || !didVertical)) {
+      final pos = s.position;
+      if (pos.axis == Axis.horizontal) {
+        if (!didHorizontal) {
+          didHorizontal = true;
+          if (widget.centerOnFocus) _glideHorizontalCentre(pos, ro);
+        }
+      } else if (!didVertical) {
+        didVertical = true;
+        // Reveal-only with margins: never re-centre a row that's already
+        // comfortably on screen (which would fight the hero's snap-to-top and
+        // cause jitter when moving sideways within a row).
+        _glideVerticalReveal(s, ro);
+      }
+      s = s.context.findAncestorStateOfType<ScrollableState>();
+    }
+  }
+
+  /// Glide a horizontal rail so [ro] eases toward its centre.
+  void _glideHorizontalCentre(ScrollPosition pos, RenderBox ro) {
     try {
       final viewport = RenderAbstractViewport.of(ro);
       final target = viewport
@@ -84,7 +107,38 @@ class _AuroraFocusableState extends State<AuroraFocusable> {
       pos.animateTo(target,
           duration: const Duration(milliseconds: 320),
           curve: Curves.easeOutCubic);
-    } catch (_) {/* no viewport / detached — nothing to glide */}
+    } catch (_) {/* no viewport / detached */}
+  }
+
+  /// Ease the vertical page just enough to keep [ro] clear of the top nav bar
+  /// and the bottom edge — computed from the card's box relative to the
+  /// scrollable's viewport, so it's correct even though the card also lives
+  /// inside a nested horizontal viewport. No-op when comfortably visible.
+  void _glideVerticalReveal(ScrollableState s, RenderBox ro) {
+    try {
+      final pos = s.position;
+      final viewportBox = s.context.findRenderObject();
+      if (viewportBox is! RenderBox || !viewportBox.attached) return;
+      final cardTop = ro.localToGlobal(Offset.zero, ancestor: viewportBox).dy;
+      final cardBottom = cardTop + ro.size.height;
+      final viewportH = viewportBox.size.height;
+      const topMargin = 96.0; // clear the translucent top nav bar
+      const bottomMargin = 44.0;
+      double delta;
+      if (cardTop < topMargin) {
+        delta = cardTop - topMargin; // under the nav → ease down
+      } else if (cardBottom > viewportH - bottomMargin) {
+        delta = cardBottom - (viewportH - bottomMargin); // too low → ease up
+      } else {
+        return; // comfortably visible
+      }
+      final target = (pos.pixels + delta)
+          .clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      if ((target - pos.pixels).abs() < 2) return;
+      pos.animateTo(target,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic);
+    } catch (_) {/* detached — nothing to glide */}
   }
 
   KeyEventResult _onEdgeKey(FocusNode node, KeyEvent event) {
@@ -190,5 +244,56 @@ class _AuroraFocusableState extends State<AuroraFocusable> {
       onKeyEvent: _onEdgeKey,
       child: detector,
     );
+  }
+}
+
+/// Up/Down traversal tuned for a page of horizontal rails. The default
+/// directional policy scores by raw geometric distance, so from a card on the
+/// right of one row it can skip sideways or miss the next row entirely when the
+/// rows are horizontally offset. This picks the *nearest row* in the requested
+/// direction, then the horizontally closest card within it — the "always lands
+/// one row up/down, under your thumb" behaviour TV UIs expect.
+///
+/// Purely additive: Left/Right and any case with no candidate fall straight
+/// through to the default policy, so it can never trap focus or regress tab
+/// order. Focus is moved with a bare requestFocus() (no zero-duration
+/// ensureVisible), leaving [AuroraFocusable]'s glide to scroll smoothly.
+class AuroraRowTraversalPolicy extends ReadingOrderTraversalPolicy {
+  @override
+  bool inDirection(FocusNode currentNode, TraversalDirection direction) {
+    if (direction == TraversalDirection.up ||
+        direction == TraversalDirection.down) {
+      final scope = currentNode.nearestScope;
+      if (scope != null) {
+        final cur = currentNode.rect;
+        final down = direction == TraversalDirection.down;
+        FocusNode? best;
+        var bestV = double.infinity;
+        var bestH = double.infinity;
+        for (final n in scope.traversalDescendants) {
+          if (n == currentNode || !n.canRequestFocus || n.skipTraversal) {
+            continue;
+          }
+          final r = n.rect;
+          if (r.isEmpty) continue;
+          final dy = r.center.dy - cur.center.dy;
+          if (down ? dy <= 2 : dy >= -2) continue; // wrong direction
+          final v = dy.abs();
+          final h = (r.center.dx - cur.center.dx).abs();
+          // Rows within ~8px count as the same band: prefer the nearer row,
+          // then the horizontally closest card in it.
+          if (v < bestV - 4 || (v <= bestV + 4 && h < bestH)) {
+            bestV = v;
+            bestH = h;
+            best = n;
+          }
+        }
+        if (best != null) {
+          best.requestFocus();
+          return true;
+        }
+      }
+    }
+    return super.inDirection(currentNode, direction);
   }
 }

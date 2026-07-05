@@ -98,6 +98,10 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
 
     return CustomScrollView(
       controller: _scroll,
+      // Build a couple of rows past the fold so Down always has a focusable
+      // row to land on (and the vertical glide has somewhere to ease toward).
+      // ignore: deprecated_member_use
+      cacheExtent: 1200,
       slivers: [
         SliverToBoxAdapter(
           child: featured == null
@@ -218,7 +222,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
-    final h = (size.height * 0.72).clamp(430.0, 760.0);
+    final h = (size.height * 0.66).clamp(420.0, 680.0);
     final margin = Aurora.margin(context);
     final item = widget.items[_index.clamp(0, widget.items.length - 1)];
     final bundle = ref
@@ -255,11 +259,14 @@ class _BillboardState extends ConsumerState<_Billboard> {
             width: size.width,
             height: h,
             child: ShaderMask(
+              // Dissolve the artwork out well *above* the action row so no
+              // bright slice of the backdrop lingers below the buttons before
+              // the first shelf.
               shaderCallback: (rect) => const LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [Colors.white, Colors.white, Colors.transparent],
-                stops: [0.0, 0.5, 0.96],
+                stops: [0.0, 0.4, 0.82],
               ).createShader(rect),
               blendMode: BlendMode.dstIn,
               child: TweenAnimationBuilder<double>(
@@ -406,7 +413,7 @@ class _BillboardSkeleton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final h =
-        (MediaQuery.of(context).size.height * 0.72).clamp(430.0, 760.0);
+        (MediaQuery.of(context).size.height * 0.66).clamp(420.0, 680.0);
     return Container(
       height: h,
       decoration: const BoxDecoration(

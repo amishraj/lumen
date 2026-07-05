@@ -26,10 +26,13 @@ class AuroraLivePage extends ConsumerStatefulWidget {
 
 class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
   final _railScroll = ScrollController();
+  final _catSearch = TextEditingController();
+  String _catQuery = '';
 
   @override
   void dispose() {
     _railScroll.dispose();
+    _catSearch.dispose();
     super.dispose();
   }
 
@@ -65,6 +68,15 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
               child:
                   Text('Live TV', style: Aurora.display.copyWith(fontSize: 30)),
             ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8, right: 6),
+              child: AuroraSearchField(
+                controller: _catSearch,
+                hint: 'Search categories',
+                onChanged: (v) =>
+                    setState(() => _catQuery = v.trim().toLowerCase()),
+              ),
+            ),
             Expanded(
               child: cats == null
                   ? const Center(
@@ -72,21 +84,36 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                           width: 18,
                           height: 18,
                           child: CircularProgressIndicator(strokeWidth: 2)))
-                  : FocusTraversalGroup(
+                  : Builder(builder: (context) {
+                      final searching = _catQuery.isNotEmpty;
+                      final shownCats = searching
+                          ? cats
+                              .where((c) =>
+                                  c.name.toLowerCase().contains(_catQuery))
+                              .toList()
+                          : cats;
+                      // Favourites row only when not filtering categories.
+                      final showFav = favs.isNotEmpty && !searching;
+                      if (shownCats.isEmpty) {
+                        return const Center(
+                            child: Text('No categories',
+                                style: TextStyle(
+                                    color: Aurora.textFaint, fontSize: 12)));
+                      }
+                      return FocusTraversalGroup(
                       child: AuroraUpToNav(
                         controller: _railScroll,
                         child: ListView.builder(
                         controller: _railScroll,
                         padding: const EdgeInsets.only(bottom: 24, right: 6),
                         itemExtent: 54,
-                        itemCount: cats.length + (favs.isNotEmpty ? 1 : 0),
+                        itemCount: shownCats.length + (showFav ? 1 : 0),
                         itemBuilder: (context, i) {
-                          final isFavRow = favs.isNotEmpty && i == 0;
-                          final name =
-                              isFavRow ? _kFavGroup : cats[i - (favs.isNotEmpty ? 1 : 0)].name;
-                          final count = isFavRow
-                              ? favs.length
-                              : cats[i - (favs.isNotEmpty ? 1 : 0)].count;
+                          final isFavRow = showFav && i == 0;
+                          final cat =
+                              isFavRow ? null : shownCats[i - (showFav ? 1 : 0)];
+                          final name = isFavRow ? _kFavGroup : cat!.name;
+                          final count = isFavRow ? favs.length : cat!.count;
                           return _CategoryRow(
                             name: name,
                             count: count,
@@ -103,7 +130,8 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                         },
                       ),
                       ),
-                    ),
+                    );
+                    }),
             ),
           ]),
         ),

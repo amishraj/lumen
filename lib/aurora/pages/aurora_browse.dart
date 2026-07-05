@@ -8,6 +8,7 @@ import '../aurora_navigation.dart';
 import '../aurora_providers.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_cards.dart';
+import '../widgets/aurora_search_field.dart';
 import '../widgets/aurora_up_to_nav.dart';
 
 /// Movies / TV Shows browse.
@@ -27,6 +28,8 @@ class AuroraBrowsePage extends ConsumerStatefulWidget {
 
 class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
   final _scroll = ScrollController();
+  final _catSearch = TextEditingController();
+  String _catQuery = '';
 
   @override
   void initState() {
@@ -38,6 +41,7 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
   void dispose() {
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
+    _catSearch.dispose();
     super.dispose();
   }
 
@@ -109,6 +113,18 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
                             letterSpacing: 1.2,
                             color: Color(0xFF01B4E4))),
                   ),
+                const Spacer(),
+                // Filter the category / genre chips, mirroring classic's
+                // "Search categories".
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 300),
+                  child: AuroraSearchField(
+                    controller: _catSearch,
+                    hint: governs ? 'Search genres' : 'Search categories',
+                    onChanged: (v) =>
+                        setState(() => _catQuery = v.trim().toLowerCase()),
+                  ),
+                ),
               ]),
             ),
           ),
@@ -116,8 +132,8 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
             child: SizedBox(
               height: 52,
               child: governs
-                  ? _GenreChips(kind: widget.kind)
-                  : _CategoryChips(kind: widget.kind),
+                  ? _GenreChips(kind: widget.kind, query: _catQuery)
+                  : _CategoryChips(kind: widget.kind, query: _catQuery),
             ),
           ),
           SliverPadding(
@@ -140,28 +156,33 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
 // ---------------------------------------------------------------------------
 
 class _GenreChips extends ConsumerWidget {
-  const _GenreChips({required this.kind});
+  const _GenreChips({required this.kind, this.query = ''});
   final StreamKind kind;
+  final String query;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final margin = Aurora.margin(context);
-    final genres =
-        ref.watch(auroraOrderedGenresProvider(kind)).valueOrNull;
+    final all = ref.watch(auroraOrderedGenresProvider(kind)).valueOrNull;
     final pinned = ref.watch(auroraPinnedProvider(kind)).valueOrNull ??
         const <String>{};
     final selected = ref.watch(auroraGenreProvider(kind));
-    if (genres == null) return const SizedBox.shrink();
+    if (all == null) return const SizedBox.shrink();
+    final searching = query.isNotEmpty;
+    final genres = searching
+        ? all.where((g) => g.name.toLowerCase().contains(query)).toList()
+        : all;
 
     return FocusTraversalGroup(
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         clipBehavior: Clip.none,
         padding: EdgeInsets.symmetric(horizontal: margin, vertical: 6),
-        itemCount: genres.length + 1,
+        // Hide the leading "Popular" catch-all while filtering.
+        itemCount: genres.length + (searching ? 0 : 1),
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, i) {
-          if (i == 0) {
+          if (!searching && i == 0) {
             return _Chip(
               label: 'Popular',
               selected: selected == null,
@@ -169,7 +190,7 @@ class _GenreChips extends ConsumerWidget {
                   ref.read(auroraGenreProvider(kind).notifier).state = null,
             );
           }
-          final g = genres[i - 1];
+          final g = genres[i - (searching ? 0 : 1)];
           return _Chip(
             label: g.name,
             selected: selected == g.id,
@@ -264,28 +285,33 @@ class _TmdbGrid extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _CategoryChips extends ConsumerWidget {
-  const _CategoryChips({required this.kind});
+  const _CategoryChips({required this.kind, this.query = ''});
   final StreamKind kind;
+  final String query;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final margin = Aurora.margin(context);
-    final cats =
-        ref.watch(auroraOrderedCategoriesProvider(kind)).valueOrNull;
+    final all = ref.watch(auroraOrderedCategoriesProvider(kind)).valueOrNull;
     final pinned = ref.watch(auroraPinnedProvider(kind)).valueOrNull ??
         const <String>{};
     final selected = ref.watch(auroraGroupProvider(kind));
-    if (cats == null) return const SizedBox.shrink();
+    if (all == null) return const SizedBox.shrink();
+    final searching = query.isNotEmpty;
+    final cats = searching
+        ? all.where((c) => c.name.toLowerCase().contains(query)).toList()
+        : all;
 
     return FocusTraversalGroup(
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         clipBehavior: Clip.none,
         padding: EdgeInsets.symmetric(horizontal: margin, vertical: 6),
-        itemCount: cats.length + 1,
+        // Hide the leading "All" catch-all while filtering.
+        itemCount: cats.length + (searching ? 0 : 1),
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, i) {
-          if (i == 0) {
+          if (!searching && i == 0) {
             return _Chip(
               label: kind == StreamKind.movie ? 'All Movies' : 'All Shows',
               selected: selected == null,
@@ -293,7 +319,7 @@ class _CategoryChips extends ConsumerWidget {
                   ref.read(auroraGroupProvider(kind).notifier).state = null,
             );
           }
-          final c = cats[i - 1];
+          final c = cats[i - (searching ? 0 : 1)];
           return _Chip(
             label: c.name,
             count: c.count,

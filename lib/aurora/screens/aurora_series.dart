@@ -50,6 +50,10 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
   /// TMDB corrections gathered so far, keyed by (season, episode).
   final Map<(int, int), TmdbEpisode> _tmdb = {};
 
+  /// (season, episode) pairs Trakt reports as watched — merged with local
+  /// progress so episodes seen on another device still show a check.
+  Set<(int, int)> _traktWatched = const {};
+
   String get _showTitle => cleanTitle(widget.series.name).title;
 
   @override
@@ -87,6 +91,11 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
 
   ({double fraction, bool watched, int updatedAt})? _progFor(Episode e) =>
       _prog[episodeKey(_showTitle, e.season, e.episode)];
+
+  /// Watched if local progress says so, or Trakt has it in the show's history.
+  bool _isWatched(Episode e) =>
+      (_progFor(e)?.watched ?? false) ||
+      _traktWatched.contains((e.season, e.episode));
 
   String _titleFor(Episode ep) {
     final t = _tmdb[(ep.season, ep.episode)];
@@ -144,7 +153,7 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
         a.season != b.season ? a.season - b.season : a.episode - b.episode);
     var lastWatched = -1;
     for (var i = 0; i < sorted.length; i++) {
-      if (_progFor(sorted[i])?.watched == true) lastWatched = i;
+      if (_isWatched(sorted[i])) lastWatched = i;
     }
     if (lastWatched >= 0 && lastWatched < sorted.length - 1) {
       return sorted[lastWatched + 1];
@@ -177,6 +186,10 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
         _tmdb[(_season, e.number)] = e;
       }
     }
+
+    final traktWatched =
+        ref.watch(traktWatchedEpisodesProvider(_showTitle)).valueOrNull;
+    if (traktWatched != null) _traktWatched = traktWatched;
 
     return Scaffold(
       backgroundColor: Aurora.bg,
@@ -347,7 +360,11 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                         }),
                       ),
                       const SizedBox(height: 16),
-                      ConstrainedBox(
+                      // Centre the episode column rather than hugging the left
+                      // edge — it reads as a deliberate, focused reel on wide TV
+                      // screens.
+                      Center(
+                        child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 860),
                         child: Column(children: [
                           for (final ep in inSeason)
@@ -362,12 +379,14 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                               title: _titleFor(ep),
                               fallbackArt: widget.series.logo,
                               progress: _progFor(ep),
+                              watched: _isWatched(ep),
                               isResume: resume != null &&
                                   ep.season == resume.season &&
                                   ep.episode == resume.episode,
                               onPlay: () => _play(eps, ep),
                             ),
                         ]),
+                      ),
                       ),
                       const SizedBox(height: 40),
                     ],
@@ -484,6 +503,7 @@ class _EpisodeCard extends StatelessWidget {
     required this.title,
     required this.fallbackArt,
     required this.progress,
+    required this.watched,
     required this.isResume,
     required this.onPlay,
   });
@@ -493,6 +513,9 @@ class _EpisodeCard extends StatelessWidget {
   final String title;
   final String? fallbackArt;
   final ({double fraction, bool watched, int updatedAt})? progress;
+
+  /// Seen — from local progress *or* Trakt history.
+  final bool watched;
   final bool isResume;
   final VoidCallback onPlay;
 
@@ -501,7 +524,6 @@ class _EpisodeCard extends StatelessWidget {
     final art = meta?.still ?? episode.still ?? fallbackArt;
     final overview = meta?.overview ?? episode.plot;
     final rating = meta?.rating;
-    final watched = progress?.watched ?? false;
     final frac = progress?.fraction ?? 0;
     final inProgress = !watched && frac > 0.02 && frac < 0.97;
 

@@ -43,7 +43,11 @@ class AuroraSidePanel extends StatelessWidget {
             Align(
               alignment: Alignment.centerRight,
               child: AnimatedSlide(
-                offset: open ? Offset.zero : const Offset(1, 0),
+                // Closed: slide fully off-screen *including* the left-pointing
+                // drop shadow (blur 44, offset -8) + the 12px margin — a plain
+                // Offset(1,0) stops one card-width out, leaving that shadow
+                // bleeding back onto the right edge of the video.
+                offset: open ? Offset.zero : Offset(1 + 72 / w, 0),
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeOutCubic,
                 child: Container(

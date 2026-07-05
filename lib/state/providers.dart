@@ -282,6 +282,20 @@ final recentlyWatchedProvider = FutureProvider<List<StreamItem>>((ref) async {
   return repo.recentlyWatched(pl!.id!);
 });
 
+/// (season, episode) pairs watched on Trakt for a show title — so the series
+/// page can mark episodes seen even when they were watched on another device.
+/// Empty when Trakt is off; cached by the service so it's cheap to watch.
+final traktWatchedEpisodesProvider =
+    FutureProvider.family<Set<(int, int)>, String>((ref, title) async {
+  try {
+    if (!await ref.watch(traktConnectedProvider.future)) return {};
+    final svc = await ref.watch(traktServiceProvider.future);
+    return svc.watchedEpisodesFor(title);
+  } catch (_) {
+    return {};
+  }
+});
+
 final favoritesListProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   ref.watch(favoriteIdsProvider); // refresh when favorites change
@@ -338,10 +352,36 @@ Future<void> saveHomeConfig(WidgetRef ref, List<String> ids) async {
   ref.invalidate(homeConfigProvider);
 }
 
-final favoriteIdsProvider = FutureProvider<Set<int>>((ref) async {
-  final repo = await ref.watch(repositoryProvider.future);
-  return repo.favoriteIds();
-});
+/// Favorite stream ids for the active source. Backed by a notifier so a toggle
+/// can flip the set *optimistically* — every watcher (buttons, hearts, rails)
+/// updates the same frame, before the DB write round-trips.
+final favoriteIdsProvider =
+    AsyncNotifierProvider<FavoriteIdsNotifier, Set<int>>(
+        FavoriteIdsNotifier.new);
+
+class FavoriteIdsNotifier extends AsyncNotifier<Set<int>> {
+  @override
+  Future<Set<int>> build() async {
+    final repo = await ref.watch(repositoryProvider.future);
+    return repo.favoriteIds();
+  }
+
+  /// Flip a single id in-place so the UI reacts instantly, then persist.
+  /// Reverts the optimistic change if the write fails.
+  Future<void> toggle(int id, bool fav) async {
+    final previous = state.valueOrNull ?? const <int>{};
+    final next = Set<int>.of(previous);
+    fav ? next.add(id) : next.remove(id);
+    state = AsyncData(next);
+    try {
+      final repo = await ref.read(repositoryProvider.future);
+      await repo.toggleFavorite(id, fav);
+    } catch (_) {
+      state = AsyncData(previous);
+      rethrow;
+    }
+  }
+}
 
 /// Favorites of one kind for the active source — backs the categorized
 /// "My List" rows on Home. Re-runs whenever favorites change.
@@ -372,10 +412,12 @@ void refreshTraktData(WidgetRef ref) {
 /// watchlist so "My List" and Trakt stay the same list.
 Future<void> setFavorite(WidgetRef ref, StreamItem item, bool fav) async {
   if (item.id == null) return;
-  final repo = await ref.read(repositoryProvider.future);
-  await repo.toggleFavorite(item.id!, fav);
-  ref.invalidate(favoriteIdsProvider);
+  // Optimistic + persisted: flips favoriteIds this frame so buttons/hearts react
+  // instantly; the write is awaited inside toggle(). Then re-query the DB-backed
+  // favorite rails now that the row exists, so they reflect the change too.
+  await ref.read(favoriteIdsProvider.notifier).toggle(item.id!, fav);
   ref.invalidate(favoritesListProvider);
+  ref.invalidate(favoritesByKindProvider(item.kind));
   if (item.kind == StreamKind.movie || item.kind == StreamKind.series) {
     // Fire-and-forget: Trakt sync must never block or fail the local toggle.
     ref

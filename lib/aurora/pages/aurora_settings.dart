@@ -276,8 +276,12 @@ class _SourceRow extends ConsumerWidget {
             icon: Icons.refresh_rounded,
             size: 16,
             tooltip: 'Re-sync now',
-            onPressed: () =>
-                ref.read(syncControllerProvider.notifier).resync(pl),
+            // Manual tap forces a real re-index (Duration.zero bypasses the
+            // once-a-day guard that silently no-op'd this button) and the row
+            // above reacts instantly to the controller's running state.
+            onPressed: () => ref
+                .read(syncControllerProvider.notifier)
+                .resync(pl, minInterval: Duration.zero),
           ),
           const SizedBox(width: 6),
           AuroraIconButton(

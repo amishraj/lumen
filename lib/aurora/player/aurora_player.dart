@@ -187,13 +187,16 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _subs.add(_player.stream.buffer.listen((b) {
       if (mounted) setState(() => _buffered = b);
     }));
-    _subs.add(
-        _player.stream.tracks.listen((t) => _maybePickEnglishAudio(t.audio)));
+    _subs.add(_player.stream.tracks.listen((t) {
+      _maybePickEnglishAudio(t.audio);
+      _maybePickEnglishSubtitle(t.subtitle);
+    }));
     _init();
     _resetHideTimer();
   }
 
   bool _autoAudioPicked = false;
+  bool _autoSubPicked = false;
 
   void _maybePickEnglishAudio(List<AudioTrack> tracks) {
     if (!_ownsPlayback || _autoAudioPicked || _isLive) return;
@@ -207,6 +210,28 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     if (en != AudioTrack.no()) {
       _autoAudioPicked = true;
       _player.setAudioTrack(en);
+    }
+  }
+
+  /// Turn on an embedded English subtitle track by default when one is present
+  /// (matched by language code or a title like "English"). One-shot per title;
+  /// the user can still change or turn subs off from the Subtitles panel.
+  void _maybePickEnglishSubtitle(List<SubtitleTrack> tracks) {
+    if (!_ownsPlayback || _autoSubPicked || _isLive) return;
+    bool isEnglish(SubtitleTrack t) {
+      final lang = (t.language ?? '').toLowerCase();
+      final title = (t.title ?? '').toLowerCase();
+      return lang.startsWith('en') || title.contains('english');
+    }
+
+    final en = tracks.firstWhere(
+      (t) =>
+          t != SubtitleTrack.no() && t != SubtitleTrack.auto() && isEnglish(t),
+      orElse: () => SubtitleTrack.no(),
+    );
+    if (en != SubtitleTrack.no()) {
+      _autoSubPicked = true;
+      _player.setSubtitleTrack(en);
     }
   }
 
@@ -253,6 +278,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       _lastPosMs = 0;
       _lastDurMs = 0;
       _autoAudioPicked = false;
+      _autoSubPicked = false;
       _thumbsScheduled = false;
       _buffered = Duration.zero;
       _position = Duration.zero;
@@ -768,14 +794,9 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
         _seekBy(_seekStep);
         return KeyEventResult.handled;
       }
-      if (_isLive && k == LogicalKeyboardKey.arrowUp) {
-        _zap(1);
-        return KeyEventResult.handled;
-      }
-      if (_isLive && k == LogicalKeyboardKey.arrowDown) {
-        _zap(-1);
-        return KeyEventResult.handled;
-      }
+      // Up/Down no longer zap channels — they just wake the chrome so the user
+      // switches channels deliberately from the Channels panel (or dedicated
+      // channel/media keys). Falls through to _showControls() below.
       if (_nextUpVisible &&
           (k == LogicalKeyboardKey.select ||
               k == LogicalKeyboardKey.enter ||

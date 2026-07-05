@@ -35,6 +35,10 @@ void main() {
 /// A persisted setting decides which shell boots; a one-time gate asks on
 /// first run and both settings screens can switch (no reinstall — which also
 /// sidesteps Android's no-downgrade rule for going back).
+/// Root navigator key so app-wide shortcuts (Backspace = Back) can pop the
+/// current route from above the [Navigator].
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+
 class LumenApp extends ConsumerWidget {
   const LumenApp({super.key});
 
@@ -43,7 +47,19 @@ class LumenApp extends ConsumerWidget {
     final experience = ref.watch(uiExperienceProvider).valueOrNull;
     final classic = experience == kExperienceClassic;
 
-    return MaterialApp(
+    // Backspace / browser-back act as system Back everywhere. Bound *above*
+    // MaterialApp so a focused text field (which consumes Backspace for
+    // deletion, via the inner DefaultTextEditingShortcuts) always wins first —
+    // it only fires when nothing is being edited.
+    void back() => rootNavigatorKey.currentState?.maybePop();
+
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.backspace): back,
+        const SingleActivator(LogicalKeyboardKey.browserBack): back,
+      },
+      child: MaterialApp(
+      navigatorKey: rootNavigatorKey,
       title: 'Lumen',
       debugShowCheckedModeBanner: false,
       theme: classic ? LumenTheme.dark() : Aurora.theme(),
@@ -69,6 +85,7 @@ class LumenApp extends ConsumerWidget {
         ),
       ),
       home: const LumenRoot(),
+      ),
     );
   }
 }
