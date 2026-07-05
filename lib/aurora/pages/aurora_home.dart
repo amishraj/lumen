@@ -96,7 +96,12 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
           ),
         );
 
-    return CustomScrollView(
+    return FocusTraversalGroup(
+      // Row-aware Up/Down: a page of horizontal rails stacked vertically, so
+      // Down always lands on the row below (never sideways). Safe here because
+      // Home is a single column — see AuroraRowTraversalPolicy.
+      policy: AuroraRowTraversalPolicy(),
+      child: CustomScrollView(
       controller: _scroll,
       // Build a couple of rows past the fold so Down always has a focusable
       // row to land on (and the vertical glide has somewhere to ease toward).
@@ -145,6 +150,7 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
           ]),
         ),
       ],
+      ),
     );
   }
 }

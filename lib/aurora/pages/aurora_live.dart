@@ -38,6 +38,16 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
 
   @override
   Widget build(BuildContext context) {
+    // Leaving Live resets the category search, so returning starts clean.
+    ref.listen<int>(auroraTabProvider, (_, next) {
+      if (next != AuroraTab.live.index &&
+          (_catQuery.isNotEmpty || _catSearch.text.isNotEmpty)) {
+        setState(() {
+          _catSearch.clear();
+          _catQuery = '';
+        });
+      }
+    });
     final pl = ref.watch(activePlaylistProvider);
     if (pl?.id == null) {
       return const Center(child: Text('Add a source to get started.'));
@@ -346,6 +356,14 @@ class _ChannelPaneState extends ConsumerState<_ChannelPane> {
 
   @override
   Widget build(BuildContext context) {
+    // Leaving Live clears the in-category channel search too.
+    ref.listen<int>(auroraTabProvider, (_, next) {
+      if (next != AuroraTab.live.index &&
+          (_query.isNotEmpty || _searchCtl.text.isNotEmpty)) {
+        _searchCtl.clear();
+        _runSearch('');
+      }
+    });
     return Column(children: [
       Padding(
         padding: const EdgeInsets.fromLTRB(18, 0, 48, 8),

@@ -261,6 +261,18 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     await set('network-timeout', '60');
     await set('stream-lavf-o',
         'reconnect=1,reconnect_streamed=1,reconnect_delay_max=10,reconnect_on_network_error=1');
+
+    if (_isLive) {
+      // Live: lock onto the stream sooner. IPTV is simple MPEG-TS, so a shorter
+      // analyze window + smaller probe finds the tracks quickly instead of
+      // waiting out ffmpeg's ~5s/5MB defaults — and start playing on the first
+      // frame rather than filling the whole cache first. Decode quality is
+      // untouched (same bitrate/resolution/codec); this only affects how fast
+      // playback *begins*, while the 30s cache above keeps it smooth after.
+      await set('demuxer-lavf-analyzeduration', '2');
+      await set('demuxer-lavf-probesize', '2500000'); // ~2.5 MB
+      await set('cache-pause-initial', 'no');
+    }
   }
 
   /// Per-queue-index URL overrides from the in-player source switch.

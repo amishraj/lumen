@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/models.dart';
 import '../../state/providers.dart';
+import '../aurora_focus.dart';
 import '../aurora_navigation.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_cards.dart';
@@ -36,7 +37,10 @@ class AuroraMyStuffPage extends ConsumerWidget {
         (recent?.isEmpty ?? false);
 
     return AuroraNavScrollView(
-      builder: (scroll) => CustomScrollView(controller: scroll, slivers: [
+      builder: (scroll) => FocusTraversalGroup(
+        // Row-aware Up/Down — a single column of horizontal shelves, like Home.
+        policy: AuroraRowTraversalPolicy(),
+        child: CustomScrollView(controller: scroll, slivers: [
       SliverToBoxAdapter(
         child: Padding(
           padding: EdgeInsets.fromLTRB(margin, 92, margin, 0),
@@ -118,6 +122,7 @@ class AuroraMyStuffPage extends ConsumerWidget {
           ]),
         ),
     ]),
+      ),
     );
   }
 }

@@ -81,12 +81,12 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
       child: Scaffold(
         body: Stack(children: [
           // ---- Pages ----
-          // Row-aware Up/Down within the page content only (the nav bar lives
-          // outside this group and keeps default traversal).
+          // NB: row-aware Up/Down traversal is applied *per page* (only on the
+          // shelf-stack pages — Home, My Stuff), never globally: pages with
+          // side-by-side vertical lists (Live) must keep default directional
+          // traversal or Up/Down would jump across columns.
           Positioned.fill(
-            child: FocusTraversalGroup(
-              policy: AuroraRowTraversalPolicy(),
-              child: _LazyStack(
+            child: _LazyStack(
               index: tab,
               builders: [
                 () => const AuroraSearchPage(),
@@ -98,7 +98,6 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
                 () => const AuroraMyStuffPage(),
                 () => const AuroraSettingsPage(),
               ],
-            ),
             ),
           ),
           // ---- Top scrim so the bar reads over any artwork ----
