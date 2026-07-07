@@ -252,10 +252,8 @@ class _BillboardState extends ConsumerState<_Billboard> {
     return SizedBox(
       height: h,
       child: Stack(fit: StackFit.expand, children: [
-        // Backdrop with crossfade + a slow settle (Ken Burns lite). The
-        // bottom fade is baked into the *pixels* via a ShaderMask (alpha → 0),
-        // so the artwork dissolves into the page with no possible seam — an
-        // overlay gradient could still leave a visible knee against bright art.
+        // Backdrop with a slow settle (Ken Burns lite) — plain, undecorated
+        // image. The fade to the page is handled by exactly ONE scrim below.
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 700),
           switchInCurve: Curves.easeOut,
@@ -264,45 +262,43 @@ class _BillboardState extends ConsumerState<_Billboard> {
             key: ValueKey(art ?? item.name),
             width: size.width,
             height: h,
-            child: ShaderMask(
-              // Dissolve the artwork out well *above* the action row so no
-              // bright slice of the backdrop lingers below the buttons before
-              // the first shelf.
-              shaderCallback: (rect) => const LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Colors.white, Colors.white, Colors.transparent],
-                stops: [0.0, 0.4, 0.82],
-              ).createShader(rect),
-              blendMode: BlendMode.dstIn,
-              child: TweenAnimationBuilder<double>(
-                tween: Tween(begin: 1.055, end: 1.0),
-                duration: const Duration(seconds: 15),
-                curve: Curves.easeOut,
-                builder: (context, scale, child) =>
-                    Transform.scale(scale: scale, child: child),
-                child: AuroraImage(
-                  url: art,
-                  width: size.width,
-                  height: h,
-                  radius: 0,
-                  fallbackText: title,
-                ),
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 1.055, end: 1.0),
+              duration: const Duration(seconds: 15),
+              curve: Curves.easeOut,
+              builder: (context, scale, child) =>
+                  Transform.scale(scale: scale, child: child),
+              child: AuroraImage(
+                url: art,
+                width: size.width,
+                height: h,
+                radius: 0,
+                fallbackText: title,
               ),
             ),
           ),
         ),
-        // Bottom scrim: fully opaque page colour along the very bottom edge so
-        // the artwork can never leak a bright sliver into the seam above the
-        // first shelf (the ShaderMask fade alone left a faint lit band), then a
-        // smooth fade up for legibility behind the title/buttons.
+        // Single, monotonic bottom-to-top scrim: fully transparent over the
+        // top ~40% (image shows clean), then one continuous ramp to the fully
+        // opaque page colour by the bottom edge. Deliberately ONE gradient —
+        // the previous approach paired this with a second fade baked into the
+        // image itself (a ShaderMask), and the two were never quite in step:
+        // wherever both happened to be only partially opaque at the same
+        // height, the image's true (bright) colour punched through as a
+        // visible band. One gradient can't have that kind of gap — every
+        // step down is provably at least as opaque as the last.
         const DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
-              begin: Alignment.bottomCenter,
-              end: Alignment.topCenter,
-              colors: [Color(0xFF06070B), Color(0xFF06070B), Color(0x0006070B)],
-              stops: [0.0, 0.14, 0.5],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.transparent,
+                Colors.transparent,
+                Color(0xFF06070B),
+                Color(0xFF06070B),
+              ],
+              stops: [0.0, 0.4, 0.92, 1.0],
             ),
           ),
         ),
