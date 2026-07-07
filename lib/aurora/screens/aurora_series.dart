@@ -40,6 +40,14 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
   int _season = 1;
   bool _seasonChosen = false; // resume season applied once
 
+  /// Whether we've already re-picked the season/resume episode using *real*
+  /// Trakt data. Episodes load fast (local), but Trakt's watched-episodes
+  /// fetch is a network call — the first pick happens with local progress
+  /// only so the screen isn't blank, then gets one correction once Trakt
+  /// data lands (unless the user has since picked a season themselves).
+  bool _traktApplied = false;
+  bool _userPickedSeason = false;
+
   final _scroll = ScrollController();
   final GlobalKey _resumeCardKey = GlobalKey();
   bool _scrolledToResume = false;
@@ -198,6 +206,9 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
 
     final traktWatched =
         ref.watch(traktWatchedEpisodesProvider(_showTitle)).valueOrNull;
+    // Fires exactly once — the moment Trakt's data transitions from "still
+    // loading" to available (whether it's empty or not).
+    final traktJustArrived = traktWatched != null && !_traktApplied;
     if (traktWatched != null) _traktWatched = traktWatched;
 
     return Scaffold(
@@ -329,10 +340,20 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                 final seasons = eps.map((e) => e.season).toSet().toList()
                   ..sort();
 
-                // Jump to the resume episode's season on first load.
+                // Jump to the resume episode's season on first load, then
+                // once more when Trakt's watched-episodes data lands (it's a
+                // network call — without this second pass, a show watched via
+                // Trakt on another device could lock onto the wrong season/
+                // episode using only-local progress from the very first
+                // frame, before Trakt had a chance to say otherwise).
                 final resume = _resumeEpisode(eps);
-                if (!_seasonChosen) {
+                if (!_seasonChosen ||
+                    (traktJustArrived && !_userPickedSeason)) {
                   _seasonChosen = true;
+                  if (traktJustArrived) {
+                    _traktApplied = true;
+                    _scrolledToResume = false; // let it re-target correctly
+                  }
                   _season = resume?.season ?? seasons.first;
                 }
                 if (!seasons.contains(_season)) _season = seasons.first;
@@ -366,6 +387,7 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                         onPick: (s) => setState(() {
                           _season = s;
                           _scrolledToResume = true; // manual pick — don't yank
+                          _userPickedSeason = true; // and never auto-repick
                         }),
                       ),
                       const SizedBox(height: 16),
@@ -656,6 +678,13 @@ class _EpisodeCard extends StatelessWidget {
                     const SizedBox(width: 8),
                     ImdbChip(rating),
                   ],
+                  // Explicit "WATCHED" pill right in the title row — the
+                  // thumbnail's dim+check treatment is easy to miss while
+                  // scanning a season, this reads unmistakably at a glance.
+                  if (watched && !isResume) ...[
+                    const SizedBox(width: 8),
+                    const _WatchedPill(),
+                  ],
                 ]),
                 const SizedBox(height: 4),
                 // Status line.
@@ -698,6 +727,33 @@ class _EpisodeCard extends StatelessWidget {
           ),
         ]),
       ),
+    );
+  }
+}
+
+/// Small, unmistakable "WATCHED" tag for the episode title row.
+class _WatchedPill extends StatelessWidget {
+  const _WatchedPill();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: Aurora.good.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(5),
+        border: Border.all(color: Aurora.good.withValues(alpha: 0.4)),
+      ),
+      child: const Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.check_rounded, size: 11, color: Aurora.good),
+        SizedBox(width: 3),
+        Text('WATCHED',
+            style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.4,
+                color: Aurora.good)),
+      ]),
     );
   }
 }
