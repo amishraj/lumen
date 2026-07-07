@@ -292,14 +292,17 @@ class _BillboardState extends ConsumerState<_Billboard> {
             ),
           ),
         ),
-        // Soft scrims for text legibility (no hard knee needed — the art is
-        // already fading out toward the bottom).
+        // Bottom scrim: fully opaque page colour along the very bottom edge so
+        // the artwork can never leak a bright sliver into the seam above the
+        // first shelf (the ShaderMask fade alone left a faint lit band), then a
+        // smooth fade up for legibility behind the title/buttons.
         const DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.bottomCenter,
-              end: Alignment.center,
-              colors: [Color(0xCC06070B), Color(0x0006070B)],
+              end: Alignment.topCenter,
+              colors: [Color(0xFF06070B), Color(0xFF06070B), Color(0x0006070B)],
+              stops: [0.0, 0.14, 0.5],
             ),
           ),
         ),

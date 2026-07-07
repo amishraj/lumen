@@ -6,7 +6,14 @@ import '../aurora_theme.dart';
 /// A right-hand slide-in panel that floats over content (video keeps playing
 /// behind it). Focus-inert while closed — the fix that stopped hidden drawers
 /// from stealing remote focus in 1.0 — and Aurora-glass while open.
-class AuroraSidePanel extends StatelessWidget {
+///
+/// Stateful so it can pull remote/keyboard focus *into* itself when opened:
+/// the panels are permanently in the tree (slid off-screen when closed), so
+/// their children's `autofocus` never re-fires on open by itself — which left
+/// the Audio/Subtitles menus impossible to enter with a remote. On open we
+/// re-key the content (so its `autofocus` registers afresh) and focus the
+/// panel's own [FocusScope], landing on the selected/first row.
+class AuroraSidePanel extends StatefulWidget {
   const AuroraSidePanel({
     super.key,
     required this.open,
@@ -23,8 +30,47 @@ class AuroraSidePanel extends StatelessWidget {
   final double? width;
 
   @override
+  State<AuroraSidePanel> createState() => _AuroraSidePanelState();
+}
+
+class _AuroraSidePanelState extends State<AuroraSidePanel> {
+  final FocusScopeNode _scope = FocusScopeNode(debugLabel: 'aurora-side-panel');
+
+  @override
+  void didUpdateWidget(covariant AuroraSidePanel old) {
+    super.didUpdateWidget(old);
+    if (widget.open && !old.open) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _focusIntoPanel());
+    }
+  }
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    super.dispose();
+  }
+
+  /// Land focus on the panel's content once it's laid out and interactive.
+  void _focusIntoPanel() {
+    if (!mounted || !widget.open) return;
+    // Making our scope the focused scope resolves the freshly-registered
+    // `autofocus` (the selected/first row).
+    _scope.requestFocus();
+    // Safety net: if nothing self-selected, focus the first control so the
+    // remote can still drive the panel.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.open) return;
+      if (_scope.focusedChild == null) {
+        final nodes = _scope.traversalDescendants.toList();
+        if (nodes.isNotEmpty) nodes.first.requestFocus();
+      }
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final w = width ??
+    final open = widget.open;
+    final w = widget.width ??
         (MediaQuery.of(context).size.width * 0.4).clamp(320.0, 440.0);
     return Positioned.fill(
       child: IgnorePointer(
@@ -36,7 +82,7 @@ class AuroraSidePanel extends StatelessWidget {
               opacity: open ? 1 : 0,
               duration: Aurora.normal,
               child: GestureDetector(
-                onTap: onClose,
+                onTap: widget.onClose,
                 child: const ColoredBox(color: Color(0x8005060A)),
               ),
             ),
@@ -65,34 +111,45 @@ class AuroraSidePanel extends StatelessWidget {
                           offset: Offset(-8, 0)),
                     ],
                   ),
-                  child: SafeArea(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(22, 18, 14, 10),
-                          child: Row(children: [
-                            Expanded(
-                                child: Text(title, style: Aurora.title)),
-                            AuroraFocusable(
-                              radius: 22,
-                              onActivate: onClose,
-                              builder: (context, focused) => Container(
-                                padding: const EdgeInsets.all(7),
-                                decoration: BoxDecoration(
-                                  color: focused
-                                      ? Aurora.glassHi
-                                      : Aurora.glass,
-                                  shape: BoxShape.circle,
+                  child: FocusScope(
+                    node: _scope,
+                    child: SafeArea(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(22, 18, 14, 10),
+                            child: Row(children: [
+                              Expanded(
+                                  child: Text(widget.title,
+                                      style: Aurora.title)),
+                              AuroraFocusable(
+                                radius: 22,
+                                onActivate: widget.onClose,
+                                builder: (context, focused) => Container(
+                                  padding: const EdgeInsets.all(7),
+                                  decoration: BoxDecoration(
+                                    color: focused
+                                        ? Aurora.glassHi
+                                        : Aurora.glass,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.close_rounded,
+                                      size: 18),
                                 ),
-                                child: const Icon(Icons.close_rounded,
-                                    size: 18),
                               ),
+                            ]),
+                          ),
+                          // Re-key on open so the child's `autofocus` fires
+                          // afresh each time the panel is shown.
+                          Expanded(
+                            child: KeyedSubtree(
+                              key: ValueKey(open),
+                              child: widget.child,
                             ),
-                          ]),
-                        ),
-                        Expanded(child: child),
-                      ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
