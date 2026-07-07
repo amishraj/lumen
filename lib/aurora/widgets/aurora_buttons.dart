@@ -20,6 +20,7 @@ class AuroraPillButton extends StatelessWidget {
     this.onUp,
     this.onDown,
     this.compact = false,
+    this.autoScroll = true,
   });
 
   final String label;
@@ -34,6 +35,9 @@ class AuroraPillButton extends StatelessWidget {
   final VoidCallback? onDown;
   final bool compact;
 
+  /// Set false when a parent drives its own scroll on focus (home hero).
+  final bool autoScroll;
+
   @override
   Widget build(BuildContext context) {
     final fg = primary ? Aurora.bg : Aurora.text;
@@ -45,6 +49,7 @@ class AuroraPillButton extends StatelessWidget {
       onRight: onRight,
       onUp: onUp,
       onDown: onDown,
+      autoScroll: autoScroll,
       radius: 28,
       scale: 1.04,
       builder: (context, focused) => AnimatedContainer(

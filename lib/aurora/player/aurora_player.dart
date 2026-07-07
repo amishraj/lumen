@@ -1933,14 +1933,18 @@ class _TrackList extends StatelessWidget {
             Text('No tracks available.', style: TextStyle(color: Aurora.textDim)),
       );
     }
+    // Always give the panel a focus target so the remote can enter it — audio
+    // has no "Off" row, so when the active track is "auto" nothing is marked
+    // selected; fall back to autofocusing the first row.
+    final anySelected = options.any((o) => o.$2);
     return ListView(
       padding: const EdgeInsets.only(bottom: 14),
       children: [
-        for (final (label, selected, apply) in options)
+        for (final (i, (label, selected, apply)) in options.indexed)
           AuroraOptionRow(
             label: label,
             selected: selected,
-            autofocus: selected,
+            autofocus: selected || (!anySelected && i == 0),
             onSelect: () {
               apply();
               onDone();

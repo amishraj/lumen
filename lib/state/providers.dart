@@ -183,9 +183,13 @@ final featuredProvider = FutureProvider<List<StreamItem>>((ref) async {
     final picks = await match([
       for (final t in await svc.trendingMovies(limit: 30)) (t.title, null),
     ]);
-    if (picks.isNotEmpty) return picks.where((m) => m.logo != null).toList();
+    // Only use these if some carry art — otherwise fall through to the pure
+    // IPTV featured set below rather than returning an artless (blank) hero.
+    final withArt = picks.where((m) => m.logo != null).toList();
+    if (withArt.isNotEmpty) return withArt;
   } catch (_) {/* fall through */}
 
+  // Final fallback: the source's own IPTV library — always available offline.
   return repo.featured(pl!.id!);
 });
 

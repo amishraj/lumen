@@ -29,6 +29,7 @@ class AuroraFocusable extends StatefulWidget {
     this.onFocusChange,
     this.onLongPress,
     this.centerOnFocus = true,
+    this.autoScroll = true,
   });
 
   final VoidCallback onActivate;
@@ -55,6 +56,11 @@ class AuroraFocusable extends StatefulWidget {
   /// item eases toward centre — the "cards flow rather than jump" feel. No-op
   /// when the nearest scroller is vertical (page scroll stays calm).
   final bool centerOnFocus;
+
+  /// Set false for surfaces that drive their own scroll on focus (e.g. the
+  /// home hero, which snaps the page to the very top). Otherwise the reveal
+  /// glide would fight that explicit scroll and land somewhere in between.
+  final bool autoScroll;
 
   @override
   State<AuroraFocusable> createState() => _AuroraFocusableState();
@@ -180,7 +186,7 @@ class _AuroraFocusableState extends State<AuroraFocusable> {
       onFocusChange: (v) {
         // Fires on true focus (remote or pointer), so gliding works even when
         // the highlight is suppressed during pointer use.
-        if (v) {
+        if (v && widget.autoScroll) {
           WidgetsBinding.instance.addPostFrameCallback((_) => _glideIntoView());
         }
       },

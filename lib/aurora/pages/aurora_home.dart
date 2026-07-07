@@ -353,11 +353,15 @@ class _BillboardState extends ConsumerState<_Billboard> {
               ],
               const SizedBox(height: 20),
               Row(children: [
+                // autoScroll: false — the hero owns the page scroll (snaps to
+                // the very top on focus via _onHeroFocus); the reveal glide
+                // must not fight that or Up settles short of offset 0.
                 AuroraPillButton(
                   label: 'Play',
                   icon: Icons.play_arrow_rounded,
                   primary: true,
                   autofocus: true,
+                  autoScroll: false,
                   onLeft: () => _go(-1),
                   onUp: _upToNav,
                   onPressed: () => _playDirect(item),
@@ -366,6 +370,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
                 AuroraPillButton(
                   label: 'Details',
                   icon: Icons.info_outline_rounded,
+                  autoScroll: false,
                   onUp: _upToNav,
                   onPressed: () => openAuroraItem(context, ref, item),
                 ),
@@ -373,6 +378,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
                 AuroraPillButton(
                   label: isFav ? 'In My List' : 'My List',
                   icon: isFav ? Icons.check_rounded : Icons.add_rounded,
+                  autoScroll: false,
                   onRight: () => _go(1),
                   onUp: _upToNav,
                   onPressed: () => setFavorite(ref, item, !isFav),
