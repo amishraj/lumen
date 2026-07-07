@@ -251,7 +251,15 @@ class _BillboardState extends ConsumerState<_Billboard> {
 
     return SizedBox(
       height: h,
-      child: Stack(fit: StackFit.expand, children: [
+      // Hard-clip the whole hero: the Ken Burns zoom scales the backdrop up to
+      // 1.055×, which pushes its edges *past* the hero's bottom into the seam
+      // above the first shelf — where the scrim (which only covers the hero's
+      // own bounds) can't reach it. That overflow was the bright bar. The clip
+      // guarantees nothing paints outside the hero; anchoring the scale to the
+      // bottom edge additionally keeps the bottom pinned so it never grows down
+      // in the first place.
+      child: ClipRect(
+        child: Stack(fit: StackFit.expand, children: [
         // Backdrop with a slow settle (Ken Burns lite) — plain, undecorated
         // image. The fade to the page is handled by exactly ONE scrim below.
         AnimatedSwitcher(
@@ -266,8 +274,10 @@ class _BillboardState extends ConsumerState<_Billboard> {
               tween: Tween(begin: 1.055, end: 1.0),
               duration: const Duration(seconds: 15),
               curve: Curves.easeOut,
-              builder: (context, scale, child) =>
-                  Transform.scale(scale: scale, child: child),
+              builder: (context, scale, child) => Transform.scale(
+                  scale: scale,
+                  alignment: Alignment.bottomCenter,
+                  child: child),
               child: AuroraImage(
                 url: art,
                 width: size.width,
@@ -414,6 +424,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
           ]),
         ),
       ]),
+      ),
     );
   }
 }
