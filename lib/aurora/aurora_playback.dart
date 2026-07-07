@@ -104,7 +104,14 @@ class AuroraPlayback {
       // Debrid-only title (not in the library) — fine, just no IPTV fallback.
     }
 
-    Navigator.of(context).push(MaterialPageRoute(
+    // Not awaited — the caller (Detail's Play button) awaits play() itself and
+    // uses that to gate a brief "resolving" spinner, which must clear as soon
+    // as the player opens, not stay up for the whole runtime. The refresh
+    // below is chained onto the route's own future instead, so it fires the
+    // moment the player is popped (mirrors openAuroraItem's series/live
+    // refresh) — otherwise the watched checkmark on posters/cards only
+    // updated once the Detail screen *also* closed, not right after playback.
+    final route = Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => AuroraPlayerScreen(
         item: item.copyWith(url: playUrl),
         resumeFraction: resumeFraction,
@@ -115,5 +122,13 @@ class AuroraPlayback {
         ),
       ),
     ));
+    route.then((_) {
+      try {
+        ref.invalidate(continueWatchingProvider);
+        ref.invalidate(recentlyWatchedProvider);
+        ref.invalidate(watchedIdsProvider);
+        ref.invalidate(progressFractionsProvider);
+      } catch (_) {/* screen disposed — nothing to refresh */}
+    });
   }
 }

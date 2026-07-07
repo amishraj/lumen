@@ -128,8 +128,17 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
         ),
       ),
     ));
-    // Refresh seen/continue marks after watching.
+    // Refresh seen/continue marks after watching: the per-episode checkmarks
+    // in this list (local state), plus the global providers that back the
+    // show's own "watched" badge and Continue Watching/Recently Watched on
+    // Home — otherwise those only refreshed once this whole screen closed.
     await _loadProgress();
+    if (mounted) {
+      ref.invalidate(continueWatchingProvider);
+      ref.invalidate(recentlyWatchedProvider);
+      ref.invalidate(watchedIdsProvider);
+      ref.invalidate(progressFractionsProvider);
+    }
   }
 
   /// The next episode to watch: an in-progress one (latest touched) first, else
