@@ -157,6 +157,39 @@ class LiveBadge extends StatelessWidget {
   }
 }
 
+/// "IPTV" tag for live-channel listings, so a channel is never mistaken for a
+/// VOD movie/show when it turns up in mixed rails (search, favorites, results).
+/// Quiet glass pill with a broadcast glyph — distinct from the red LIVE badge,
+/// which means "airing now"; this simply marks the *kind*.
+class IptvBadge extends StatelessWidget {
+  const IptvBadge({super.key, this.small = false});
+  final bool small;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.symmetric(
+          horizontal: small ? 5 : 6.5, vertical: small ? 2 : 3),
+      decoration: BoxDecoration(
+        color: const Color(0xCC06070B),
+        borderRadius: BorderRadius.circular(5),
+        border: Border.all(color: Aurora.hairline),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.podcasts_rounded,
+            size: small ? 9 : 10.5, color: Aurora.accent),
+        SizedBox(width: small ? 3 : 4),
+        Text('IPTV',
+            style: TextStyle(
+                color: Aurora.text,
+                fontSize: small ? 8.5 : 9.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.6)),
+      ]),
+    );
+  }
+}
+
 /// Thin watch-progress bar along a card's bottom edge.
 class ProgressStripe extends StatelessWidget {
   const ProgressStripe({super.key, required this.fraction, this.height = 4});

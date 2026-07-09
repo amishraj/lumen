@@ -107,8 +107,10 @@ class LibraryRepository {
     required int playlistId,
     StreamKind? kind,
     required String query,
+    int limit = 200,
   }) =>
-      db.search(playlistId: playlistId, kind: kind, query: query);
+      db.search(
+          playlistId: playlistId, kind: kind, query: query, limit: limit);
 
   Future<List<StreamItem>> searchInCategory({
     required int playlistId,

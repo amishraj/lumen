@@ -10,6 +10,7 @@ import '../../data/models/models.dart';
 import '../../data/sources/opensubtitles_service.dart';
 import '../../data/sources/realdebrid_service.dart';
 import '../../data/sources/trakt_service.dart';
+import '../../state/live_quality.dart';
 import '../../state/playback_engine.dart';
 import '../../state/providers.dart';
 import '../../state/scrub_thumbs.dart';
@@ -90,7 +91,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
           ? [widget.item]
           : widget.queue!;
   late int _index = widget.startIndex.clamp(0, _queue.length - 1);
-  StreamItem get _current => _queue[_index];
+  StreamItem get _current => _liveVariant[_index] ?? _queue[_index];
   bool get _isLive => _current.kind == StreamKind.live;
   bool get _hasQueue => _queue.length > 1;
 
@@ -131,6 +132,19 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   // Live number entry.
   String _digits = '';
   Timer? _digitTimer;
+
+  // Live auto quality fallback — a fixed-bitrate feed on a connection slower
+  // than its bitrate stalls forever, so on sustained stalling we swap to a
+  // lower-quality variant of the same channel from the playlist (if one
+  // exists). Sticky per queue index for the session.
+  final Map<int, StreamItem> _liveVariant = {};
+  final List<DateTime> _liveStallStarts = [];
+  final Set<String> _noVariantFor = {}; // base names with nothing lighter
+  bool _livePlayedOnce = false;
+  bool _downgrading = false;
+  Timer? _longStallTimer;
+  String? _qualityNotice;
+  Timer? _qualityNoticeTimer;
 
   final FocusNode _rootFocus = FocusNode(debugLabel: 'aurora-player-root');
   final FocusNode _playFocus = FocusNode(debugLabel: 'aurora-player-play');
@@ -177,6 +191,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _subs.add(_player.stream.completed.listen(_onCompleted));
     _subs.add(_player.stream.buffering.listen((b) {
       if (mounted) setState(() => _buffering = b);
+      _onLiveBuffering(b);
     }));
     _subs.add(_player.stream.playing.listen((p) {
       if (mounted) setState(() => _playing = p);
@@ -279,6 +294,9 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   final Map<int, String> _urlOverrides = {};
 
   Future<void> _openAt(int i) async {
+    _livePlayedOnce = false;
+    _liveStallStarts.clear();
+    _longStallTimer?.cancel();
     setState(() {
       _index = i.clamp(0, _queue.length - 1);
       _error = null;
@@ -396,6 +414,70 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     });
   }
 
+  // ---- Live auto quality fallback ------------------------------------------
+
+  /// A live feed is one fixed bitrate — when the connection is slower than
+  /// that bitrate, mpv stalls over and over no matter how big the cache is.
+  /// Watch for the pattern (3 stalls inside 60s of playback, or one stall
+  /// lasting 10s+) and fall back to a lower-quality variant of the channel.
+  void _onLiveBuffering(bool buffering) {
+    if (!_ownsPlayback || !_isLive || _reconnecting || _error != null) return;
+    if (!buffering) {
+      _livePlayedOnce = true;
+      _longStallTimer?.cancel();
+      return;
+    }
+    if (!_livePlayedOnce) return; // initial spin-up, not a mid-play stall
+    final now = DateTime.now();
+    _liveStallStarts
+      ..add(now)
+      ..removeWhere((t) => now.difference(t) > const Duration(seconds: 60));
+    _longStallTimer?.cancel();
+    _longStallTimer =
+        Timer(const Duration(seconds: 10), _maybeDowngradeLiveQuality);
+    if (_liveStallStarts.length >= 3) _maybeDowngradeLiveQuality();
+  }
+
+  Future<void> _maybeDowngradeLiveQuality() async {
+    if (_downgrading || !mounted || !_ownsPlayback || !_isLive) return;
+    final cur = _current;
+    final base = liveBaseName(cur.name);
+    if (base.isEmpty || _noVariantFor.contains(base)) return;
+    _downgrading = true;
+    try {
+      final repo = ref.read(repositoryProvider).valueOrNull;
+      if (repo == null) return;
+      // All same-name channels in the playlist — the quality variants.
+      final siblings = await repo.db.search(
+        playlistId: cur.playlistId,
+        kind: StreamKind.live,
+        query: base,
+        limit: 100,
+      );
+      final next = pickLowerQualityVariant(cur, siblings);
+      if (next == null) {
+        _noVariantFor.add(base); // don't re-query on every stall
+        return;
+      }
+      if (!mounted || !_ownsPlayback || !_isLive || _current.url != cur.url) {
+        return; // user zapped away while we searched
+      }
+      _liveVariant[_index] = next;
+      _showQualityNotice('Slow connection — switched to ${next.name}');
+      await _openAt(_index);
+    } finally {
+      _downgrading = false;
+    }
+  }
+
+  void _showQualityNotice(String msg) {
+    _qualityNoticeTimer?.cancel();
+    setState(() => _qualityNotice = msg);
+    _qualityNoticeTimer = Timer(const Duration(seconds: 6), () {
+      if (mounted) setState(() => _qualityNotice = null);
+    });
+  }
+
   bool _thumbsScheduled = false;
   int _lastSavedPosMs = -1;
 
@@ -508,6 +590,8 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _digitTimer?.cancel();
     _previewTimer?.cancel();
     _seekFlashTimer?.cancel();
+    _longStallTimer?.cancel();
+    _qualityNoticeTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -961,6 +1045,34 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                               letterSpacing: 6,
                               color: Colors.white,
                               fontFeatures: [FontFeature.tabularFigures()])),
+                    ),
+                  ),
+                // Auto quality fallback notice ("Slow connection — switched
+                // to ESPN HD"). Purely informational, fades after a few secs.
+                if (_qualityNotice != null)
+                  Positioned(
+                    top: 40,
+                    left: 40,
+                    child: IgnorePointer(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xD906070B),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Aurora.hairline),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.network_check_rounded,
+                              size: 18, color: Colors.amber),
+                          const SizedBox(width: 10),
+                          Text(_qualityNotice!,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600)),
+                        ]),
+                      ),
                     ),
                   ),
                 if (_hasQueue)

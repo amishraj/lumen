@@ -57,8 +57,15 @@ class AuroraPosterCard extends ConsumerWidget {
                 radius: 12,
                 fallbackText: parts.title,
               ),
-              if (watched) const SeenBadge(),
-              if (fraction != null)
+              if (item.kind == StreamKind.live)
+                const Positioned(top: 8, left: 8, child: IptvBadge()),
+              // Watched and in-progress are mutually exclusive: a finished item
+              // shows the check (saveProgress marks watched at ≥90%, so its
+              // stored fraction would otherwise also paint a ~90% stripe —
+              // never both), an unfinished one shows the progress stripe.
+              if (watched)
+                const SeenBadge()
+              else if (fraction != null)
                 ClipRRect(
                   borderRadius:
                       const BorderRadius.vertical(bottom: Radius.circular(12)),
@@ -118,8 +125,10 @@ class AuroraWideCard extends ConsumerWidget {
         ? null
         : ref.watch(progressFractionsProvider).valueOrNull?[item.id];
     final parts = cleanTitle(item.name);
+    // A finished item never offers "Resume" — watched wins over a stale
+    // ≥90% resume point (see AuroraPosterCard).
     final resumable =
-        fraction != null && fraction >= 0.02 && fraction <= 0.97;
+        !watched && fraction != null && fraction >= 0.02 && fraction <= 0.97;
 
     return AuroraFocusable(
       autofocus: autofocus,
@@ -195,8 +204,12 @@ class AuroraWideCard extends ConsumerWidget {
                   ),
                 ),
               ),
-            if (watched) const SeenBadge(),
-            if (fraction != null) ProgressStripe(fraction: fraction),
+            if (item.kind == StreamKind.live)
+              const Positioned(top: 8, left: 8, child: IptvBadge()),
+            if (watched)
+              const SeenBadge()
+            else if (fraction != null)
+              ProgressStripe(fraction: fraction),
           ]),
         ),
       ),
@@ -234,14 +247,17 @@ class AuroraLiveCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            AuroraLogoTile(
-              url: item.logo,
-              width: width,
-              height: h,
-              radius: 12,
-              fallbackText: item.name,
-              borderColor: focused ? Colors.transparent : null,
-            ),
+            Stack(children: [
+              AuroraLogoTile(
+                url: item.logo,
+                width: width,
+                height: h,
+                radius: 12,
+                fallbackText: item.name,
+                borderColor: focused ? Colors.transparent : null,
+              ),
+              const Positioned(top: 7, left: 7, child: IptvBadge(small: true)),
+            ]),
             const SizedBox(height: 7),
             Row(children: [
               if (item.num != null) ...[

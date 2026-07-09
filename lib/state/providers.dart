@@ -129,12 +129,17 @@ final groupedSearchProvider =
   if (pl?.id == null || q.length < 2) {
     return const GroupedResults([], [], []);
   }
-  final all = await repo.search(playlistId: pl!.id!, query: q);
-  return GroupedResults(
-    all.where((e) => e.kind == StreamKind.live).toList(),
-    all.where((e) => e.kind == StreamKind.movie).toList(),
-    all.where((e) => e.kind == StreamKind.series).toList(),
-  );
+  // Search each kind independently. A single blended query shares one 200-row
+  // cap, and IPTV libraries are overwhelmingly live channels — so a common
+  // token fills every slot with live matches and movies/series never surface.
+  // Per-kind queries guarantee each rail gets its own budget.
+  final results = await Future.wait([
+    repo.search(playlistId: pl!.id!, kind: StreamKind.live, query: q, limit: 60),
+    repo.search(playlistId: pl.id!, kind: StreamKind.movie, query: q, limit: 60),
+    repo.search(
+        playlistId: pl.id!, kind: StreamKind.series, query: q, limit: 60),
+  ]);
+  return GroupedResults(results[0], results[1], results[2]);
 });
 
 // ---------------------------------------------------------------------------

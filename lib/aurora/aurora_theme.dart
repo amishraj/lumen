@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// Marketing/version string for the 1.1 line. Keep in sync with pubspec.yaml.
-const kLumenVersion = '1.1.16';
+const kLumenVersion = '1.1.17';
 
 /// Aurora — the Lumen 1.1 design language.
 ///
@@ -52,6 +52,12 @@ class Aurora {
   static const curve = Curves.easeOutCubic;
 
   // ---- Layout --------------------------------------------------------------
+  /// Phone-class layout: narrow enough that the 10-foot top bar becomes an
+  /// auto-hiding mobile app bar and the hero simplifies. Matches the top-bar
+  /// label/icon cutoff so "compact" reads the same everywhere.
+  static bool isCompact(BuildContext context) =>
+      MediaQuery.of(context).size.width < 760;
+
   /// Horizontal page gutter. Scales down on narrow (phone) layouts.
   static double margin(BuildContext context) =>
       MediaQuery.of(context).size.width >= 900 ? 48.0 : 20.0;

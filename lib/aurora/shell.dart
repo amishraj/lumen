@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -32,8 +33,32 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
   DateTime? _lastBack;
   bool _kickedOffSync = false;
 
+  /// Compact (phone) only: drives the auto-hiding top bar. True = shown.
+  /// The bar tucks away as you scroll down a page and slides back the moment
+  /// you scroll up, so it never sits on top of content mid-scroll.
+  final ValueNotifier<bool> _navVisible = ValueNotifier(true);
+
+  @override
+  void dispose() {
+    _navVisible.dispose();
+    super.dispose();
+  }
+
   void _select(AuroraTab tab) {
+    _navVisible.value = true; // a tab switch always reveals the bar
     ref.read(auroraTabProvider.notifier).state = tab.index;
+  }
+
+  /// Reveal/hide the bar from a page's vertical scroll direction. Horizontal
+  /// shelf scrolling is ignored so swiping a rail never toggles the bar.
+  bool _onPageScroll(UserScrollNotification n) {
+    if (n.metrics.axis != Axis.vertical) return false;
+    if (n.direction == ScrollDirection.reverse) {
+      _navVisible.value = false; // scrolling down
+    } else if (n.direction == ScrollDirection.forward) {
+      _navVisible.value = true; // scrolling up
+    }
+    return false;
   }
 
   /// Back bounces to Home first; on Home a second press within 2s exits.
@@ -62,6 +87,7 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
   Widget build(BuildContext context) {
     final tab = ref.watch(auroraTabProvider);
     final active = ref.watch(activePlaylistProvider);
+    final compact = Aurora.isCompact(context);
 
     // One delayed background re-sync per session, after first paint has had
     // time to query — kicking it off immediately made first browse sluggish.
@@ -86,47 +112,73 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
           // side-by-side vertical lists (Live) must keep default directional
           // traversal or Up/Down would jump across columns.
           Positioned.fill(
-            child: _LazyStack(
-              index: tab,
-              builders: [
-                () => const AuroraSearchPage(),
-                () => const AuroraHomePage(),
-                () => const AuroraBrowsePage(kind: StreamKind.movie),
-                () => const AuroraBrowsePage(kind: StreamKind.series),
-                () => const AuroraLivePage(),
-                () => const AuroraSportsPage(),
-                () => const AuroraMyStuffPage(),
-                () => const AuroraSettingsPage(),
-              ],
+            child: NotificationListener<UserScrollNotification>(
+              onNotification: compact ? _onPageScroll : null,
+              child: _LazyStack(
+                index: tab,
+                builders: [
+                  () => const AuroraSearchPage(),
+                  () => const AuroraHomePage(),
+                  () => const AuroraBrowsePage(kind: StreamKind.movie),
+                  () => const AuroraBrowsePage(kind: StreamKind.series),
+                  () => const AuroraLivePage(),
+                  () => const AuroraSportsPage(),
+                  () => const AuroraMyStuffPage(),
+                  () => const AuroraSettingsPage(),
+                ],
+              ),
             ),
           ),
-          // ---- Top scrim so the bar reads over any artwork ----
-          const Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            height: 140,
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Color(0xE606070B), Color(0x0006070B)],
+          // ---- Top scrim so the translucent bar reads over any artwork ----
+          // Only on wide (10-foot) layouts. On compact the bar is solid and
+          // slides away, so a fixed scrim would just darken content oddly.
+          if (!compact)
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 140,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Color(0xE606070B), Color(0x0006070B)],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
           // ---- Top navigation ----
           Positioned(
             top: 0,
             left: 0,
             right: 0,
-            child: SafeArea(
-              bottom: false,
-              child: _TopBar(selected: tab, onSelect: _select),
-            ),
+            child: compact
+                ? ValueListenableBuilder<bool>(
+                    valueListenable: _navVisible,
+                    builder: (context, visible, _) => AnimatedSlide(
+                      duration: Aurora.normal,
+                      curve: Curves.easeOutCubic,
+                      offset: Offset(0, visible ? 0 : -1),
+                      child: DecoratedBox(
+                        decoration: const BoxDecoration(
+                          color: Aurora.bg,
+                          border: Border(
+                              bottom: BorderSide(color: Aurora.hairline)),
+                        ),
+                        child: SafeArea(
+                          bottom: false,
+                          child: _TopBar(selected: tab, onSelect: _select),
+                        ),
+                      ),
+                    ),
+                  )
+                : SafeArea(
+                    bottom: false,
+                    child: _TopBar(selected: tab, onSelect: _select),
+                  ),
           ),
         ]),
       ),

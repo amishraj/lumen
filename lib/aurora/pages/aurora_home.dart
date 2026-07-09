@@ -173,14 +173,20 @@ class _Billboard extends ConsumerStatefulWidget {
 class _BillboardState extends ConsumerState<_Billboard> {
   int _index = 0;
   bool _heroFocused = false;
+  bool _compact = false;
   Timer? _rotate;
+  final PageController _pager = PageController();
 
   @override
   void initState() {
     super.initState();
     // Slow ambient rotation — never while the user's focus is on the hero.
+    // On phones the hero is a swipe deck (touch-driven), so it doesn't
+    // auto-advance and fight the user's gesture.
     _rotate = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (!mounted || _heroFocused || widget.items.length < 2) return;
+      if (!mounted || _compact || _heroFocused || widget.items.length < 2) {
+        return;
+      }
       _go(1, manual: false);
     });
   }
@@ -188,6 +194,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
   @override
   void dispose() {
     _rotate?.cancel();
+    _pager.dispose();
     super.dispose();
   }
 
@@ -227,6 +234,57 @@ class _BillboardState extends ConsumerState<_Billboard> {
 
   @override
   Widget build(BuildContext context) {
+    _compact = Aurora.isCompact(context);
+    if (_compact) return _buildCompact(context);
+    return _buildWide(context);
+  }
+
+  /// Phone hero: a swipeable deck. One clean poster-backdrop per featured
+  /// item, Play + My List, and page dots — no arrow-key chrome, no Ken Burns.
+  Widget _buildCompact(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final h = (size.height * 0.5).clamp(340.0, 460.0);
+    return SizedBox(
+      height: h,
+      child: ClipRect(
+        child: Stack(fit: StackFit.expand, children: [
+          PageView.builder(
+            controller: _pager,
+            itemCount: widget.items.length,
+            onPageChanged: (i) => setState(() => _index = i),
+            itemBuilder: (context, i) => _CompactHero(
+              item: widget.items[i],
+              rank: i,
+              onPlay: () => _playDirect(widget.items[i]),
+            ),
+          ),
+          // Page dots, centered above the seam.
+          if (widget.items.length > 1)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 14,
+              child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                for (var i = 0; i < widget.items.length; i++)
+                  AnimatedContainer(
+                    duration: Aurora.normal,
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: i == _index ? 18 : 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color:
+                          i == _index ? Colors.white : const Color(0x4DFFFFFF),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+              ]),
+            ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildWide(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final h = (size.height * 0.66).clamp(420.0, 680.0);
     final margin = Aurora.margin(context);
@@ -446,6 +504,100 @@ class _BillboardSkeleton extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// One page of the phone hero deck. Self-contained so the PageView can build
+/// each featured item lazily (its own backdrop + synopsis bundle).
+class _CompactHero extends ConsumerWidget {
+  const _CompactHero(
+      {required this.item, required this.rank, required this.onPlay});
+  final StreamItem item;
+  final int rank;
+  final VoidCallback onPlay;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final margin = Aurora.margin(context);
+    final bundle = ref
+        .watch(detailBundleProvider(
+            (title: item.name, isShow: item.kind == StreamKind.series)))
+        .valueOrNull;
+    final art = bundle?.tmdb?.backdrop ?? item.logo;
+    final omdb = bundle?.omdb;
+    final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
+    final isFav = item.id != null && favs.contains(item.id);
+    final title = cleanTitle(item.name).title;
+
+    return Stack(fit: StackFit.expand, children: [
+      AuroraImage(
+        url: art,
+        width: double.infinity,
+        height: double.infinity,
+        radius: 0,
+        fallbackText: title,
+      ),
+      const DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.transparent,
+              Colors.transparent,
+              Color(0xFF06070B),
+              Color(0xFF06070B),
+            ],
+            stops: [0.0, 0.35, 0.92, 1.0],
+          ),
+        ),
+      ),
+      Positioned(
+        left: margin,
+        right: margin,
+        bottom: 40,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Eyebrow(item.kind == StreamKind.series
+                ? 'Featured series'
+                : '#${rank + 1} this week'),
+            const SizedBox(height: 8),
+            Text(title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w800,
+                    height: 1.05,
+                    letterSpacing: -0.6,
+                    color: Aurora.text)),
+            const SizedBox(height: 10),
+            RatingsStrip(info: omdb, fallbackRating: item.rating),
+            const SizedBox(height: 16),
+            Row(children: [
+              AuroraPillButton(
+                label: 'Play',
+                icon: Icons.play_arrow_rounded,
+                primary: true,
+                compact: true,
+                autoScroll: false,
+                onPressed: onPlay,
+              ),
+              const SizedBox(width: 10),
+              AuroraPillButton(
+                label: isFav ? 'Added' : 'My List',
+                icon: isFav ? Icons.check_rounded : Icons.add_rounded,
+                compact: true,
+                autoScroll: false,
+                onPressed: () => setFavorite(ref, item, !isFav),
+              ),
+            ]),
+          ],
+        ),
+      ),
+    ]);
   }
 }
 
