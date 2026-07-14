@@ -380,10 +380,15 @@ final cwHiddenRevProvider = StateProvider<int>((ref) => 0);
 /// title (an episode-derived row and the library's series entry must dismiss
 /// together); everything else keys on the stream url, which survives the id
 /// reassignment of a playlist re-sync.
-String cwDismissKey(StreamItem item) =>
-    item.kind == StreamKind.series || item.url.isEmpty
-        ? 'show:${TitleIndex.normalize(item.name)}'
-        : 'url:${item.url}';
+/// Keyed on the normalized TITLE (not the stream url) so the same movie in
+/// several languages/qualities collapses to ONE Continue Watching card — two
+/// url-keyed variants was what showed two dismiss ✕s — and dismissing hides
+/// every variant of that title.
+String cwDismissKey(StreamItem item) {
+  final norm = TitleIndex.normalize(item.name);
+  final base = norm.isEmpty ? item.name.toLowerCase() : norm;
+  return item.kind == StreamKind.series ? 'show:$base' : 'movie:$base';
+}
 
 /// key → dismissed-at ms. Kept as a map (not a set) so replaying something
 /// after dismissing it resurfaces the row — newer activity wins.
@@ -484,6 +489,13 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
     add(it, at);
   }
 
+  // Keys from LOCAL activity ONLY — the background Trakt merge is computed
+  // against this, never against `result` (which also holds the snapshot
+  // extras below). Basing it on `result` made the merge oscillate — it wrote
+  // [] (extras already in result), invalidated, recomputed with them gone,
+  // wrote them back, invalidated… forever. That was the flicker.
+  final baseKeys = Set<String>.of(seenKeys);
+
   final extrasKey = 'home:snap:$plId:cw_extras';
   final raw = await repo.getSetting(extrasKey);
   if (raw != null && raw.isNotEmpty) {
@@ -500,14 +512,16 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
       final svc = await ref.read(traktServiceProvider.future);
       final index = await ref.read(titleIndexProvider.future);
       if (index == null) return;
-      final have = result.map((e) => e.id).whereType<int>().toSet();
       final extras = <StreamItem>[];
-      final xSeen = <int>{};
+      final xKeys = <String>{};
       for (final p in (await svc.playback()).take(20)) {
         final hit = index.matchVod(p.item.title);
-        if (hit?.id != null && !have.contains(hit!.id) && xSeen.add(hit.id!)) {
-          extras.add(hit);
-        }
+        if (hit == null) continue;
+        final key = cwDismissKey(hit);
+        // Skip anything already shown from local activity, and de-dupe the
+        // extras themselves. Deterministic → this settles after one write.
+        if (baseKeys.contains(key) || !xKeys.add(key)) continue;
+        extras.add(hit);
       }
       final enc = encodeStreamItems(extras);
       if (enc != raw) {
@@ -600,7 +614,11 @@ final progressFractionsProvider = FutureProvider<Map<int, double>>((ref) async {
           extras['${hit!.id}'] = p.progress.clamp(0.0, 1.0);
         }
       }
-      final enc = jsonEncode(extras);
+      // Canonical (key-sorted) encoding so the compare is insertion-order
+      // independent — a self-invalidate must fire only on a real change.
+      final enc = jsonEncode({
+        for (final k in extras.keys.toList()..sort()) k: extras[k],
+      });
       if (enc != raw) {
         await repo.setSetting(extrasKey, enc);
         ref.invalidateSelf();

@@ -237,10 +237,13 @@ class TmdbService {
   /// persisting per-keystroke queries would silt up app_settings.
   final _searchCache = <String, List<TmdbItem>>{};
 
-  /// Interactive multi-search (movies + shows) for the search page. Returns
-  /// items with artwork only (also filters out the person results multi
-  /// search includes). Bounded latency: search must never hang on a slow link.
-  Future<List<TmdbItem>> searchTitles(String query, {int limit = 12}) async {
+  /// Interactive title search for the search page. Queries the dedicated
+  /// /search/movie and /search/tv endpoints in parallel (each ranks its own
+  /// type by popularity) rather than /search/multi — multi interleaves people
+  /// and cross-type popularity, which buried a specific new film ("Backrooms")
+  /// below found-footage shorts and the web series. Interleaved movie/show,
+  /// artwork-only, bounded latency, session-cached per query.
+  Future<List<TmdbItem>> searchTitles(String query, {int limit = 16}) async {
     final k = await key();
     if (k == null || k.isEmpty) return [];
     final q = query.trim().toLowerCase();
@@ -249,17 +252,40 @@ class TmdbService {
     if (cached != null) return cached;
     try {
       final (auth, opts) = await _auth();
-      final res = await _dio
-          .get('$_api/search/multi',
-              queryParameters: {...auth, 'query': query}, options: opts)
-          .timeout(const Duration(seconds: 3));
-      if (res.statusCode != 200) return [];
-      final data = res.data is String ? jsonDecode(res.data) : res.data;
-      final items = _parseResults(data)
-          .where((t) => t.poster != null || t.backdrop != null)
-          .take(limit)
-          .toList();
-      return _searchCache[q] = items;
+      Future<List<TmdbItem>> one(String type, bool show) async {
+        final res = await _dio
+            .get('$_api/search/$type',
+                queryParameters: {
+                  ...auth,
+                  'query': query,
+                  'include_adult': 'false',
+                },
+                options: opts)
+            .timeout(const Duration(seconds: 4));
+        if (res.statusCode != 200) return const [];
+        final data = res.data is String ? jsonDecode(res.data) : res.data;
+        return _parseResults(data, forceShow: show)
+            .where((t) => t.poster != null || t.backdrop != null)
+            .toList();
+      }
+
+      final both = await Future.wait([one('movie', false), one('tv', true)]);
+      final movies = both[0], shows = both[1];
+      // Interleave so both types surface near the top of the merged list.
+      final merged = <TmdbItem>[];
+      for (var i = 0; merged.length < limit; i++) {
+        var added = false;
+        if (i < movies.length) {
+          merged.add(movies[i]);
+          added = true;
+        }
+        if (merged.length < limit && i < shows.length) {
+          merged.add(shows[i]);
+          added = true;
+        }
+        if (!added) break;
+      }
+      return _searchCache[q] = merged;
     } catch (_) {
       return [];
     }
