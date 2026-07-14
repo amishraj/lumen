@@ -102,13 +102,25 @@ class SyncController extends StateNotifier<SyncState> {
       await for (final p in repo.sync(pl)) {
         state = SyncState(running: true, stage: p.stage, playlistId: pl.id);
       }
-      // Refresh everything that reads the library.
+      // Refresh everything that reads the library. Stream ids are reassigned
+      // by the swap, so anything keyed on them (watched marks, progress
+      // fractions, favorites, the in-memory title index and every TMDB row
+      // matched through it) must re-derive — missing these left rows pointing
+      // at yesterday's ids until the next full restart.
       ref.invalidate(playlistsProvider);
+      ref.read(titleIndexRevProvider.notifier).state++; // rebuild the index
       ref.invalidate(featuredProvider);
       ref.invalidate(continueWatchingProvider);
       ref.invalidate(recentlyWatchedProvider);
       ref.invalidate(kindSampleProvider);
       ref.invalidate(categoriesProvider);
+      ref.invalidate(watchedIdsProvider);
+      ref.invalidate(progressFractionsProvider);
+      ref.invalidate(favoriteIdsProvider);
+      ref.invalidate(tmdbTrendingProvider);
+      ref.invalidate(tmdbPopularProvider);
+      ref.invalidate(tmdbGenreRowProvider);
+      ref.invalidate(tmdbBecauseYouWatchedProvider);
     } catch (_) {/* leave old content in place on failure */} finally {
       state = const SyncState();
     }

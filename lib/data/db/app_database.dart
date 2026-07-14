@@ -663,6 +663,42 @@ class AppDatabase {
     );
   }
 
+  /// Batched [markWatched] — the Trakt watched-history reconciliation marks
+  /// hundreds of titles at once; one transaction instead of N round-trips.
+  Future<void> markWatchedMany(Iterable<int> streamIds) async {
+    final ids = streamIds.toList();
+    if (ids.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final id in ids) {
+        batch.insert(
+          'progress',
+          {
+            'stream_id': id,
+            'position_ms': 0,
+            'duration_ms': 0,
+            'watched': 1,
+            'updated_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true, continueOnError: true);
+    });
+  }
+
+  /// Every movie + series row of one playlist, in a single query — feeds the
+  /// in-memory TitleIndex so per-title discovery matching never hits SQL.
+  Future<List<StreamItem>> vodItems(int playlistId) async {
+    final rows = await db.query(
+      'streams',
+      where: "playlist_id=? AND kind IN ('movie','series')",
+      whereArgs: [playlistId],
+    );
+    return rows.map(StreamItem.fromRow).toList();
+  }
+
   Future<Set<int>> watchedIds(int playlistId) async {
     final rows = await db.rawQuery(
       'SELECT pr.stream_id FROM progress pr JOIN streams s ON s.id=pr.stream_id '

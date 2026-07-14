@@ -130,8 +130,12 @@ class LibraryRepository {
   Future<List<StreamItem>> favoritesByKind(int playlistId, StreamKind kind) =>
       db.favoritesByKind(playlistId, kind);
   Future<void> markWatched(int id) => db.markWatched(id);
+  Future<void> markWatchedMany(Iterable<int> ids) => db.markWatchedMany(ids);
   Future<Set<int>> watchedIds(int playlistId) => db.watchedIds(playlistId);
   Future<Map<int, double>> progressFractions() => db.progressFractions();
+
+  /// All movies + series of one playlist (one query) — the TitleIndex source.
+  Future<List<StreamItem>> vodItems(int playlistId) => db.vodItems(playlistId);
 
   /// Providers often carry the same movie/show in several languages, prefixed
   /// like "EN | Title", "EN - Title", "ENGLISH: Title". When we pick a title
@@ -146,16 +150,6 @@ class LibraryRepository {
       if (_enLabel.hasMatch(h.name)) return h;
     }
     return hits.first;
-  }
-
-  /// First movie/series in the library matching a title (for Trakt matching),
-  /// preferring the English-labelled entry.
-  Future<StreamItem?> findByTitle(int playlistId, String title) async {
-    final hits = await db.search(playlistId: playlistId, query: title);
-    final typed = hits
-        .where((h) => h.kind == StreamKind.movie || h.kind == StreamKind.series)
-        .toList();
-    return preferEnglish(typed.isNotEmpty ? typed : hits);
   }
 
   Future<List<StreamItem>> sportsEvents(int playlistId) =>

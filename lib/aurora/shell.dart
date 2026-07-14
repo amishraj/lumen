@@ -5,6 +5,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/sources/trakt_service.dart';
 import '../state/providers.dart';
 import '../state/service_status.dart';
 import 'aurora_focus.dart';
@@ -89,10 +90,40 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
     final active = ref.watch(activePlaylistProvider);
     final compact = Aurora.isCompact(context);
 
-    // One delayed background re-sync per session, after first paint has had
-    // time to query — kicking it off immediately made first browse sluggish.
+    // Startup sequence (all background, none gates the first paint — home
+    // renders instantly off its persisted snapshots):
+    //  ~0.8s  prewarm the in-memory title index, so every discovery row and
+    //         Trakt reconciliation matches from memory (and it's built BEFORE
+    //         the IPTV re-sync can hog the single SQLite connection);
+    //  ~2s    force-fresh Trakt pull (resume points / watched / watchlist) —
+    //         cross-device progress lands seconds after open, not when a 6h
+    //         cache TTL happens to lapse;
+    //  ~6s    the once-a-day playlist re-sync.
     if (active != null && !_kickedOffSync) {
       _kickedOffSync = true;
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (!mounted) return;
+        unawaited(ref.read(titleIndexProvider.future));
+      });
+      Future.delayed(const Duration(seconds: 2), () async {
+        if (!mounted) return;
+        try {
+          final svc = await ref.read(traktServiceProvider.future);
+          final changed = await svc.refreshHomeSnapshots();
+          if (changed && mounted) {
+            // Something new landed on Trakt since last open — re-run the
+            // reconciliation now (not on the hourly timer) and re-emit every
+            // row that overlays Trakt state.
+            final repo = await ref.read(repositoryProvider.future);
+            await repo.setSetting('trakt_watched_sync_at', '0');
+            ref.invalidate(continueWatchingProvider);
+            ref.invalidate(watchedIdsProvider);
+            ref.invalidate(progressFractionsProvider);
+            ref.invalidate(traktWatchlistProvider);
+            ref.invalidate(traktWatchedEpisodesProvider);
+          }
+        } catch (_) {/* offline — snapshots already shown */}
+      });
       Future.delayed(const Duration(seconds: 6), () {
         if (!mounted) return;
         ref.read(syncControllerProvider.notifier).resync(active);

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -6,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/models.dart';
 import '../repositories/library_repository.dart';
 import '../../state/providers.dart';
+import 'realdebrid_service.dart';
 
 /// The Movie Database (TMDB) — richer artwork (posters/backdrops), overviews,
 /// genres, cast, and discovery lists (popular / trending / by-genre /
@@ -413,6 +415,11 @@ class TmdbInfo {
   final List<String> cast;
   final String? imdbId;
 
+  /// Season numbers with episodes (shows only) — lets the series screen build
+  /// a full episode list straight from TMDB when the IPTV library lacks the
+  /// show but Real-Debrid can play it.
+  final List<int> seasonNumbers;
+
   const TmdbInfo({
     this.tmdbId,
     required this.title,
@@ -425,6 +432,7 @@ class TmdbInfo {
     this.releaseDate,
     this.cast = const [],
     this.imdbId,
+    this.seasonNumbers = const [],
   });
 
   factory TmdbInfo.fromJson(Map<String, dynamic> d, bool isShow) {
@@ -448,6 +456,23 @@ class TmdbInfo {
         if (c is Map && c['name'] != null) cast.add('${c['name']}');
       }
     }
+    // Real seasons only (season_number 0 is "Specials"); fall back to a plain
+    // 1..N range when the detail payload predates the seasons array.
+    final seasonNums = <int>[];
+    if (d['seasons'] is List) {
+      for (final s in d['seasons'] as List) {
+        if (s is! Map) continue;
+        final n = (s['season_number'] as num?)?.toInt();
+        final eps = (s['episode_count'] as num?)?.toInt() ?? 0;
+        if (n != null && n > 0 && eps > 0) seasonNums.add(n);
+      }
+    }
+    if (seasonNums.isEmpty) {
+      final n = (d['number_of_seasons'] as num?)?.toInt() ?? 0;
+      for (var i = 1; i <= n; i++) {
+        seasonNums.add(i);
+      }
+    }
     return TmdbInfo(
       tmdbId: (d['id'] as num?)?.toInt(),
       title:
@@ -468,6 +493,7 @@ class TmdbInfo {
       releaseDate:
           '${(isShow ? d['first_air_date'] : d['release_date']) ?? ''}',
       cast: cast,
+      seasonNumbers: isShow ? seasonNums : const [],
     );
   }
 }
@@ -506,24 +532,44 @@ final tmdbDetailProvider = FutureProvider.autoDispose
 });
 
 // ---------------------------------------------------------------------------
-// TMDB-driven home rows. Each resolves a TMDB discovery list to items that
-// actually exist in the user's library (so they're playable), overlaying the
-// TMDB poster + rating for richer art. Rows silently vanish when no key is set.
+// TMDB-driven home rows. Each resolves a TMDB discovery list against the
+// in-memory title index (memory lookups — never per-title SQL): titles the
+// library carries come back playable with progress/seen overlays, and when
+// Real-Debrid is on, the rest of the TMDB list stays too (Stremio-style full
+// catalog — playable via debrid). Rows silently vanish when no key is set,
+// and each is snapshot-backed so it paints instantly on the next app open.
 // ---------------------------------------------------------------------------
 
-Future<List<StreamItem>> _matchToLibrary(
-    LibraryRepository repo, int plId, List<TmdbItem> items) async {
+/// Resolve a TMDB discovery list to renderable/playable StreamItems.
+Future<List<StreamItem>> resolveTmdbRow(
+    Ref ref, int plId, List<TmdbItem> items) async {
+  final idx = await ref.read(titleIndexProvider.future);
+  var rdOn = false;
+  try {
+    rdOn = await ref.read(rdEnabledProvider.future);
+  } catch (_) {}
   final out = <StreamItem>[];
-  final seen = <int>{};
+  final seenIds = <int>{};
+  final seenNames = <String>{};
   for (final t in items) {
     final kind = t.isShow ? StreamKind.series : StreamKind.movie;
-    final hits =
-        await repo.search(playlistId: plId, kind: kind, query: t.title);
-    // Prefer the English-labelled entry when a title exists in many languages.
-    final hit = LibraryRepository.preferEnglish(hits);
-    if (hit != null && hit.id != null && seen.add(hit.id!)) {
-      // Backdrop first: home rows render these as wide landscape cards.
-      out.add(hit.copyWith(logo: t.backdrop ?? t.poster, rating: t.rating));
+    final hit = idx?.match(t.title, kind: kind);
+    if (hit != null && hit.id != null) {
+      if (seenIds.add(hit.id!)) {
+        // Backdrop first: home rows render these as wide landscape cards.
+        out.add(hit.copyWith(logo: t.backdrop ?? t.poster, rating: t.rating));
+      }
+    } else if (rdOn && seenNames.add(t.title.toLowerCase())) {
+      // Not in the IPTV library, but debrid can play it — keep the full
+      // catalog visible instead of intersecting TMDB with the playlist.
+      out.add(StreamItem(
+        playlistId: plId,
+        kind: kind,
+        name: t.title,
+        logo: t.backdrop ?? t.poster,
+        url: '',
+        rating: t.rating,
+      ));
     }
   }
   return out;
@@ -531,20 +577,22 @@ Future<List<StreamItem>> _matchToLibrary(
 
 final tmdbPopularProvider = FutureProvider<List<StreamItem>>((ref) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) return [];
-  final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
+  final plId = pl!.id!;
   final svc = await ref.watch(tmdbServiceProvider.future);
-  return _matchToLibrary(repo, pl!.id!, await svc.popular());
+  return snapshotStreamRow(ref, 'home:snap:$plId:tmdb_popular',
+      () async => resolveTmdbRow(ref, plId, await svc.popular()));
 });
 
 final tmdbTrendingProvider = FutureProvider<List<StreamItem>>((ref) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) return [];
-  final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
+  final plId = pl!.id!;
   final svc = await ref.watch(tmdbServiceProvider.future);
-  return _matchToLibrary(repo, pl!.id!, await svc.trending());
+  return snapshotStreamRow(ref, 'home:snap:$plId:tmdb_trending',
+      () async => resolveTmdbRow(ref, plId, await svc.trending()));
 });
 
 /// TMDB movie genres available to browse.
@@ -554,18 +602,20 @@ final tmdbGenresProvider = FutureProvider<List<TmdbGenre>>((ref) async {
   return svc.genres();
 });
 
-/// Library items for a given TMDB genre id.
+/// Items for a given TMDB genre id (library matches + debrid-playable rest).
 final tmdbGenreRowProvider =
     FutureProvider.family<List<StreamItem>, int>((ref, genreId) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) return [];
-  final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
+  final plId = pl!.id!;
   final svc = await ref.watch(tmdbServiceProvider.future);
-  return _matchToLibrary(repo, pl!.id!, await svc.byGenre(genreId));
+  return snapshotStreamRow(ref, 'home:snap:$plId:genre:$genreId',
+      () async => resolveTmdbRow(ref, plId, await svc.byGenre(genreId)));
 });
 
 /// "Because you watched X" — recommendations off the most recent watch.
+/// Snapshot-backed like the other rows (seed + items persist together).
 final tmdbBecauseYouWatchedProvider =
     FutureProvider<({String? seed, List<StreamItem> items})>((ref) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) {
@@ -574,11 +624,51 @@ final tmdbBecauseYouWatchedProvider =
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return (seed: null, items: <StreamItem>[]);
-  final recent = await repo.recentlyWatched(pl!.id!);
-  if (recent.isEmpty) return (seed: null, items: <StreamItem>[]);
-  final seed = recent.first;
-  final svc = await ref.watch(tmdbServiceProvider.future);
-  final recs = await svc.recommendationsFor(seed.name,
-      show: seed.kind == StreamKind.series);
-  return (seed: seed.name, items: await _matchToLibrary(repo, pl.id!, recs));
+  final plId = pl!.id!;
+  final key = 'home:snap:$plId:because';
+
+  Future<(String?, List<StreamItem>)> computeRow() async {
+    final recent = await repo.recentlyWatched(plId);
+    if (recent.isEmpty) return (null, <StreamItem>[]);
+    final seed = recent.first;
+    final svc = await ref.read(tmdbServiceProvider.future);
+    final recs = await svc.recommendationsFor(seed.name,
+        show: seed.kind == StreamKind.series);
+    return (seed.name, await resolveTmdbRow(ref, plId, recs));
+  }
+
+  String enc((String?, List<StreamItem>) v) => jsonEncode({
+        'seed': v.$1,
+        'items': [for (final it in v.$2) it.toJson()],
+      });
+
+  final raw = await repo.getSetting(key);
+  if (raw != null && raw.isNotEmpty) {
+    try {
+      final m = jsonDecode(raw) as Map<String, dynamic>;
+      final cached = (
+        seed: m['seed'] as String?,
+        items: [
+          for (final j in (m['items'] as List? ?? const []))
+            StreamItem.fromJson(Map<String, Object?>.from(j as Map)),
+        ],
+      );
+      unawaited(() async {
+        try {
+          final fresh = await computeRow();
+          final e = enc(fresh);
+          if (e != raw) {
+            await repo.setSetting(key, e);
+            ref.invalidateSelf();
+          }
+        } catch (_) {/* keep snapshot */}
+      }());
+      return cached;
+    } catch (_) {/* corrupt — recompute below */}
+  }
+  final fresh = await computeRow();
+  try {
+    await repo.setSetting(key, enc(fresh));
+  } catch (_) {/* non-fatal */}
+  return (seed: fresh.$1, items: fresh.$2);
 });

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/models.dart';
 import '../../data/repositories/library_repository.dart';
+import '../../data/sources/realdebrid_service.dart';
 import '../../data/sources/tmdb_service.dart';
 import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
@@ -87,14 +88,64 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
     final repo = await ref.read(repositoryProvider.future);
     var seriesUrl = widget.series.url;
     if (seriesUrl.isEmpty && widget.playlist.id != null) {
-      final hits = await repo.search(
-          playlistId: widget.playlist.id!,
-          kind: StreamKind.series,
-          query: _showTitle);
-      seriesUrl = LibraryRepository.preferEnglish(hits)?.url ?? '';
+      final idx = await ref.read(titleIndexProvider.future);
+      seriesUrl = idx?.match(_showTitle, kind: StreamKind.series)?.url ?? '';
+      if (seriesUrl.isEmpty) {
+        final hits = await repo.search(
+            playlistId: widget.playlist.id!,
+            kind: StreamKind.series,
+            query: _showTitle);
+        seriesUrl = LibraryRepository.preferEnglish(hits)?.url ?? '';
+      }
     }
-    if (seriesUrl.isEmpty) return const [];
-    return repo.seriesEpisodes(widget.playlist, seriesUrl);
+    List<Episode> eps = const [];
+    if (seriesUrl.isNotEmpty) {
+      try {
+        eps = await repo.seriesEpisodes(widget.playlist, seriesUrl);
+      } catch (_) {/* portal hiccup — try the TMDB path below */}
+    }
+    if (eps.isNotEmpty) return eps;
+    // Not in the IPTV library (a TMDB-discovered show) or the portal returned
+    // nothing: build the season list from TMDB and play via Real-Debrid. The
+    // player already resolves a debrid stream per episode from (title, S, E).
+    return _tmdbEpisodes();
+  }
+
+  Future<List<Episode>> _tmdbEpisodes() async {
+    try {
+      if (!await ref.read(rdEnabledProvider.future)) return const [];
+      final svc = await ref.read(tmdbServiceProvider.future);
+      final info = await svc.lookup(_showTitle, isShow: true);
+      final seasons = info?.seasonNumbers ?? const <int>[];
+      if (seasons.isEmpty) return const [];
+      // Bounded batches (4 in flight) — a 20-season show must not fire 20
+      // concurrent TMDB calls and trip its rate limit into missing seasons.
+      final bySeason = <(int, List<TmdbEpisode>)>[];
+      for (var i = 0; i < seasons.length; i += 4) {
+        final batch = seasons.skip(i).take(4);
+        bySeason.addAll(await Future.wait([
+          for (final s in batch)
+            svc.seasonEpisodes(_showTitle, s).then((eps) => (s, eps)),
+        ]));
+      }
+      final out = <Episode>[];
+      for (final (s, eps) in bySeason) {
+        for (final e in eps) {
+          out.add(Episode(
+            id: 'tmdb:$s:${e.number}',
+            title: e.name.trim().isEmpty ? 'Episode ${e.number}' : e.name,
+            season: s,
+            episode: e.number,
+            url: '', // resolved per episode via Real-Debrid at play time
+            plot: e.overview,
+            still: e.still,
+          ));
+        }
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
   }
 
   ({double fraction, bool watched, int updatedAt})? _progFor(Episode e) =>

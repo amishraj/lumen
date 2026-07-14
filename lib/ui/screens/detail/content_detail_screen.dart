@@ -120,8 +120,11 @@ class ContentDetailScreen extends ConsumerWidget {
                             ref.read(rdEnabledProvider).valueOrNull ?? false;
                         var toPlay = item;
                         if (rd) {
+                          // TMDB-discovered items carry no library stream —
+                          // don't offer an "IPTV" option backed by an empty url.
                           final picked = await showSourcePicker(context, ref,
-                              title: item.name, iptvUrl: item.url);
+                              title: item.name,
+                              iptvUrl: item.url.isEmpty ? null : item.url);
                           if (picked == null) return;
                           toPlay = item.copyWith(url: picked.url);
                         }

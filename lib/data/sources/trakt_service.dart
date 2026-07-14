@@ -232,6 +232,60 @@ class TraktService {
   /// freshly-linked account never shows the previous one's rows).
   Future<void> _clearCaches() => _repo.db.deleteSettingsPrefix('trakt:cache:');
 
+  /// Force-refresh the snapshots behind the home rows (resume points, watched
+  /// history, watchlist), ignoring their TTLs. Called once per app open so
+  /// activity from other devices shows up within seconds of launch instead of
+  /// whenever the 6h/24h cache windows happen to lapse. Returns true when any
+  /// payload actually changed — the caller invalidates the dependent providers
+  /// only then, so an unchanged account costs zero rebuilds.
+  Future<bool> refreshHomeSnapshots() async {
+    if (!await isConnected()) return false;
+    var changed = false;
+    Future<void> pull(String cacheKey, String url) async {
+      try {
+        final res = await _authGet(url);
+        if (res.statusCode != 200) return;
+        final data = res.data is String ? jsonDecode(res.data) : res.data;
+        final fresh = jsonEncode(data);
+        final old = await _repo.getSetting(cacheKey);
+        var same = false;
+        if (old != null && old.isNotEmpty) {
+          try {
+            same = jsonEncode((jsonDecode(old) as Map)['v']) == fresh;
+          } catch (_) {/* corrupt old snapshot — treat as changed */}
+        }
+        await _repo.setSetting(
+            cacheKey,
+            jsonEncode(
+                {'at': DateTime.now().millisecondsSinceEpoch, 'v': data}));
+        if (!same) changed = true;
+      } catch (_) {/* offline — keep the old snapshot */}
+    }
+
+    await Future.wait([
+      pull('trakt:cache:playback', '$_api/sync/playback'),
+      pull('trakt:cache:watched:movies', '$_api/sync/watched/movies'),
+      pull('trakt:cache:watched:shows', '$_api/sync/watched/shows'),
+      pull('trakt:cache:watchlist', '$_api/sync/watchlist'),
+    ]);
+    return changed;
+  }
+
+  /// Re-pull just the cross-device resume points. Chained after a stop
+  /// scrobble so the cached playback snapshot reflects the session that just
+  /// ended — without this, "continue watching" overlays could stay up to six
+  /// hours behind what the user just watched.
+  Future<void> refreshPlaybackCache() async {
+    if (!await isConnected()) return;
+    try {
+      final res = await _authGet('$_api/sync/playback');
+      if (res.statusCode != 200) return;
+      final data = res.data is String ? jsonDecode(res.data) : res.data;
+      await _repo.setSetting('trakt:cache:playback',
+          jsonEncode({'at': DateTime.now().millisecondsSinceEpoch, 'v': data}));
+    } catch (_) {/* best effort */}
+  }
+
   Future<void> _fetchUsername() async {
     try {
       final res = await _authGet('$_api/users/settings');

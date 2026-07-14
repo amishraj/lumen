@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/models.dart';
 import '../../data/repositories/library_repository.dart';
+import '../../data/sources/realdebrid_service.dart';
 import '../../data/sources/tmdb_service.dart';
 import '../../data/sources/trakt_service.dart';
 import '../../state/detail_bundle.dart';
@@ -13,9 +14,9 @@ import '../../state/providers.dart';
 import '../../ui/title_utils.dart';
 import '../aurora_focus.dart';
 import '../aurora_navigation.dart';
+import '../aurora_playback.dart';
 import '../aurora_providers.dart';
 import '../aurora_theme.dart';
-import '../player/aurora_player.dart';
 import '../widgets/aurora_badges.dart';
 import '../widgets/aurora_buttons.dart';
 import '../widgets/aurora_cards.dart';
@@ -225,8 +226,10 @@ class _BillboardState extends ConsumerState<_Billboard> {
 
   void _playDirect(StreamItem item) {
     if (item.kind == StreamKind.movie) {
-      Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => AuroraPlayerScreen(item: item)));
+      // Through the central resolver: Real-Debrid first with IPTV fallback —
+      // also the only way debrid-only featured picks (url: '') can play at
+      // all, instead of handing libmpv an empty url.
+      unawaited(AuroraPlayback.play(context, ref, item));
     } else {
       openAuroraItem(context, ref, item);
     }
@@ -858,14 +861,38 @@ class _TraktCard extends ConsumerWidget {
       radius: 12,
       scale: 1.07,
       onActivate: () async {
-        final repo = await ref.read(repositoryProvider.future);
         final pl = ref.read(activePlaylistProvider);
         if (pl?.id == null) return;
-        final hits = await repo.search(playlistId: pl!.id!, query: item.title);
-        final hit = LibraryRepository.preferEnglish(hits);
+        // Memory match first (instant); fall back to one DB search while the
+        // index is still building.
+        final idx = await ref.read(titleIndexProvider.future);
+        var hit = idx?.matchVod(item.title);
+        if (hit == null && idx == null) {
+          final repo = await ref.read(repositoryProvider.future);
+          hit = LibraryRepository.preferEnglish(
+              await repo.search(playlistId: pl!.id!, query: item.title));
+        }
+        var rdOn = false;
+        try {
+          rdOn = await ref.read(rdEnabledProvider.future);
+        } catch (_) {}
         if (!context.mounted) return;
         if (hit != null) {
           openAuroraItem(context, ref, hit);
+        } else if (rdOn) {
+          // Not in the IPTV library — open it anyway, playable via debrid.
+          openAuroraItem(
+              context,
+              ref,
+              StreamItem(
+                playlistId: pl!.id!,
+                kind: item.type == 'show'
+                    ? StreamKind.series
+                    : StreamKind.movie,
+                name: item.title,
+                logo: poster,
+                url: '',
+              ));
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text('"${item.title}" isn\'t in your library.')));

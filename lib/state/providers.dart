@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart' hide Category;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,8 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/db/app_database.dart';
 import '../data/models/models.dart';
 import '../data/repositories/library_repository.dart';
+import '../data/sources/realdebrid_service.dart';
 import '../data/sources/tmdb_service.dart';
 import '../data/sources/trakt_service.dart';
+import '../data/title_index.dart';
 
 /// Database + repository singletons.
 final databaseProvider =
@@ -143,96 +146,224 @@ final groupedSearchProvider =
 });
 
 // ---------------------------------------------------------------------------
+// In-memory title index
+// ---------------------------------------------------------------------------
+
+/// Bumped after a playlist re-sync so the index rebuilds over the new rows.
+final titleIndexRevProvider = StateProvider<int>((ref) => 0);
+
+/// The active source's movie/series titles, indexed in memory. ONE query to
+/// build; every discovery row / Trakt reconciliation matches against this
+/// instead of firing hundreds of serial LIKE scans at SQLite (which also
+/// queue behind a running playlist re-sync on sqflite's single connection).
+final titleIndexProvider = FutureProvider<TitleIndex?>((ref) async {
+  ref.watch(titleIndexRevProvider);
+  final repo = await ref.watch(repositoryProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null) return null;
+  final items = await repo.vodItems(pl!.id!);
+  // Normalising tens of thousands of names is CPU work — off the UI thread.
+  return compute(TitleIndex.build, (pl.id!, items));
+});
+
+// ---------------------------------------------------------------------------
 // Home feed
 // ---------------------------------------------------------------------------
 
-/// Featured banner = movies trending THIS WEEK, matched to the library.
-/// TMDB weekly trending when a key is set (with backdrop art for the hero),
-/// otherwise Trakt trending; finally the library's own featured picks.
+String encodeStreamItems(List<StreamItem> items) =>
+    jsonEncode([for (final it in items) it.toJson()]);
+
+List<StreamItem> decodeStreamItems(String raw) => [
+      for (final j in jsonDecode(raw) as List)
+        StreamItem.fromJson(Map<String, Object?>.from(j as Map)),
+    ];
+
+/// Stale-while-revalidate disk snapshot for a computed home row.
+///
+/// The last computed row is persisted in app_settings; on the next app open it
+/// paints IMMEDIATELY (one tiny key read — no network, no title matching),
+/// while [compute] re-derives the row in the background and re-emits only if
+/// something actually changed. This is what makes home content appear the
+/// moment the app opens instead of minutes later.
+Future<List<StreamItem>> snapshotStreamRow(
+  Ref ref,
+  String key,
+  Future<List<StreamItem>> Function() compute,
+) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final raw = await repo.getSetting(key);
+  if (raw != null && raw.isNotEmpty) {
+    List<StreamItem>? cached;
+    try {
+      cached = decodeStreamItems(raw);
+    } catch (_) {
+      cached = null; // corrupt — recompute below
+    }
+    if (cached != null) {
+      unawaited(() async {
+        try {
+          final fresh = await compute();
+          if (fresh.isEmpty) return; // keep last good snapshot
+          final enc = encodeStreamItems(fresh);
+          if (enc == raw) return;
+          await repo.setSetting(key, enc);
+          ref.invalidateSelf(); // re-emit with the fresh row
+        } catch (_) {/* offline — snapshot stays */}
+      }());
+      return cached;
+    }
+  }
+  final fresh = await compute();
+  if (fresh.isNotEmpty) {
+    try {
+      await repo.setSetting(key, encodeStreamItems(fresh));
+    } catch (_) {/* non-fatal */}
+  }
+  return fresh;
+}
+
+/// Featured banner = movies trending THIS WEEK, matched to the library (or
+/// kept as debrid-playable picks when Real-Debrid is on). TMDB weekly trending
+/// when a key is set (backdrop art for the hero), otherwise Trakt trending;
+/// finally the library's own featured picks. Snapshot-backed: paints instantly
+/// on reopen, refreshes in the background.
 final featuredProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
+  final plId = pl!.id!;
 
-  Future<List<StreamItem>> match(
-      List<(String title, String? art)> trending) async {
-    final picks = <StreamItem>[];
-    final seen = <int>{};
-    for (final (title, art) in trending) {
-      final hits = await repo.search(
-          playlistId: pl!.id!, kind: StreamKind.movie, query: title);
-      final m = LibraryRepository.preferEnglish(hits);
-      if (m?.id != null && seen.add(m!.id!)) {
-        // Prefer a wide TMDB backdrop for the cinematic hero.
-        picks.add(m.copyWith(logo: art ?? m.logo));
+  Future<List<StreamItem>> computeRow() async {
+    final idx = await ref.read(titleIndexProvider.future);
+    var rdOn = false;
+    try {
+      rdOn = await ref.read(rdEnabledProvider.future);
+    } catch (_) {}
+
+    List<StreamItem> match(List<(String title, String? art)> trending) {
+      final picks = <StreamItem>[];
+      final seenIds = <int>{};
+      final seenNames = <String>{};
+      for (final (title, art) in trending) {
+        final m = idx?.match(title, kind: StreamKind.movie);
+        if (m?.id != null && seenIds.add(m!.id!)) {
+          // Prefer a wide TMDB backdrop for the cinematic hero.
+          picks.add(m.copyWith(logo: art ?? m.logo));
+        } else if (m == null &&
+            rdOn &&
+            art != null &&
+            seenNames.add(title.toLowerCase())) {
+          // Not in the IPTV library but Real-Debrid can play it — keep it,
+          // Stremio-style, instead of silently shrinking the hero deck.
+          picks.add(StreamItem(
+              playlistId: plId,
+              kind: StreamKind.movie,
+              name: title,
+              logo: art,
+              url: ''));
+        }
         if (picks.length >= 10) break;
       }
+      return picks;
     }
-    return picks;
+
+    // TMDB weekly trending (best: gives backdrops).
+    try {
+      if (await ref.read(tmdbEnabledProvider.future)) {
+        final svc = await ref.read(tmdbServiceProvider.future);
+        final picks = match([
+          for (final t in await svc.trendingMoviesWeek()) (t.title, t.backdrop),
+        ]);
+        if (picks.isNotEmpty) return picks;
+      }
+    } catch (_) {/* fall through */}
+
+    // Trakt trending (works with the embedded key, no user setup).
+    try {
+      final svc = await ref.read(traktServiceProvider.future);
+      final picks = match([
+        for (final t in await svc.trendingMovies(limit: 30)) (t.title, null),
+      ]);
+      // Only use these if some carry art — otherwise fall through to the pure
+      // IPTV featured set below rather than returning an artless (blank) hero.
+      final withArt = picks.where((m) => m.logo != null).toList();
+      if (withArt.isNotEmpty) return withArt;
+    } catch (_) {/* fall through */}
+
+    // Final fallback: the source's own IPTV library — always available offline.
+    return repo.featured(plId);
   }
 
-  // TMDB weekly trending (best: gives backdrops).
-  try {
-    if (await ref.watch(tmdbEnabledProvider.future)) {
-      final svc = await ref.watch(tmdbServiceProvider.future);
-      final picks = await match([
-        for (final t in await svc.trendingMoviesWeek()) (t.title, t.backdrop),
-      ]);
-      if (picks.isNotEmpty) return picks;
-    }
-  } catch (_) {/* fall through */}
-
-  // Trakt trending (works with the embedded key, no user setup).
-  try {
-    final svc = await ref.watch(traktServiceProvider.future);
-    final picks = await match([
-      for (final t in await svc.trendingMovies(limit: 30)) (t.title, null),
-    ]);
-    // Only use these if some carry art — otherwise fall through to the pure
-    // IPTV featured set below rather than returning an artless (blank) hero.
-    final withArt = picks.where((m) => m.logo != null).toList();
-    if (withArt.isNotEmpty) return withArt;
-  } catch (_) {/* fall through */}
-
-  // Final fallback: the source's own IPTV library — always available offline.
-  return repo.featured(pl!.id!);
+  return snapshotStreamRow(ref, 'home:snap:$plId:featured', computeRow);
 });
 
+/// Continue Watching: the local in-progress list paints IMMEDIATELY (it's the
+/// source of truth for this device), with Trakt's cross-device resume items
+/// appended from the last known snapshot. The Trakt merge itself re-runs in
+/// the background (memory-matched via the title index — no SQL) and re-emits
+/// only when it found something new.
 final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
-  final local = await repo.continueWatching(pl!.id!);
+  final plId = pl!.id!;
+  final local = await repo.continueWatching(plId);
   final result = <StreamItem>[...local];
   final seen = local.map((e) => e.id).toSet();
-  // Merge Trakt's cross-device in-progress items, matched to the library.
-  try {
-    final connected = await ref.watch(traktConnectedProvider.future);
-    if (connected) {
-      final svc = await ref.watch(traktServiceProvider.future);
-      for (final p in (await svc.playback()).take(20)) {
-        final hit = await repo.findByTitle(pl.id!, p.item.title);
-        if (hit != null && !seen.contains(hit.id)) {
-          result.add(hit);
-          seen.add(hit.id);
+
+  final extrasKey = 'home:snap:$plId:cw_extras';
+  final raw = await repo.getSetting(extrasKey);
+  if (raw != null && raw.isNotEmpty) {
+    try {
+      for (final it in decodeStreamItems(raw)) {
+        if (it.id == null || !seen.contains(it.id)) {
+          result.add(it);
+          seen.add(it.id);
         }
       }
-    }
-  } catch (_) {/* offline / not connected */}
+    } catch (_) {/* corrupt snapshot — background refresh rewrites it */}
+  }
+
+  unawaited(() async {
+    try {
+      if (!await ref.read(traktConnectedProvider.future)) return;
+      final svc = await ref.read(traktServiceProvider.future);
+      final idx = await ref.read(titleIndexProvider.future);
+      if (idx == null) return;
+      final localIds = local.map((e) => e.id).toSet();
+      final extras = <StreamItem>[];
+      final xSeen = <int>{};
+      for (final p in (await svc.playback()).take(20)) {
+        final hit = idx.matchVod(p.item.title);
+        if (hit?.id != null &&
+            !localIds.contains(hit!.id) &&
+            xSeen.add(hit.id!)) {
+          extras.add(hit);
+        }
+      }
+      final enc = encodeStreamItems(extras);
+      if (enc != raw) {
+        await repo.setSetting(extrasKey, enc);
+        ref.invalidateSelf();
+      }
+    } catch (_) {/* offline / not connected — local list already shown */}
+  }());
   return result;
 });
 
 /// Set of library item ids the user has watched — locally and (synced once an
-/// hour) from Trakt's watched history. Drives the "seen" check on posters.
+/// hour, or immediately after the app-open Trakt refresh finds changes) from
+/// Trakt's watched history. Drives the "seen" check on posters.
 final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return {};
 
   // Return the locally-known "seen" set IMMEDIATELY so the marks paint on the
-  // first frame. The hourly Trakt reconciliation (title-matching 300 entries)
-  // runs in the BACKGROUND and re-invalidates this provider when it lands —
-  // it must never gate app load.
+  // first frame. The Trakt reconciliation (title-matching 300 entries) runs in
+  // the BACKGROUND against the in-memory index — zero SQL reads, one batched
+  // write — and re-invalidates this provider when it lands.
+  final local = await repo.watchedIds(pl!.id!);
   final last =
       int.tryParse(await repo.getSetting('trakt_watched_sync_at') ?? '') ?? 0;
   final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -241,46 +372,73 @@ final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
       try {
         if (!await ref.read(traktConnectedProvider.future)) return;
         final svc = await ref.read(traktServiceProvider.future);
-        for (final w in (await svc.watchedMovies()).take(150)) {
-          final hit = await repo.findByTitle(pl!.id!, w.title);
-          if (hit?.id != null && hit!.kind == StreamKind.movie) {
-            await repo.markWatched(hit.id!);
-          }
+        final idx = await ref.read(titleIndexProvider.future);
+        if (idx == null) return;
+        final toMark = <int>{};
+        for (final w in (await svc.watchedMovies()).take(300)) {
+          final hit = idx.match(w.title, kind: StreamKind.movie);
+          if (hit?.id != null && !local.contains(hit!.id)) toMark.add(hit.id!);
         }
-        for (final w in (await svc.watchedShows()).take(150)) {
-          final hit = await repo.findByTitle(pl!.id!, w.title);
-          if (hit?.id != null && hit!.kind == StreamKind.series) {
-            await repo.markWatched(hit.id!);
-          }
+        for (final w in (await svc.watchedShows()).take(300)) {
+          final hit = idx.match(w.title, kind: StreamKind.series);
+          if (hit?.id != null && !local.contains(hit!.id)) toMark.add(hit.id!);
         }
+        await repo.markWatchedMany(toMark);
         await repo.setSetting('trakt_watched_sync_at', '$nowMs');
-        ref.invalidateSelf(); // re-read with the freshly-marked ids
+        if (toMark.isNotEmpty) {
+          ref.invalidateSelf(); // re-read with the freshly-marked ids
+        }
       } catch (_) {/* best effort — keep the local set */}
     }());
   }
-  return repo.watchedIds(pl!.id!);
+  return local;
 });
 
-/// stream id → watched fraction (0..1). Local progress first, overlaid with
-/// Trakt's cross-device resume points (matched by EN-preferring title search)
-/// so partial progress shows no matter where you watched.
+/// stream id → watched fraction (0..1). Local progress paints immediately,
+/// overlaid with the last known Trakt cross-device resume points; the Trakt
+/// overlay re-derives in the background (memory-matched) and re-emits on
+/// change — so partial progress shows no matter where you watched, without
+/// ever gating the home paint on the network.
 final progressFractionsProvider = FutureProvider<Map<int, double>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final map = await repo.progressFractions();
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return map;
-  try {
-    final connected = await ref.watch(traktConnectedProvider.future);
-    if (connected) {
-      final svc = await ref.watch(traktServiceProvider.future);
+  final plId = pl!.id!;
+
+  final extrasKey = 'home:snap:$plId:progress_extras';
+  final raw = await repo.getSetting(extrasKey);
+  if (raw != null && raw.isNotEmpty) {
+    try {
+      (jsonDecode(raw) as Map<String, dynamic>).forEach((k, v) {
+        final id = int.tryParse(k);
+        if (id != null && v is num && !map.containsKey(id)) {
+          map[id] = v.toDouble().clamp(0.0, 1.0);
+        }
+      });
+    } catch (_) {/* corrupt snapshot — background refresh rewrites it */}
+  }
+
+  unawaited(() async {
+    try {
+      if (!await ref.read(traktConnectedProvider.future)) return;
+      final svc = await ref.read(traktServiceProvider.future);
+      final idx = await ref.read(titleIndexProvider.future);
+      if (idx == null) return;
+      final extras = <String, double>{};
       for (final p in (await svc.playback()).take(30)) {
-        final hit = await repo.findByTitle(pl!.id!, p.item.title);
-        if (hit?.id != null && !map.containsKey(hit!.id)) {
-          map[hit.id!] = p.progress.clamp(0.0, 1.0);
+        final hit = idx.matchVod(p.item.title);
+        if (hit?.id != null) {
+          extras['${hit!.id}'] = p.progress.clamp(0.0, 1.0);
         }
       }
-    }
-  } catch (_) {/* offline — local progress still shows */}
+      final enc = jsonEncode(extras);
+      if (enc != raw) {
+        await repo.setSetting(extrasKey, enc);
+        ref.invalidateSelf();
+      }
+    } catch (_) {/* offline — local progress still shows */}
+  }());
   return map;
 });
 

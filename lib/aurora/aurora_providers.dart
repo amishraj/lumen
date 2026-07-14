@@ -2,8 +2,9 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/models/models.dart';
-import '../data/repositories/library_repository.dart';
+import '../data/sources/realdebrid_service.dart';
 import '../data/sources/tmdb_service.dart';
+import '../data/title_index.dart';
 import '../state/providers.dart';
 
 /// Aurora keeps its own browse state (per-kind categories & selection) so the
@@ -154,29 +155,43 @@ final auroraSportsProvider =
   ];
 });
 
-/// "More Like This" for detail pages: TMDB recommendations matched back to
-/// the user's own library (only titles they can actually play).
+/// "More Like This" for detail pages: TMDB recommendations resolved through
+/// the in-memory title index (memory lookups, no per-title SQL). Library
+/// matches come back playable; with Real-Debrid on, the rest of the list
+/// stays too — playable via debrid, like the browse grid.
 final auroraRecsProvider = FutureProvider.autoDispose
     .family<List<StreamItem>, ({String title, bool isShow})>((ref, args) async {
   if (!await ref.watch(tmdbEnabledProvider.future)) return [];
-  final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
   final svc = await ref.watch(tmdbServiceProvider.future);
   final recs = await svc.recommendationsFor(args.title, show: args.isShow);
+  final idx = await ref.watch(titleIndexProvider.future);
+  var rdOn = false;
+  try {
+    rdOn = await ref.read(rdEnabledProvider.future);
+  } catch (_) {}
+  final kind = args.isShow ? StreamKind.series : StreamKind.movie;
   final out = <StreamItem>[];
-  final seen = <int>{};
+  final seenIds = <int>{};
+  final seenNames = <String>{};
   for (final t in recs) {
-    final hits = await repo.search(
-      playlistId: pl!.id!,
-      kind: args.isShow ? StreamKind.series : StreamKind.movie,
-      query: t.title,
-    );
-    final hit = LibraryRepository.preferEnglish(hits);
-    if (hit?.id != null && seen.add(hit!.id!)) {
-      out.add(hit.copyWith(logo: t.poster ?? t.backdrop, rating: t.rating));
-      if (out.length >= 14) break;
+    final hit = idx?.match(t.title, kind: kind);
+    if (hit?.id != null) {
+      if (seenIds.add(hit!.id!)) {
+        out.add(hit.copyWith(logo: t.poster ?? t.backdrop, rating: t.rating));
+      }
+    } else if (rdOn && seenNames.add(t.title.toLowerCase())) {
+      out.add(StreamItem(
+        playlistId: pl!.id!,
+        kind: kind,
+        name: t.title,
+        logo: t.poster ?? t.backdrop,
+        url: '',
+        rating: t.rating,
+      ));
     }
+    if (out.length >= 14) break;
   }
   return out;
 });
@@ -211,21 +226,22 @@ class CatalogPageState {
 }
 
 class TmdbCatalogPager extends StateNotifier<CatalogPageState> {
-  TmdbCatalogPager(this._svc, this._repo, this._plId, this._show, this._genreId)
+  TmdbCatalogPager(
+      this._svc, this._titleIndex, this._plId, this._show, this._genreId)
       : super(const CatalogPageState()) {
     loadMore();
   }
 
   TmdbCatalogPager.empty()
       : _svc = null,
-        _repo = null,
+        _titleIndex = null,
         _plId = 0,
         _show = false,
         _genreId = null,
         super(const CatalogPageState(reachedEnd: true));
 
   final TmdbService? _svc;
-  final LibraryRepository? _repo;
+  final Future<TitleIndex?>? _titleIndex;
   final int _plId;
   final bool _show;
   final int? _genreId;
@@ -234,18 +250,22 @@ class TmdbCatalogPager extends StateNotifier<CatalogPageState> {
   static const _maxPages = 6;
 
   Future<void> loadMore() async {
-    final svc = _svc, repo = _repo;
-    if (svc == null || repo == null || _busy || state.reachedEnd) return;
+    final svc = _svc;
+    if (svc == null || _busy || state.reachedEnd) return;
     _busy = true;
     state = state.copyWith(loading: true);
     _page++;
     final tmdb = await svc.discover(show: _show, genreId: _genreId, page: _page);
     final kind = _show ? StreamKind.series : StreamKind.movie;
+    TitleIndex? idx;
+    try {
+      idx = await _titleIndex;
+    } catch (_) {/* index still building — items stay debrid-playable */}
     final mapped = <StreamItem>[];
     for (final t in tmdb) {
-      // Match to library for playability + overlays; keep the item regardless.
-      final hits = await repo.search(playlistId: _plId, kind: kind, query: t.title);
-      final hit = LibraryRepository.preferEnglish(hits);
+      // Memory match to the library for playability + overlays; keep the item
+      // regardless (unmatched titles play via Real-Debrid, per the play flow).
+      final hit = idx?.match(t.title, kind: kind);
       mapped.add(StreamItem(
         id: hit?.id,
         playlistId: _plId,
@@ -256,6 +276,7 @@ class TmdbCatalogPager extends StateNotifier<CatalogPageState> {
         rating: t.rating,
       ));
     }
+    if (!mounted) return;
     state = state.copyWith(
       items: [...state.items, ...mapped],
       loading: false,
@@ -280,12 +301,14 @@ class CatalogKey {
 final auroraCatalogPagerProvider = StateNotifierProvider.autoDispose
     .family<TmdbCatalogPager, CatalogPageState, CatalogKey>((ref, key) {
   final svc = ref.watch(tmdbServiceProvider).valueOrNull;
-  final repo = ref.watch(repositoryProvider).valueOrNull;
   final pl = ref.watch(activePlaylistProvider);
-  if (svc == null || repo == null || pl?.id == null) {
+  if (svc == null || pl?.id == null) {
     return TmdbCatalogPager.empty();
   }
-  return TmdbCatalogPager(svc, repo, pl!.id!, key.show, key.genreId);
+  // The index future (not its value) — pages await it lazily, so the pager
+  // isn't torn down when the index finishes building mid-scroll.
+  final idxFuture = ref.watch(titleIndexProvider.future);
+  return TmdbCatalogPager(svc, idxFuture, pl!.id!, key.show, key.genreId);
 });
 
 /// The nav's focus target — the currently-selected tab's *stable* focus node,

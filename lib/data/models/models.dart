@@ -160,6 +160,37 @@ class StreamItem {
         rating: (r['rating'] as double?),
       );
 
+  /// JSON round-trip for the persisted home-row snapshots (same keys as the
+  /// DB row, so fromRow-shaped code can share the field names).
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'playlist_id': playlistId,
+        'kind': kind.name,
+        'name': name,
+        'logo': logo,
+        'url': url,
+        'group_title': groupTitle,
+        'tvg_id': tvgId,
+        'num': num,
+        'rating': rating,
+      };
+
+  // NB: the `num` field shadows the `num` type in here — cast via int/double.
+  factory StreamItem.fromJson(Map<String, Object?> r) => StreamItem(
+        id: r['id'] as int?,
+        playlistId: (r['playlist_id'] as int?) ?? 0,
+        kind: streamKindFromString('${r['kind']}'),
+        name: '${r['name'] ?? ''}',
+        logo: r['logo'] as String?,
+        url: '${r['url'] ?? ''}',
+        groupTitle: r['group_title'] as String?,
+        tvgId: r['tvg_id'] as String?,
+        num: r['num'] as int?,
+        rating: r['rating'] is int
+            ? (r['rating'] as int).toDouble()
+            : r['rating'] as double?,
+      );
+
   StreamItem copyWith({String? logo, double? rating, String? url}) =>
       StreamItem(
         id: id,

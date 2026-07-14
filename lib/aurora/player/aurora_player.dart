@@ -522,6 +522,15 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
         }
       }
     }
+
+    // Keep Trakt's progress near-live: re-send a start scrobble every ~5 min
+    // (the protocol allows refreshing it) so even a killed app leaves Trakt
+    // within minutes of the truth instead of only learning at stop time.
+    if (_playing &&
+        DateTime.now().difference(_lastScrobbleAt) >
+            const Duration(minutes: 5)) {
+      _scrobble('start');
+    }
   }
 
   /// Stable per-episode key for the current item, or null if it isn't a
@@ -552,8 +561,11 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   double get _progressPct =>
       _lastDurMs > 0 ? (_lastPosMs / _lastDurMs * 100.0).clamp(0, 100) : 0;
 
+  DateTime _lastScrobbleAt = DateTime.now();
+
   void _scrobble(String action) {
     if (_isLive) return;
+    _lastScrobbleAt = DateTime.now();
     final (title, isShow, season, episode) = _scrobbleIdentity();
     ref.read(traktServiceProvider).valueOrNull?.scrobble(action, title,
         isShow: isShow,
@@ -573,7 +585,20 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
         unawaited(repo?.db.saveEpisodeProgress(ek, _lastPosMs, _lastDurMs));
       }
     }
-    _scrobble('stop');
+    // Stop scrobble, then re-pull Trakt's resume points so the cached playback
+    // snapshot (which feeds the Continue Watching overlay) reflects this
+    // session the moment the player closes — not after the 6h cache TTL.
+    final svc = ref.read(traktServiceProvider).valueOrNull;
+    if (svc == null) return;
+    _lastScrobbleAt = DateTime.now();
+    final (title, isShow, season, episode) = _scrobbleIdentity();
+    unawaited(svc
+        .scrobble('stop', title,
+            isShow: isShow,
+            season: season,
+            episode: episode,
+            progressPct: _progressPct)
+        .then((_) => svc.refreshPlaybackCache()));
   }
 
   void _skip(int delta) {
