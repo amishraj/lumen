@@ -72,6 +72,7 @@ class AuroraMyStuffPage extends ConsumerWidget {
                 item: it,
                 width: wideW,
                 onTap: () => openAuroraItem(context, ref, it),
+                onLongPress: () => dismissFromContinueWatching(ref, it),
               ),
             ),
             AuroraShelf<StreamItem>(

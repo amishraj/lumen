@@ -117,7 +117,8 @@ class AuroraSportsPage extends ConsumerWidget {
     }
 
     return AuroraNavScrollView(
-      builder: (scroll) => CustomScrollView(controller: scroll, slivers: [
+      builder: (scroll) => AuroraRowScope(
+        child: CustomScrollView(controller: scroll, slivers: [
         SliverToBoxAdapter(
           child: Padding(
             padding: EdgeInsets.fromLTRB(margin, 92, margin, 0),
@@ -194,6 +195,7 @@ class AuroraSportsPage extends ConsumerWidget {
           ),
         const SliverToBoxAdapter(child: SizedBox(height: 72)),
       ]),
+      ),
     );
   }
 }

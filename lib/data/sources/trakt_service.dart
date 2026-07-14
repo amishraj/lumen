@@ -659,6 +659,35 @@ class TraktService {
     } catch (_) {/* best effort */}
   }
 
+  /// Mark (or un-mark) an entire season watched on Trakt for the show matching
+  /// [title]. Resolves the show's ids by search, then posts the season to
+  /// /sync/history (or /sync/history/remove) — Trakt expands a bare season to
+  /// all its episodes. Best-effort: a failure never blocks the local toggle.
+  /// Invalidates the cached watched-shows snapshot so the next read reflects it.
+  Future<void> setSeasonWatched(String title, int season,
+      {required bool watched}) async {
+    if (!await isConnected()) return;
+    try {
+      final ids = await idsFor(title, isShow: true);
+      if (ids == null) return;
+      await _dio.post(
+        watched ? '$_api/sync/history' : '$_api/sync/history/remove',
+        data: jsonEncode({
+          'shows': [
+            {
+              'ids': ids,
+              'seasons': [
+                {'number': season}
+              ],
+            }
+          ]
+        }),
+        options: Options(headers: await _authHeaders()),
+      );
+      await _repo.setSetting('trakt:cache:watched:shows', null);
+    } catch (_) {/* best effort */}
+  }
+
   /// Session cache of title → Trakt ids so pause/resume/stop cycles don't
   /// re-hit the search endpoint every time.
   final _idsCache = <String, Map<String, dynamic>?>{};

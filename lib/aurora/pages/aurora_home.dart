@@ -123,10 +123,11 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
               items: v(continueWatchingProvider),
               rowHeight: wideRow,
               skeletonWidth: wideW,
-              itemBuilder: (context, it, i) => _DismissibleWideCard(
+              itemBuilder: (context, it, i) => AuroraWideCard(
                 item: it,
                 width: wideW,
                 onTap: () => openAuroraItem(context, ref, it),
+                onLongPress: () => dismissFromContinueWatching(ref, it),
               ),
             ),
             posterShelf('My List', v(auroraMyListProvider)),
@@ -163,61 +164,6 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
       ],
       ),
     );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Continue Watching card with a dismiss ✕
-// ---------------------------------------------------------------------------
-
-/// A wide card plus a small ✕ that hides the entry from Continue Watching
-/// without touching tracked progress. The ✕ is its own focus stop right after
-/// the card, so the remote reaches it with a single ▶ from the card; it stays
-/// faintly visible at rest so pointer users can discover it too.
-class _DismissibleWideCard extends ConsumerWidget {
-  const _DismissibleWideCard({
-    required this.item,
-    required this.width,
-    required this.onTap,
-  });
-
-  final StreamItem item;
-  final double width;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Stack(clipBehavior: Clip.none, children: [
-      AuroraWideCard(item: item, width: width, onTap: onTap),
-      Positioned(
-        top: 6,
-        right: 6,
-        child: AuroraFocusable(
-          radius: 15,
-          scale: 1.15,
-          ring: false,
-          onActivate: () => dismissFromContinueWatching(ref, item),
-          builder: (context, focused) => Tooltip(
-            message: 'Remove from Continue Watching',
-            waitDuration: const Duration(milliseconds: 600),
-            child: AnimatedContainer(
-              duration: Aurora.fast,
-              padding: const EdgeInsets.all(5),
-              decoration: BoxDecoration(
-                color: focused ? Colors.white : const Color(0x8C06070B),
-                shape: BoxShape.circle,
-                border: Border.all(
-                    color: focused ? Colors.white : const Color(0x59FFFFFF),
-                    width: 1),
-              ),
-              child: Icon(Icons.close_rounded,
-                  size: 13,
-                  color: focused ? Aurora.bg : const Color(0xD9FFFFFF)),
-            ),
-          ),
-        ),
-      ),
-    ]);
   }
 }
 
@@ -363,7 +309,23 @@ class _BillboardState extends ConsumerState<_Billboard> {
         .watch(detailBundleProvider(
             (title: item.name, isShow: item.kind == StreamKind.series)))
         .valueOrNull;
-    final art = bundle?.tmdb?.backdrop ?? item.logo;
+    // Prefer the backdrop the featured item already carries — when TMDB
+    // governs, that IS the high-quality TMDB w1280 backdrop, present from the
+    // first frame. Only fall back to the detail-bundle backdrop when the item
+    // has no art of its own. Keying the switcher below on `art` meant the old
+    // `bundle.backdrop ?? item.logo` order swapped a perfectly good backdrop
+    // for the detail one the moment the bundle loaded — a visible flicker;
+    // this makes the HQ banner appear without that mid-view churn.
+    final art = (item.logo != null && item.logo!.isNotEmpty)
+        ? item.logo
+        : bundle?.tmdb?.backdrop;
+    // Warm the detail backdrop anyway so a source without its own art (Trakt
+    // fallback) crossfades to a cached image instead of a blank tile.
+    if ((item.logo == null || item.logo!.isEmpty) &&
+        bundle?.tmdb?.backdrop != null) {
+      precacheImage(
+          CachedNetworkImageProvider(bundle!.tmdb!.backdrop!), context);
+    }
     final synopsis = bundle?.overview;
     final omdb = bundle?.omdb;
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};

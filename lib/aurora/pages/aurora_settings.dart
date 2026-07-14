@@ -11,6 +11,7 @@ import '../../state/service_status.dart';
 import '../../ui/screens/onboarding/add_source_screen.dart';
 import '../../ui/screens/settings/trakt_screen.dart';
 import '../../ui/widgets/rd_connect_sheet.dart';
+import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_buttons.dart';
 import '../widgets/aurora_shelf.dart';
@@ -30,7 +31,8 @@ class AuroraSettingsPage extends ConsumerWidget {
     final health = ref.watch(serviceHealthProvider).valueOrNull;
 
     return AuroraNavScrollView(
-      builder: (scroll) => ListView(
+      builder: (scroll) => AuroraRowScope(
+        child: ListView(
       controller: scroll,
       padding: EdgeInsets.fromLTRB(margin, 92, margin, 64),
       children: [
@@ -179,6 +181,7 @@ class AuroraSettingsPage extends ConsumerWidget {
           ),
         ),
       ],
+    ),
     ),
     );
   }

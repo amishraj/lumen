@@ -3,6 +3,48 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../ui/input_mode.dart' show InputMode;
+import 'aurora_providers.dart' show auroraNavTarget;
+
+/// Route Up out of a page's top row: smooth-scroll the focused element's
+/// enclosing vertical scroller to the top and move focus to the active tab in
+/// the top nav. Returns true when there's a nav target — so the traversal
+/// policy reports the key handled and focus never leaks to a spatially-nearest
+/// (wrong) tab, which was the "Up from Settings lands on TV Shows" bug.
+///
+/// Lives here (not in a Focus.onKeyEvent, which proved unreliable — a
+/// non-focusable wrapper's key handler didn't fire) because the traversal
+/// policy's inDirection IS the mechanism the framework runs for arrow keys.
+bool auroraUpToNav(FocusNode from) {
+  final ctx = from.context;
+  if (ctx != null) {
+    ScrollableState? s = Scrollable.maybeOf(ctx);
+    while (s != null) {
+      final pos = s.position;
+      if (pos.axis == Axis.vertical) {
+        // Guard the animate: hasContentDimensions/hasPixels rule out an
+        // un-laid-out or detached position, and the try/catch covers the rare
+        // race where the scroller disposes between check and call.
+        try {
+          if (pos.hasContentDimensions && pos.hasPixels && pos.pixels > 0) {
+            pos.animateTo(0,
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeOutCubic);
+          }
+        } catch (_) {/* detached mid-navigation — focus move still stands */}
+        break;
+      }
+      s = s.context.findAncestorStateOfType<ScrollableState>();
+    }
+  }
+  final nav = auroraNavTarget;
+  if (nav == null || !nav.canRequestFocus) return false;
+  try {
+    nav.requestFocus();
+  } catch (_) {
+    return false; // node disposed between the check and here
+  }
+  return true;
+}
 
 /// Aurora's single focus primitive. Every interactive surface in the new
 /// experience goes through this so the whole app speaks one focus language:
@@ -306,8 +348,47 @@ class AuroraRowTraversalPolicy extends ReadingOrderTraversalPolicy {
           return true;
         }
       }
+      // No row in that direction. For Up, hand off to the active tab in the
+      // nav and snap the page to the top — never fall through to the default
+      // policy, which escapes this page's scope to a spatially-nearest tab.
+      if (direction == TraversalDirection.up && auroraUpToNav(currentNode)) {
+        return true;
+      }
     }
     return super.inDirection(currentNode, direction);
+  }
+}
+
+/// Directional traversal that keeps the default geometric behaviour but, when
+/// Up has no in-page destination, routes to the active tab (never a
+/// spatially-nearest wrong one). For pages with side-by-side columns (Live,
+/// Browse) where [AuroraRowTraversalPolicy]'s row-nearest logic would jump
+/// between columns.
+class AuroraUpNavPolicy extends ReadingOrderTraversalPolicy {
+  @override
+  bool inDirection(FocusNode currentNode, TraversalDirection direction) {
+    if (super.inDirection(currentNode, direction)) return true;
+    if (direction == TraversalDirection.up) return auroraUpToNav(currentNode);
+    return false;
+  }
+}
+
+/// Bounds a page in its own [FocusScope] + [AuroraUpNavPolicy] so Up from the
+/// top returns to the page's own nav pill (and never leaks to the top bar via
+/// spatial traversal). Use on pages that are NOT a single vertical stack of
+/// rails — those use [AuroraRowScope].
+class AuroraUpNavScope extends StatelessWidget {
+  const AuroraUpNavScope({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusScope(
+      child: FocusTraversalGroup(
+        policy: AuroraUpNavPolicy(),
+        child: child,
+      ),
+    );
   }
 }
 

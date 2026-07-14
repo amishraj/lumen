@@ -10,7 +10,6 @@ import '../player/aurora_player.dart';
 import '../widgets/aurora_badges.dart';
 import '../widgets/aurora_image.dart';
 import '../widgets/aurora_search_field.dart';
-import '../widgets/aurora_up_to_nav.dart';
 
 const _kFavGroup = '★ Favorites';
 
@@ -66,7 +65,8 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
             ? _kFavGroup
             : (cats != null && cats.isNotEmpty ? cats.first.name : null));
 
-    return Padding(
+    return AuroraUpNavScope(
+      child: Padding(
       padding: EdgeInsets.fromLTRB(margin, 84, 0, 0),
       child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         // ---- Category rail ----
@@ -111,9 +111,7 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                                     color: Aurora.textFaint, fontSize: 12)));
                       }
                       return FocusTraversalGroup(
-                      child: AuroraUpToNav(
-                        controller: _railScroll,
-                        child: ListView.builder(
+                      child: ListView.builder(
                         controller: _railScroll,
                         padding: const EdgeInsets.only(bottom: 24, right: 6),
                         itemExtent: 54,
@@ -139,7 +137,6 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                           );
                         },
                       ),
-                      ),
                     );
                     }),
             ),
@@ -161,6 +158,7 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                     ),
         ),
       ]),
+      ),
     );
   }
 }

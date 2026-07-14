@@ -9,7 +9,6 @@ import '../aurora_providers.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_cards.dart';
 import '../widgets/aurora_search_field.dart';
-import '../widgets/aurora_up_to_nav.dart';
 
 /// Movies / TV Shows browse.
 ///
@@ -85,8 +84,7 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
       final cellW = (avail - (cols - 1) * gap) / cols;
       final cellH = cellW * 1.5 + 58;
 
-      return AuroraUpToNav(
-        controller: _scroll,
+      return AuroraUpNavScope(
         child: CustomScrollView(
         controller: _scroll,
         slivers: [

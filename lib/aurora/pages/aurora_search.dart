@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/models.dart';
 import '../../state/providers.dart';
+import '../aurora_focus.dart';
 import '../aurora_navigation.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_cards.dart';
@@ -52,7 +53,8 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
     final posterW = Aurora.posterWidth(context);
     final liveW = Aurora.wideWidth(context) * 0.82;
 
-    return Column(children: [
+    return AuroraRowScope(
+      child: Column(children: [
       Padding(
         padding: EdgeInsets.fromLTRB(margin, 88, margin, 4),
         child: Row(children: [
@@ -129,7 +131,8 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
                 },
               ),
       ),
-    ]);
+    ]),
+    );
   }
 }
 

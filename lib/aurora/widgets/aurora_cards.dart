@@ -115,12 +115,18 @@ class AuroraWideCard extends ConsumerWidget {
     required this.onTap,
     required this.width,
     this.autofocus = false,
+    this.onLongPress,
   });
 
   final StreamItem item;
   final VoidCallback onTap;
   final double width;
   final bool autofocus;
+
+  /// Optional press-and-hold action (Continue Watching uses it to clear the
+  /// entry) — the native Android-TV "remove from row" gesture, with no extra
+  /// on-card focus stop cluttering left/right navigation.
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -139,6 +145,7 @@ class AuroraWideCard extends ConsumerWidget {
     return AuroraFocusable(
       autofocus: autofocus,
       onActivate: onTap,
+      onLongPress: onLongPress,
       radius: 12,
       scale: 1.06,
       builder: (context, focused) => SizedBox(

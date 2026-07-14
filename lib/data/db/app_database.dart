@@ -180,6 +180,39 @@ class AppDatabase {
     );
   }
 
+  /// Explicitly set the watched flag for a batch of episode keys (the "mark
+  /// season watched" toggle). Watched rows are stored flag-only (0/0 pos/dur);
+  /// un-watching removes the row so the episode reverts to untouched. One
+  /// transaction for the whole season.
+  Future<void> setEpisodesWatched(
+      Iterable<String> keys, bool watched) async {
+    final list = keys.toList();
+    if (list.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final key in list) {
+        if (watched) {
+          batch.insert(
+            'episode_progress',
+            {
+              'ep_key': key,
+              'position_ms': 0,
+              'duration_ms': 0,
+              'watched': 1,
+              'updated_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        } else {
+          batch.delete('episode_progress',
+              where: 'ep_key=?', whereArgs: [key]);
+        }
+      }
+      await batch.commit(noResult: true, continueOnError: true);
+    });
+  }
+
   /// ep_key → (completed fraction 0..1, watched, last-touched ms) for every
   /// episode the user has started. Drives the series screen's seen marks,
   /// resume overlays and "jump to next episode".

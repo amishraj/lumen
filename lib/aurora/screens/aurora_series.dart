@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,6 +7,7 @@ import '../../data/models/models.dart';
 import '../../data/repositories/library_repository.dart';
 import '../../data/sources/realdebrid_service.dart';
 import '../../data/sources/tmdb_service.dart';
+import '../../data/sources/trakt_service.dart';
 import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
 import '../../ui/title_utils.dart';
@@ -231,6 +234,39 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
       ref.invalidate(recentlyWatchedProvider);
       ref.invalidate(watchedIdsProvider);
       ref.invalidate(progressFractionsProvider);
+    }
+  }
+
+  bool _markingSeason = false;
+
+  /// Toggle a whole season's watched state: locally (episode_progress) and on
+  /// Trakt, then refresh every seen/continue surface. When the season is
+  /// already fully watched this clears it; otherwise it marks all episodes.
+  Future<void> _toggleSeasonWatched(List<Episode> seasonEps, int season) async {
+    if (_markingSeason || seasonEps.isEmpty) return;
+    setState(() => _markingSeason = true);
+    final target = !seasonEps.every(_isWatched); // mark unless already all seen
+    try {
+      final repo = await ref.read(repositoryProvider.future);
+      final keys = [
+        for (final e in seasonEps) episodeKey(_showTitle, e.season, e.episode),
+      ];
+      await repo.db.setEpisodesWatched(keys, target);
+      // Optimistically fold Trakt's view into local state so the check lands
+      // instantly; the network call syncs the same in the background.
+      final svc = ref.read(traktServiceProvider).valueOrNull;
+      unawaited(
+          svc?.setSeasonWatched(_showTitle, season, watched: target));
+      await _loadProgress();
+      if (mounted) {
+        ref.invalidate(episodeProgressProvider);
+        ref.invalidate(continueWatchingProvider);
+        ref.invalidate(recentlyWatchedProvider);
+        ref.invalidate(watchedIdsProvider);
+        ref.invalidate(traktWatchedEpisodesProvider(_showTitle));
+      }
+    } finally {
+      if (mounted) setState(() => _markingSeason = false);
     }
   }
 
@@ -470,6 +506,7 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                       s,
                 };
 
+                final seasonWatched = watchedSeasons.contains(_season);
                 return Padding(
                   padding:
                       EdgeInsets.symmetric(horizontal: margin, vertical: 14),
@@ -485,6 +522,21 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                           _scrolledToResume = true; // manual pick — don't yank
                           _userPickedSeason = true; // and never auto-repick
                         }),
+                      ),
+                      const SizedBox(height: 12),
+                      // Clean per-season toggle: mark the whole season watched
+                      // (or clear it) locally + on Trakt in one press.
+                      AuroraPillButton(
+                        label: _markingSeason
+                            ? 'Updating…'
+                            : (seasonWatched
+                                ? 'Season $_season watched'
+                                : 'Mark Season $_season watched'),
+                        icon: seasonWatched
+                            ? Icons.check_circle_rounded
+                            : Icons.done_all_rounded,
+                        compact: true,
+                        onPressed: () => _toggleSeasonWatched(inSeason, _season),
                       ),
                       const SizedBox(height: 16),
                       // Centre the episode column rather than hugging the left
