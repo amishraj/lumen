@@ -108,6 +108,7 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
                         itemBuilder: (context, it, i) => AuroraPosterCard(
                           item: it,
                           width: posterW,
+                          showSourceBadge: true,
                           onTap: () => openAuroraItem(context, ref, it),
                         ),
                       ),
@@ -119,6 +120,7 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
                         itemBuilder: (context, it, i) => AuroraPosterCard(
                           item: it,
                           width: posterW,
+                          showSourceBadge: true,
                           onTap: () => openAuroraItem(context, ref, it),
                         ),
                       ),

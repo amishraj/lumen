@@ -82,6 +82,7 @@ class LibraryRepository {
       },
     );
     await db.markSynced(pl.id!, count);
+    _episodeCache.clear(); // series ids may have changed with the new index
     yield SyncProgress('Done', count);
   }
 
@@ -179,9 +180,21 @@ class LibraryRepository {
   Future<void> setSetting(String key, String? value) =>
       db.setSetting(key, value);
 
+  /// Session cache for [seriesEpisodes]: get_series_info is a portal
+  /// round-trip and the series screen now merges up to four entries per open,
+  /// so reopening a show must not refire identical calls. 30-minute TTL keeps
+  /// airing shows honest; cleared wholesale after a re-sync.
+  final _episodeCache = <String, (int, List<Episode>)>{};
+  static const _episodeCacheTtlMs = 30 * 60 * 1000;
+
   /// Resolve series episodes on demand (Xtream only).
   Future<List<Episode>> seriesEpisodes(Playlist pl, String seriesId) async {
     if (pl.kind != SourceKind.xtream) return [];
-    return XtreamClient(pl).seriesEpisodes(seriesId);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final hit = _episodeCache[seriesId];
+    if (hit != null && now - hit.$1 < _episodeCacheTtlMs) return hit.$2;
+    final eps = await XtreamClient(pl).seriesEpisodes(seriesId);
+    if (eps.isNotEmpty) _episodeCache[seriesId] = (now, eps);
+    return eps;
   }
 }

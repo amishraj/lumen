@@ -118,7 +118,17 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
         ),
         SliverList(
           delegate: SliverChildListDelegate.fixed([
-            wideShelf('Continue Watching', v(continueWatchingProvider)),
+            AuroraShelf<StreamItem>(
+              title: 'Continue Watching',
+              items: v(continueWatchingProvider),
+              rowHeight: wideRow,
+              skeletonWidth: wideW,
+              itemBuilder: (context, it, i) => _DismissibleWideCard(
+                item: it,
+                width: wideW,
+                onTap: () => openAuroraItem(context, ref, it),
+              ),
+            ),
             posterShelf('My List', v(auroraMyListProvider)),
             AuroraShelf<StreamItem>(
               title: 'Live Now',
@@ -157,6 +167,61 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
 }
 
 // ---------------------------------------------------------------------------
+// Continue Watching card with a dismiss ✕
+// ---------------------------------------------------------------------------
+
+/// A wide card plus a small ✕ that hides the entry from Continue Watching
+/// without touching tracked progress. The ✕ is its own focus stop right after
+/// the card, so the remote reaches it with a single ▶ from the card; it stays
+/// faintly visible at rest so pointer users can discover it too.
+class _DismissibleWideCard extends ConsumerWidget {
+  const _DismissibleWideCard({
+    required this.item,
+    required this.width,
+    required this.onTap,
+  });
+
+  final StreamItem item;
+  final double width;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Stack(clipBehavior: Clip.none, children: [
+      AuroraWideCard(item: item, width: width, onTap: onTap),
+      Positioned(
+        top: 6,
+        right: 6,
+        child: AuroraFocusable(
+          radius: 15,
+          scale: 1.15,
+          ring: false,
+          onActivate: () => dismissFromContinueWatching(ref, item),
+          builder: (context, focused) => Tooltip(
+            message: 'Remove from Continue Watching',
+            waitDuration: const Duration(milliseconds: 600),
+            child: AnimatedContainer(
+              duration: Aurora.fast,
+              padding: const EdgeInsets.all(5),
+              decoration: BoxDecoration(
+                color: focused ? Colors.white : const Color(0x8C06070B),
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: focused ? Colors.white : const Color(0x59FFFFFF),
+                    width: 1),
+              ),
+              child: Icon(Icons.close_rounded,
+                  size: 13,
+                  color: focused ? Aurora.bg : const Color(0xD9FFFFFF)),
+            ),
+          ),
+        ),
+      ),
+    ]);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Billboard
 // ---------------------------------------------------------------------------
 
@@ -188,7 +253,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
       if (!mounted || _compact || _heroFocused || widget.items.length < 2) {
         return;
       }
-      _go(1, manual: false);
+      _go(1);
     });
   }
 
@@ -199,10 +264,12 @@ class _BillboardState extends ConsumerState<_Billboard> {
     super.dispose();
   }
 
-  void _go(int delta, {bool manual = true}) {
+  void _go(int delta) {
     final n = widget.items.length;
     if (n < 2) return;
-    final next = manual ? (_index + delta).clamp(0, n - 1) : (_index + 1) % n;
+    // Wrap in both directions — ◀ from the first item lands on the last and
+    // ▶ from the last starts over, so the deck never dead-ends.
+    final next = ((_index + delta) % n + n) % n;
     if (next == _index) return;
     // Warm the next backdrop so the crossfade never shows a loading tile.
     final after = widget.items[(next + 1) % n];
@@ -320,7 +387,16 @@ class _BillboardState extends ConsumerState<_Billboard> {
       // bottom edge additionally keeps the bottom pinned so it never grows down
       // in the first place.
       child: ClipRect(
-        child: Stack(fit: StackFit.expand, children: [
+        // Touch devices on the wide layout (phones/tablets in landscape) page
+        // the deck by swiping, same as the compact PageView.
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragEnd: (d) {
+            final vx = d.primaryVelocity ?? 0;
+            if (vx.abs() < 120) return;
+            _go(vx < 0 ? 1 : -1);
+          },
+          child: Stack(fit: StackFit.expand, children: [
         // Backdrop with a slow settle (Ken Burns lite) — plain, undecorated
         // image. The fade to the page is handled by exactly ONE scrim below.
         AnimatedSwitcher(
@@ -485,6 +561,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
           ]),
         ),
       ]),
+      ),
       ),
     );
   }
@@ -668,7 +745,7 @@ class _CategoriesRail extends ConsumerWidget {
       for (final g in genres.take(12)) {
         entries.add((g.name, () {
           ref.read(auroraGenreProvider(StreamKind.movie).notifier).state = g.id;
-          ref.read(auroraTabProvider.notifier).state = AuroraTab.movies.index;
+          auroraSwitchTab(ref, AuroraTab.movies);
         }));
       }
     } else {
@@ -679,7 +756,7 @@ class _CategoriesRail extends ConsumerWidget {
         entries.add((c.name, () {
           ref.read(auroraGroupProvider(StreamKind.movie).notifier).state =
               c.name;
-          ref.read(auroraTabProvider.notifier).state = AuroraTab.movies.index;
+          auroraSwitchTab(ref, AuroraTab.movies);
         }));
       }
     }

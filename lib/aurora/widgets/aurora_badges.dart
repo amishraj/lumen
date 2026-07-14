@@ -237,3 +237,32 @@ class SeenBadge extends StatelessWidget {
     );
   }
 }
+
+/// Watched check centred on an episode still — dark glass circle, hairline
+/// white ring, white check with a soft shadow so it reads on any artwork.
+/// Centres itself; wrap in a Positioned.fill (or size the Stack child) at the
+/// call site so it can compose with opacity/ignore wrappers.
+class CenterSeenBadge extends StatelessWidget {
+  const CenterSeenBadge({super.key, this.size = 38});
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: const Color(0xB306070B),
+          shape: BoxShape.circle,
+          border: Border.all(color: const Color(0xE6FFFFFF), width: 1.6),
+          boxShadow: const [
+            BoxShadow(color: Color(0x66000000), blurRadius: 14),
+          ],
+        ),
+        child:
+            Icon(Icons.check_rounded, size: size * 0.58, color: Colors.white),
+      ),
+    );
+  }
+}

@@ -1,10 +1,13 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show ValueListenable, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:screen_brightness/screen_brightness.dart';
 
 import '../../data/models/models.dart';
 import '../../data/sources/opensubtitles_service.dart';
@@ -15,6 +18,7 @@ import '../../state/playback_engine.dart';
 import '../../state/providers.dart';
 import '../../state/scrub_thumbs.dart';
 import '../../ui/title_utils.dart';
+import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_badges.dart';
 import '../widgets/aurora_buttons.dart';
@@ -31,11 +35,16 @@ class AuroraPlayContext {
     required this.title,
     this.isShow = false,
     this.episodes,
+    this.overviews,
     this.iptvUrl,
   });
   final String title;
   final bool isShow;
   final List<(int, int)>? episodes;
+
+  /// Short synopsis per queue index (aligned with [episodes]) — shown in the
+  /// player's Episodes panel so the user can tell where they are in a season.
+  final List<String?>? overviews;
   final String? iptvUrl;
 }
 
@@ -133,6 +142,58 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   String _digits = '';
   Timer? _digitTimer;
 
+  // ---- Mobile-only: brightness control + screen lock (Netflix-style) ------
+  /// Touch phone/tablet layout: the only place the brightness rail and lock
+  /// live. TV boxes are Android too but never compact, so they're excluded.
+  bool _phoneUi(BuildContext context) =>
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS) &&
+      Aurora.isCompact(context);
+
+  /// Notifier, not setState: a drag fires dozens of updates a second and only
+  /// the rail may rebuild — never the whole player Stack.
+  final ValueNotifier<double> _brightness = ValueNotifier(1.0);
+  bool _brightnessTouched = false; // reset app brightness on exit only if set
+  bool _locked = false;
+  bool _unlockHintOn = false;
+  Timer? _unlockHintTimer;
+
+  Future<void> _setBrightness(double v) async {
+    final nv = v.clamp(0.0, 1.0);
+    _brightness.value = nv;
+    _brightnessTouched = true;
+    try {
+      await ScreenBrightness.instance.setApplicationScreenBrightness(nv);
+    } catch (_) {/* platform without brightness control */}
+  }
+
+  void _lockScreen() {
+    _hideTimer?.cancel();
+    setState(() {
+      _locked = true;
+      _panel = _Panel.none;
+      _controlsVisible = false;
+    });
+    _pokeUnlockHint();
+  }
+
+  void _unlock() {
+    setState(() => _locked = false);
+    _unlockHintTimer?.cancel();
+    _unlockHintOn = false;
+    _showControls(focusFirst: false);
+  }
+
+  /// While locked, any tap/key briefly reveals the unlock pill — everything
+  /// else is ignored, exactly like Netflix's lock.
+  void _pokeUnlockHint() {
+    setState(() => _unlockHintOn = true);
+    _unlockHintTimer?.cancel();
+    _unlockHintTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _unlockHintOn = false);
+    });
+  }
+
   // Live auto quality fallback — a fixed-bitrate feed on a connection slower
   // than its bitrate stalls forever, so on sustained stalling we swap to a
   // lower-quality variant of the same channel from the playlist (if one
@@ -208,6 +269,14 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     }));
     _init();
     _resetHideTimer();
+    // Seed the brightness rail with the device's current level (phones only —
+    // harmless no-op elsewhere, the rail simply never shows).
+    if (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS) {
+      ScreenBrightness.instance.application.then((v) {
+        if (mounted) _brightness.value = v.clamp(0.0, 1.0);
+      }).catchError((_) {});
+    }
   }
 
   bool _autoAudioPicked = false;
@@ -297,6 +366,9 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     _livePlayedOnce = false;
     _liveStallStarts.clear();
     _longStallTimer?.cancel();
+    // Episode change: re-read the tiny per-episode progress table so the
+    // Episodes panel's watched/season checks include what just finished.
+    ref.invalidate(episodeProgressProvider);
     setState(() {
       _index = i.clamp(0, _queue.length - 1);
       _error = null;
@@ -611,6 +683,14 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   @override
   void dispose() {
     _checkpoint();
+    if (_brightnessTouched) {
+      // Hand the system its brightness back — the override was player-only.
+      unawaited(ScreenBrightness.instance
+          .resetApplicationScreenBrightness()
+          .catchError((_) {}));
+    }
+    _unlockHintTimer?.cancel();
+    _brightness.dispose();
     _hideTimer?.cancel();
     _digitTimer?.cancel();
     _previewTimer?.cancel();
@@ -853,6 +933,11 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
+    // Locked: swallow everything, just surface the unlock pill.
+    if (_locked) {
+      _pokeUnlockHint();
+      return KeyEventResult.handled;
+    }
     final k = event.logicalKey;
 
     // Space toggles play/pause everywhere.
@@ -958,11 +1043,15 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     final panelOpen = _panel != _Panel.none;
     final pausedPinned = !_playing && !_isLive && _error == null;
 
+    final phone = _phoneUi(context);
+
     return PopScope(
-      canPop: !panelOpen && (!_controlsVisible || pausedPinned),
+      canPop: !_locked && !panelOpen && (!_controlsVisible || pausedPinned),
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) {
           PlaybackEngine.instance.pauseNow();
+        } else if (_locked) {
+          _pokeUnlockHint(); // back doesn't escape the lock
         } else if (panelOpen) {
           _closePanel();
         } else if (_controlsVisible) {
@@ -981,11 +1070,14 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
             cursor: (_controlsVisible || panelOpen)
                 ? MouseCursor.defer
                 : SystemMouseCursors.none,
-            onHover: (_) => _showControls(focusFirst: false),
+            onHover: (_) {
+              if (!_locked) _showControls(focusFirst: false);
+            },
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onTap: () =>
-                  _controlsVisible ? _hideControls() : _showControls(),
+              onTap: () => _locked
+                  ? _pokeUnlockHint()
+                  : (_controlsVisible ? _hideControls() : _showControls()),
               child: Stack(children: [
                 Center(
                   child: _error != null
@@ -1033,11 +1125,70 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                         isFav: isFav,
                         rdOn: rdOn,
                         spinner: showSpinner,
+                        phone: phone,
                         state: this,
                       ),
                     ),
                   ),
                 ),
+                // ---- Mobile: Netflix-style brightness rail (left) ----
+                if (phone && _controlsVisible && !_locked && _error == null)
+                  Positioned(
+                    left: 12,
+                    top: 0,
+                    bottom: 0,
+                    child: Center(
+                      child: _BrightnessRail(
+                        brightness: _brightness,
+                        onChanged: _setBrightness,
+                        onActivity: _resetHideTimer,
+                      ),
+                    ),
+                  ),
+                // ---- Mobile: screen-lock unlock pill ----
+                if (_locked)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 44,
+                    child: IgnorePointer(
+                      ignoring: !_unlockHintOn,
+                      child: AnimatedOpacity(
+                        opacity: _unlockHintOn ? 1 : 0,
+                        duration: Aurora.normal,
+                        child: Center(
+                          child: GestureDetector(
+                            onTap: _unlock,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 18, vertical: 11),
+                              decoration: BoxDecoration(
+                                color: const Color(0xE60C0E15),
+                                borderRadius: BorderRadius.circular(26),
+                                border: Border.all(color: Aurora.hairline),
+                                boxShadow: const [
+                                  BoxShadow(
+                                      color: Colors.black54, blurRadius: 18),
+                                ],
+                              ),
+                              child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.lock_open_rounded,
+                                        size: 17, color: Colors.white),
+                                    SizedBox(width: 8),
+                                    Text('Tap to unlock',
+                                        style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w700)),
+                                  ]),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 // ±30s directional seek flash (keyboard/remote seeks).
                 _SeekFlash(dir: _seekFlashDir, on: _seekFlashOn),
                 if (_nextUpVisible)
@@ -1108,6 +1259,8 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                     child: _QueueList(
                       queue: _queue,
                       episodes: widget.playContext?.episodes,
+                      overviews: widget.playContext?.overviews,
+                      showTitle: widget.playContext?.title,
                       currentIndex: _index,
                       isLive: _isLive,
                       onSelect: _switchTo,
@@ -1197,12 +1350,16 @@ class _Chrome extends StatelessWidget {
     required this.isFav,
     required this.rdOn,
     required this.spinner,
+    required this.phone,
     required this.state,
   });
 
   final bool isFav;
   final bool rdOn;
   final bool spinner;
+
+  /// Touch phone layout — gates the screen-lock action.
+  final bool phone;
   final _AuroraPlayerScreenState state;
 
   @override
@@ -1293,6 +1450,15 @@ class _Chrome extends StatelessWidget {
   List<Widget> _actions() {
     const gap = SizedBox(width: 8);
     return [
+      if (phone) ...[
+        AuroraIconButton(
+          icon: Icons.lock_outline_rounded,
+          tooltip: 'Lock screen',
+          onActivity: state._resetHideTimer,
+          onPressed: state._lockScreen,
+        ),
+        gap,
+      ],
       if (state._hasQueue) ...[
         AuroraIconButton(
           icon: state._isLive
@@ -1632,6 +1798,80 @@ class _FocusableTrackState extends State<_FocusableTrack> {
   }
 }
 
+/// Netflix-style vertical brightness control for phones: a slim glass rail on
+/// the overlay's left. Drag anywhere on it (or tap a spot) to set the level;
+/// the icon tracks low/high. Pointer-only by design — it never takes D-pad
+/// focus, so TV traversal is untouched. Listens to a notifier so a drag only
+/// ever rebuilds this rail, not the player.
+class _BrightnessRail extends StatelessWidget {
+  const _BrightnessRail({
+    required this.brightness,
+    required this.onChanged,
+    required this.onActivity,
+  });
+
+  final ValueListenable<double> brightness;
+  final ValueChanged<double> onChanged;
+  final VoidCallback onActivity;
+
+  static const _trackH = 168.0;
+
+  void _fromLocal(Offset local) {
+    onActivity();
+    onChanged(1 - (local.dy / _trackH).clamp(0.0, 1.0));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeFocus(
+      child: ValueListenableBuilder<double>(
+        valueListenable: brightness,
+        builder: (context, value, _) =>
+            Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(
+            value >= 0.66
+                ? Icons.brightness_high_rounded
+                : value >= 0.33
+                    ? Icons.brightness_medium_rounded
+                    : Icons.brightness_low_rounded,
+            size: 19,
+            color: Colors.white,
+          ),
+          const SizedBox(height: 10),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (d) => _fromLocal(d.localPosition),
+            onVerticalDragUpdate: (d) => _fromLocal(d.localPosition),
+            child: Container(
+              width: 34,
+              height: _trackH,
+              alignment: Alignment.center,
+              child: Container(
+                width: 6,
+                height: _trackH,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: const Color(0x40FFFFFF),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: Align(
+                  alignment: Alignment.bottomCenter,
+                  child: FractionallySizedBox(
+                    heightFactor: value.clamp(0.0, 1.0),
+                    child: const DecoratedBox(
+                      decoration: BoxDecoration(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
 /// YouTube-style ±30s indicator: a rounded glass badge that flashes on the
 /// left (rewind) or right (forward) and fades away.
 class _SeekFlash extends StatelessWidget {
@@ -1962,31 +2202,48 @@ class _NextUpFocusState extends State<_NextUpFocus> {
 // Queue (episodes / channels) panel
 // ---------------------------------------------------------------------------
 
-class _QueueList extends StatefulWidget {
+/// Channels: the flat zap list it always was. Episodes: a season browser —
+/// season chips across the top (checked once every episode in them is
+/// watched), then only that season's episodes as rich tiles: thumbnail,
+/// title, short synopsis, watched check. Fully D-pad navigable: chips ↔ list
+/// via normal traversal, current episode autofocused.
+class _QueueList extends ConsumerStatefulWidget {
   const _QueueList({
     required this.queue,
     required this.episodes,
     required this.currentIndex,
     required this.isLive,
     required this.onSelect,
+    this.overviews,
+    this.showTitle,
   });
 
   final List<StreamItem> queue;
   final List<(int, int)>? episodes;
+  final List<String?>? overviews;
+  final String? showTitle;
   final int currentIndex;
   final bool isLive;
   final ValueChanged<int> onSelect;
 
   @override
-  State<_QueueList> createState() => _QueueListState();
+  ConsumerState<_QueueList> createState() => _QueueListState();
 }
 
-class _QueueListState extends State<_QueueList> {
-  late final ScrollController _controller =
-      ScrollController(initialScrollOffset: () {
-    final startAt = _entries().indexOf(widget.currentIndex);
-    return startAt <= 2 ? 0.0 : (startAt - 2) * 64.0;
-  }());
+class _QueueListState extends ConsumerState<_QueueList> {
+  static const _tileH = 86.0;
+  int? _season;
+
+  late final ScrollController _controller = ScrollController(
+    initialScrollOffset: () {
+      if (widget.episodes == null) {
+        return widget.currentIndex <= 2 ? 0.0 : (widget.currentIndex - 2) * 64.0;
+      }
+      final inSeason = _indicesFor(_currentSeason());
+      final at = inSeason.indexOf(widget.currentIndex);
+      return at <= 1 ? 0.0 : (at - 1) * _tileH;
+    }(),
+  );
 
   @override
   void dispose() {
@@ -1999,55 +2256,242 @@ class _QueueListState extends State<_QueueList> {
           ? widget.episodes![i].$1
           : null;
 
-  List<int> _entries() {
-    if (widget.episodes == null) {
-      return [for (var i = 0; i < widget.queue.length; i++) i];
-    }
-    final out = <int>[];
-    int? last;
-    for (var i = 0; i < widget.queue.length; i++) {
-      final s = _seasonOf(i);
-      if (s != null && s != last) {
-        out.add(-(s + 1));
-        last = s;
-      }
-      out.add(i);
-    }
-    return out;
-  }
+  int _currentSeason() => _seasonOf(widget.currentIndex) ?? 1;
+
+  List<int> _indicesFor(int season) => [
+        for (var i = 0; i < widget.queue.length; i++)
+          if (_seasonOf(i) == season) i,
+      ];
 
   @override
   Widget build(BuildContext context) {
-    final entries = _entries();
-    return ListView.builder(
-      controller: _controller,
-      padding: const EdgeInsets.only(bottom: 14),
-      itemCount: entries.length,
-      itemBuilder: (context, n) {
-        final e = entries[n];
-        if (e < 0) {
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(22, 16, 22, 6),
-            child: Text('SEASON ${-e - 1}',
-                style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1.4,
-                    color: Aurora.textFaint)),
+    if (widget.episodes == null) {
+      // Live channels — flat list, unchanged.
+      return ListView.builder(
+        controller: _controller,
+        padding: const EdgeInsets.only(bottom: 14),
+        itemCount: widget.queue.length,
+        itemBuilder: (context, i) {
+          final it = widget.queue[i];
+          final current = i == widget.currentIndex;
+          return AuroraOptionRow(
+            label: widget.isLive
+                ? '${it.num != null ? '${it.num}  ' : ''}${it.name}'
+                : cleanTitle(it.name).title,
+            sublabel: current ? 'Now playing' : null,
+            selected: current,
+            autofocus: current,
+            onSelect: () => widget.onSelect(i),
           );
-        }
-        final it = widget.queue[e];
-        final current = e == widget.currentIndex;
-        return AuroraOptionRow(
-          label: widget.isLive
-              ? '${it.num != null ? '${it.num}  ' : ''}${it.name}'
-              : cleanTitle(it.name).title,
-          sublabel: current ? 'Now playing' : null,
-          selected: current,
-          autofocus: current,
-          onSelect: () => widget.onSelect(e),
-        );
-      },
+        },
+      );
+    }
+
+    final seasons =
+        widget.episodes!.map((e) => e.$1).toSet().toList()..sort();
+    final season = _season ?? _currentSeason();
+
+    // Watched state: local per-episode progress merged with Trakt history.
+    final prog = ref.watch(episodeProgressProvider).valueOrNull ?? const {};
+    final cleanShow =
+        cleanTitle(widget.showTitle ?? '').title;
+    final trakt = cleanShow.isEmpty
+        ? const <(int, int)>{}
+        : (ref.watch(traktWatchedEpisodesProvider(cleanShow)).valueOrNull ??
+            const <(int, int)>{});
+    bool isWatched(int s, int e) =>
+        (prog[episodeKey(cleanShow, s, e)]?.watched ?? false) ||
+        trakt.contains((s, e));
+    final watchedSeasons = <int>{
+      for (final s in seasons)
+        if (widget.episodes!.every((se) => se.$1 != s || isWatched(s, se.$2)))
+          s,
+    };
+
+    final indices = _indicesFor(season);
+    return Column(children: [
+      // Season selector — chips scroll horizontally, ✓ = season fully seen.
+      SizedBox(
+        height: 46,
+        child: FocusTraversalGroup(
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+            itemCount: seasons.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (context, i) {
+              final s = seasons[i];
+              final sel = s == season;
+              final done = watchedSeasons.contains(s);
+              return AuroraFocusable(
+                ring: false,
+                scale: 1.0,
+                onActivate: () => setState(() => _season = s),
+                builder: (context, focused) => AnimatedContainer(
+                  duration: Aurora.fast,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: focused
+                        ? Colors.white
+                        : (sel ? Aurora.glassHi : Aurora.glass),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: Aurora.hairline),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    if (done) ...[
+                      Icon(Icons.check_rounded,
+                          size: 13, color: focused ? Aurora.bg : Aurora.good),
+                      const SizedBox(width: 4),
+                    ],
+                    Text('Season $s',
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: sel || focused
+                                ? FontWeight.w800
+                                : FontWeight.w600,
+                            color: focused
+                                ? Aurora.bg
+                                : (sel ? Aurora.text : Aurora.textDim))),
+                  ]),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+      const Divider(
+          height: 10, color: Aurora.hairline, indent: 16, endIndent: 16),
+      Expanded(
+        child: ListView.builder(
+          controller: _controller,
+          padding: const EdgeInsets.only(bottom: 14),
+          itemCount: indices.length,
+          itemBuilder: (context, n) {
+            final i = indices[n];
+            final it = widget.queue[i];
+            final (s, e) = widget.episodes![i];
+            final overview = widget.overviews != null &&
+                    i < widget.overviews!.length
+                ? widget.overviews![i]
+                : null;
+            return _EpisodeTile(
+              item: it,
+              episodeLabel: 'E$e',
+              overview: overview,
+              watched: isWatched(s, e),
+              current: i == widget.currentIndex,
+              onSelect: () => widget.onSelect(i),
+            );
+          },
+        ),
+      ),
+    ]);
+  }
+}
+
+/// One episode row in the player panel: still + title + synopsis + state.
+class _EpisodeTile extends StatelessWidget {
+  const _EpisodeTile({
+    required this.item,
+    required this.episodeLabel,
+    required this.overview,
+    required this.watched,
+    required this.current,
+    required this.onSelect,
+  });
+
+  final StreamItem item;
+  final String episodeLabel;
+  final String? overview;
+  final bool watched;
+  final bool current;
+  final VoidCallback onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = cleanTitle(item.name).title;
+    return AuroraFocusable(
+      radius: 12,
+      scale: 1.0,
+      autofocus: current,
+      onActivate: onSelect,
+      builder: (context, focused) => Container(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: focused
+              ? Aurora.glassHi
+              : (current ? Aurora.glass : Colors.transparent),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: current ? const Color(0x554CC2FF) : Colors.transparent),
+        ),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(
+            width: 104,
+            height: 58,
+            child: Stack(fit: StackFit.expand, children: [
+              Opacity(
+                opacity: watched && !current ? 0.55 : 1,
+                child: AuroraImage(
+                  url: item.logo,
+                  width: 104,
+                  height: 58,
+                  radius: 8,
+                  fallbackText: title,
+                ),
+              ),
+              if (watched && !current)
+                const Positioned.fill(child: CenterSeenBadge(size: 26)),
+              if (current)
+                const Positioned(
+                  left: 4,
+                  bottom: 4,
+                  child: Icon(Icons.equalizer_rounded,
+                      size: 14, color: Aurora.accent),
+                ),
+            ]),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('$episodeLabel · $title',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: current
+                            ? Aurora.accent
+                            : (watched ? Aurora.textDim : Aurora.text))),
+                const SizedBox(height: 3),
+                if (current)
+                  const Text('Now playing',
+                      style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: Aurora.accent))
+                else if (overview != null && overview!.isNotEmpty)
+                  Text(overview!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 11, height: 1.35, color: Aurora.textDim))
+                else if (watched)
+                  const Text('Watched',
+                      style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: Aurora.good)),
+              ],
+            ),
+          ),
+        ]),
+      ),
     );
   }
 }

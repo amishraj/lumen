@@ -232,6 +232,39 @@ class TmdbService {
     return _parseResults(data, forceShow: show);
   }
 
+  /// Session cache for interactive search — keyed by the trimmed query so
+  /// backspacing/retyping never re-hits the network. In-memory on purpose:
+  /// persisting per-keystroke queries would silt up app_settings.
+  final _searchCache = <String, List<TmdbItem>>{};
+
+  /// Interactive multi-search (movies + shows) for the search page. Returns
+  /// items with artwork only (also filters out the person results multi
+  /// search includes). Bounded latency: search must never hang on a slow link.
+  Future<List<TmdbItem>> searchTitles(String query, {int limit = 12}) async {
+    final k = await key();
+    if (k == null || k.isEmpty) return [];
+    final q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    final cached = _searchCache[q];
+    if (cached != null) return cached;
+    try {
+      final (auth, opts) = await _auth();
+      final res = await _dio
+          .get('$_api/search/multi',
+              queryParameters: {...auth, 'query': query}, options: opts)
+          .timeout(const Duration(seconds: 3));
+      if (res.statusCode != 200) return [];
+      final data = res.data is String ? jsonDecode(res.data) : res.data;
+      final items = _parseResults(data)
+          .where((t) => t.poster != null || t.backdrop != null)
+          .take(limit)
+          .toList();
+      return _searchCache[q] = items;
+    } catch (_) {
+      return [];
+    }
+  }
+
   /// "Because you watched X" — TMDB's own recommendations for a title. Resolves
   /// the title to a TMDB id first (cached), then fetches recommendations.
   Future<List<TmdbItem>> recommendationsFor(String title,

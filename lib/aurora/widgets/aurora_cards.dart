@@ -19,12 +19,17 @@ class AuroraPosterCard extends ConsumerWidget {
     required this.onTap,
     required this.width,
     this.autofocus = false,
+    this.showSourceBadge = false,
   });
 
   final StreamItem item;
   final VoidCallback onTap;
   final double width;
   final bool autofocus;
+
+  /// Mark where this entry plays from (search results): "IPTV" for library
+  /// items; items without a library id play via debrid and stay unbadged.
+  final bool showSourceBadge;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -57,7 +62,8 @@ class AuroraPosterCard extends ConsumerWidget {
                 radius: 12,
                 fallbackText: parts.title,
               ),
-              if (item.kind == StreamKind.live)
+              if (item.kind == StreamKind.live ||
+                  (showSourceBadge && item.id != null))
                 const Positioned(top: 8, left: 8, child: IptvBadge()),
               // Watched and in-progress are mutually exclusive: a finished item
               // shows the check (saveProgress marks watched at ≥90%, so its

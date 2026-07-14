@@ -103,6 +103,15 @@ class TitleIndex {
     return null;
   }
 
+  /// EVERY library entry carrying this title (language/quality/provider
+  /// variants), English-labelled first. The series screen merges episode
+  /// lists across these so a show isn't stuck with whichever variant happens
+  /// to have the fewest seasons.
+  List<StreamItem> matches(String title, {StreamKind? kind}) => [
+        for (final it in _bucketFor(title))
+          if (kind == null || it.kind == kind) it,
+      ];
+
   /// Movie-or-series match (the old repo.findByTitle contract) — used for
   /// Trakt title reconciliation where the type isn't always trustworthy.
   StreamItem? matchVod(String title) => match(title);

@@ -633,6 +633,18 @@ class AppDatabase {
     return rows.map(StreamItem.fromRow).toList();
   }
 
+  /// stream_id → last-touched ms for every progress row. Lets Continue
+  /// Watching interleave stream-backed items with per-episode show entries by
+  /// recency without widening the StreamItem model.
+  Future<Map<int, int>> progressTimestamps() async {
+    final rows =
+        await db.query('progress', columns: ['stream_id', 'updated_at']);
+    return {
+      for (final r in rows)
+        r['stream_id'] as int: (r['updated_at'] as int?) ?? 0,
+    };
+  }
+
   /// stream_id → completed fraction (0..1) for every in-progress item.
   /// Drives the partial-progress bars on cards.
   Future<Map<int, double>> progressFractions() async {

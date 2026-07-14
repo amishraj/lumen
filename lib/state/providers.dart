@@ -132,17 +132,92 @@ final groupedSearchProvider =
   if (pl?.id == null || q.length < 2) {
     return const GroupedResults([], [], []);
   }
+  final plId = pl!.id!;
   // Search each kind independently. A single blended query shares one 200-row
   // cap, and IPTV libraries are overwhelmingly live channels — so a common
   // token fills every slot with live matches and movies/series never surface.
-  // Per-kind queries guarantee each rail gets its own budget.
+  // Per-kind queries guarantee each rail gets its own budget. TMDB multi
+  // search runs alongside (short-timeout, session-cached) so debrid-playable
+  // titles the library lacks appear too.
+  final tmdbEnabled = await ref.watch(tmdbEnabledProvider.future);
   final results = await Future.wait([
-    repo.search(playlistId: pl!.id!, kind: StreamKind.live, query: q, limit: 60),
-    repo.search(playlistId: pl.id!, kind: StreamKind.movie, query: q, limit: 60),
-    repo.search(
-        playlistId: pl.id!, kind: StreamKind.series, query: q, limit: 60),
+    repo.search(playlistId: plId, kind: StreamKind.live, query: q, limit: 60),
+    repo.search(playlistId: plId, kind: StreamKind.movie, query: q, limit: 60),
+    repo.search(playlistId: plId, kind: StreamKind.series, query: q, limit: 60),
+    if (tmdbEnabled)
+      ref
+          .watch(tmdbServiceProvider.future)
+          .then((svc) => svc.searchTitles(q))
+          .catchError((Object _) => const <TmdbItem>[])
+    else
+      Future.value(const <TmdbItem>[]),
   ]);
-  return GroupedResults(results[0], results[1], results[2]);
+  final live = results[0] as List<StreamItem>;
+  final movies = results[1] as List<StreamItem>;
+  final series = results[2] as List<StreamItem>;
+  final tmdb = results[3] as List<TmdbItem>;
+
+  // One card per title: IPTV libraries carry the same movie/show in many
+  // languages and qualities, which read as confusing duplicates. Group by
+  // normalized title, keep the English-preferred entry, and enrich it with
+  // TMDB art when we have it. Live channels stay un-deduped — their variants
+  // (HD/FHD/regional feeds) are meaningfully different.
+  var rdOn = false;
+  try {
+    rdOn = await ref.read(rdEnabledProvider.future);
+  } catch (_) {}
+
+  List<StreamItem> dedupe(List<StreamItem> items) {
+    final byKey = <String, List<StreamItem>>{};
+    final order = <String>[];
+    for (final it in items) {
+      var key = TitleIndex.normalize(it.name);
+      if (key.isEmpty) key = it.name.toLowerCase();
+      (byKey[key] ??= (() {
+        order.add(key);
+        return <StreamItem>[];
+      })())
+          .add(it);
+    }
+    return [
+      for (final key in order)
+        LibraryRepository.preferEnglish(byKey[key]!) ?? byKey[key]!.first,
+    ];
+  }
+
+  var outMovies = dedupe(movies);
+  var outSeries = dedupe(series);
+
+  if (tmdb.isNotEmpty) {
+    final movieKeys = {for (final m in outMovies) TitleIndex.normalize(m.name)};
+    final seriesKeys = {
+      for (final s in outSeries) TitleIndex.normalize(s.name)
+    };
+    StreamItem enrich(StreamItem it, TmdbItem t) =>
+        it.copyWith(logo: t.poster ?? t.backdrop ?? it.logo, rating: t.rating);
+    for (final t in tmdb) {
+      final key = TitleIndex.normalize(t.title);
+      if (key.isEmpty) continue;
+      final keys = t.isShow ? seriesKeys : movieKeys;
+      final list = t.isShow ? outSeries : outMovies;
+      final at = list.indexWhere((e) => TitleIndex.normalize(e.name) == key);
+      if (at >= 0) {
+        list[at] = enrich(list[at], t); // library entry, better art
+      } else if (rdOn && keys.add(key)) {
+        // Not in the library — one debrid-playable entry, Stremio-style.
+        list.add(StreamItem(
+          playlistId: plId,
+          kind: t.isShow ? StreamKind.series : StreamKind.movie,
+          name: t.title,
+          logo: t.poster ?? t.backdrop,
+          url: '',
+          rating: t.rating,
+        ));
+      }
+    }
+  }
+
+  return GroupedResults(live, outMovies, outSeries);
 });
 
 // ---------------------------------------------------------------------------
@@ -297,29 +372,124 @@ final featuredProvider = FutureProvider<List<StreamItem>>((ref) async {
   return snapshotStreamRow(ref, 'home:snap:$plId:featured', computeRow);
 });
 
-/// Continue Watching: the local in-progress list paints IMMEDIATELY (it's the
-/// source of truth for this device), with Trakt's cross-device resume items
-/// appended from the last known snapshot. The Trakt merge itself re-runs in
-/// the background (memory-matched via the title index — no SQL) and re-emits
-/// only when it found something new.
+/// Bumped when the user dismisses a Continue Watching entry so the row
+/// recomputes immediately.
+final cwHiddenRevProvider = StateProvider<int>((ref) => 0);
+
+/// Stable dismiss-key for a Continue Watching entry. Series key on the show
+/// title (an episode-derived row and the library's series entry must dismiss
+/// together); everything else keys on the stream url, which survives the id
+/// reassignment of a playlist re-sync.
+String cwDismissKey(StreamItem item) =>
+    item.kind == StreamKind.series || item.url.isEmpty
+        ? 'show:${TitleIndex.normalize(item.name)}'
+        : 'url:${item.url}';
+
+/// key → dismissed-at ms. Kept as a map (not a set) so replaying something
+/// after dismissing it resurfaces the row — newer activity wins.
+Future<Map<String, int>> loadCwHidden(LibraryRepository repo) async {
+  try {
+    final raw = await repo.getSetting('cw_hidden');
+    if (raw == null || raw.isEmpty) return {};
+    return (jsonDecode(raw) as Map<String, dynamic>)
+        .map((k, v) => MapEntry(k, (v as num).toInt()));
+  } catch (_) {
+    return {};
+  }
+}
+
+/// Hide an entry from Continue Watching WITHOUT touching tracked progress —
+/// resume points, watched flags and Trakt state all stay intact.
+Future<void> dismissFromContinueWatching(
+    WidgetRef ref, StreamItem item) async {
+  final repo = await ref.read(repositoryProvider.future);
+  final map = await loadCwHidden(repo);
+  map[cwDismissKey(item)] = DateTime.now().millisecondsSinceEpoch;
+  await repo.setSetting('cw_hidden', jsonEncode(map));
+  ref.read(cwHiddenRevProvider.notifier).state++;
+  ref.invalidate(continueWatchingProvider);
+}
+
+/// Continue Watching: local activity paints IMMEDIATELY (it's the source of
+/// truth for this device) — stream-backed items from the progress table plus
+/// one entry per show derived from per-episode progress (an episode mid-watch
+/// resumes it; a recently finished one surfaces the show for "up next").
+/// Trakt's cross-device resume items append from the last known snapshot and
+/// re-derive in the background (memory-matched via the title index — no SQL).
+/// Dismissed entries stay hidden until newer activity resurfaces them.
 final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
   final plId = pl!.id!;
-  final local = await repo.continueWatching(plId);
-  final result = <StreamItem>[...local];
-  final seen = local.map((e) => e.id).toSet();
+  ref.watch(cwHiddenRevProvider);
+  final hidden = await loadCwHidden(repo);
+  // valueOrNull: never gate the row on the index build — show entries render
+  // as synthetic items first and upgrade to library entries (with art) when
+  // the index lands, since watching it re-runs this provider.
+  final idx = ref.watch(titleIndexProvider).valueOrNull;
+
+  final localMovies = await repo.continueWatching(plId);
+  final ts = await repo.db.progressTimestamps();
+
+  // One row per show from per-episode progress, newest activity first.
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+  const recentFinishWindowMs = 30 * 24 * 3600 * 1000;
+  final eps = await repo.db.episodeProgressAll();
+  final byShow = <String, int>{}; // show title (from ep_key) → latest ms
+  eps.forEach((key, p) {
+    final bar = key.lastIndexOf('|');
+    if (bar <= 0) return;
+    final title = key.substring(0, bar);
+    final inProgress = !p.watched && p.fraction > 0.02 && p.fraction < 0.97;
+    final recentFinish =
+        p.watched && nowMs - p.updatedAt < recentFinishWindowMs;
+    if (!inProgress && !recentFinish) return;
+    if (p.updatedAt > (byShow[title] ?? -1)) byShow[title] = p.updatedAt;
+  });
+  // ep_key titles are stored lowercase; title-case the synthetic fallback so
+  // the card doesn't read as "breaking bad" while the index is still building.
+  String titleCase(String s) => s
+      .split(' ')
+      .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
+      .join(' ');
+  final showEntries = <(StreamItem, int)>[
+    for (final e in byShow.entries)
+      (
+        idx?.match(e.key, kind: StreamKind.series) ??
+            StreamItem(
+                playlistId: plId,
+                kind: StreamKind.series,
+                name: titleCase(e.key),
+                url: ''),
+        e.value,
+      ),
+  ];
+
+  final combined = <(StreamItem, int)>[
+    for (final m in localMovies) (m, m.id != null ? (ts[m.id] ?? 0) : 0),
+    ...showEntries,
+  ]..sort((a, b) => b.$2.compareTo(a.$2));
+
+  final result = <StreamItem>[];
+  final seenKeys = <String>{};
+  void add(StreamItem it, int at) {
+    final key = cwDismissKey(it);
+    final hiddenAt = hidden[key];
+    if (hiddenAt != null && at <= hiddenAt) return; // dismissed, no new play
+    if (seenKeys.add(key)) result.add(it);
+  }
+
+  for (final (it, at) in combined) {
+    add(it, at);
+  }
 
   final extrasKey = 'home:snap:$plId:cw_extras';
   final raw = await repo.getSetting(extrasKey);
   if (raw != null && raw.isNotEmpty) {
     try {
       for (final it in decodeStreamItems(raw)) {
-        if (it.id == null || !seen.contains(it.id)) {
-          result.add(it);
-          seen.add(it.id);
-        }
+        add(it, 0); // cross-device rows: any dismissal wins until replayed
       }
     } catch (_) {/* corrupt snapshot — background refresh rewrites it */}
   }
@@ -328,16 +498,14 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
     try {
       if (!await ref.read(traktConnectedProvider.future)) return;
       final svc = await ref.read(traktServiceProvider.future);
-      final idx = await ref.read(titleIndexProvider.future);
-      if (idx == null) return;
-      final localIds = local.map((e) => e.id).toSet();
+      final index = await ref.read(titleIndexProvider.future);
+      if (index == null) return;
+      final have = result.map((e) => e.id).whereType<int>().toSet();
       final extras = <StreamItem>[];
       final xSeen = <int>{};
       for (final p in (await svc.playback()).take(20)) {
-        final hit = idx.matchVod(p.item.title);
-        if (hit?.id != null &&
-            !localIds.contains(hit!.id) &&
-            xSeen.add(hit.id!)) {
+        final hit = index.matchVod(p.item.title);
+        if (hit?.id != null && !have.contains(hit!.id) && xSeen.add(hit.id!)) {
           extras.add(hit);
         }
       }
@@ -447,6 +615,16 @@ final recentlyWatchedProvider = FutureProvider<List<StreamItem>>((ref) async {
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
   return repo.recentlyWatched(pl!.id!);
+});
+
+/// Every started episode's local progress, keyed by ep_key — backs the
+/// watched/season marks in the player's Episodes panel. autoDispose: the
+/// underlying table is tiny and re-read on each panel open, so marks are
+/// always current.
+final episodeProgressProvider = FutureProvider.autoDispose<
+    Map<String, ({double fraction, bool watched, int updatedAt})>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  return repo.db.episodeProgressAll();
 });
 
 /// (season, episode) pairs watched on Trakt for a show title — so the series

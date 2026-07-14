@@ -319,6 +319,22 @@ final auroraCatalogPagerProvider = StateNotifierProvider.autoDispose
 /// was what made the bar flicker.
 FocusNode? auroraNavTarget;
 
+/// Every tab's stable focus node, registered by the top bar. Needed by
+/// [auroraSwitchTab] — pages must move focus to the DESTINATION tab before a
+/// programmatic tab switch.
+final Map<AuroraTab, FocusNode> auroraTabNodes = {};
+
+/// Switch tabs from page content (e.g. a home category tile). Focus moves to
+/// the destination tab's node FIRST: without this, the outgoing page's
+/// ExcludeFocus evicts the activated tile's focus onto whichever nav node
+/// Flutter picks — usually Home — whose focus-selects-tab debounce then yanks
+/// the selection straight back. That was the "tapping a category highlights
+/// Home and nothing happens" bug.
+void auroraSwitchTab(WidgetRef ref, AuroraTab tab) {
+  auroraTabNodes[tab]?.requestFocus();
+  ref.read(auroraTabProvider.notifier).state = tab.index;
+}
+
 /// The shell's selected tab.
 final auroraTabProvider = StateProvider<int>((ref) => AuroraTab.home.index);
 

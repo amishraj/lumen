@@ -86,66 +86,96 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
 
   Future<List<Episode>> _load() async {
     final repo = await ref.read(repositoryProvider.future);
-    var seriesUrl = widget.series.url;
-    if (seriesUrl.isEmpty && widget.playlist.id != null) {
-      final idx = await ref.read(titleIndexProvider.future);
-      seriesUrl = idx?.match(_showTitle, kind: StreamKind.series)?.url ?? '';
-      if (seriesUrl.isEmpty) {
-        final hits = await repo.search(
-            playlistId: widget.playlist.id!,
-            kind: StreamKind.series,
-            query: _showTitle);
-        seriesUrl = LibraryRepository.preferEnglish(hits)?.url ?? '';
+    final idx = await ref.read(titleIndexProvider.future);
+
+    // EVERY library entry carrying this show — providers ship the same series
+    // in several languages/qualities, each often with a different subset of
+    // seasons. Merging their episode lists is what fixes "this show only has
+    // 1 season here when I know it has more".
+    final entries = <StreamItem>[
+      if (widget.series.url.isNotEmpty) widget.series,
+      ...?idx?.matches(_showTitle, kind: StreamKind.series),
+    ];
+    if (entries.isEmpty && widget.playlist.id != null) {
+      final hits = await repo.search(
+          playlistId: widget.playlist.id!,
+          kind: StreamKind.series,
+          query: _showTitle);
+      final hit = LibraryRepository.preferEnglish(hits);
+      if (hit != null) entries.add(hit);
+    }
+    final seenUrls = <String>{};
+    final sources = [
+      for (final e in entries)
+        if (e.url.isNotEmpty && seenUrls.add(e.url)) e,
+    ].take(4);
+
+    // First entry wins per (season, episode) — entries are English-first, and
+    // the one the user actually opened leads the list.
+    final merged = <(int, int), Episode>{};
+    final lists = await Future.wait([
+      for (final e in sources)
+        repo
+            .seriesEpisodes(widget.playlist, e.url)
+            .catchError((Object _) => const <Episode>[]),
+    ]);
+    for (final eps in lists) {
+      for (final ep in eps) {
+        merged.putIfAbsent((ep.season, ep.episode), () => ep);
       }
     }
-    List<Episode> eps = const [];
-    if (seriesUrl.isNotEmpty) {
-      try {
-        eps = await repo.seriesEpisodes(widget.playlist, seriesUrl);
-      } catch (_) {/* portal hiccup — try the TMDB path below */}
-    }
-    if (eps.isNotEmpty) return eps;
-    // Not in the IPTV library (a TMDB-discovered show) or the portal returned
-    // nothing: build the season list from TMDB and play via Real-Debrid. The
-    // player already resolves a debrid stream per episode from (title, S, E).
-    return _tmdbEpisodes();
+
+    // Union in seasons the library is missing when debrid can play them —
+    // and fall back to the full TMDB list for shows the library lacks.
+    try {
+      if (await ref.read(rdEnabledProvider.future)) {
+        final have = merged.keys.map((k) => k.$1).toSet();
+        final svc = await ref.read(tmdbServiceProvider.future);
+        final info = await svc.lookup(_showTitle, isShow: true);
+        final missing = [
+          for (final s in info?.seasonNumbers ?? const <int>[])
+            if (!have.contains(s)) s,
+        ];
+        for (final ep in await _tmdbEpisodesFor(missing)) {
+          merged.putIfAbsent((ep.season, ep.episode), () => ep);
+        }
+      }
+    } catch (_) {/* offline / no TMDB — the IPTV merge stands */}
+
+    final out = merged.values.toList()
+      ..sort((a, b) => a.season != b.season
+          ? a.season.compareTo(b.season)
+          : a.episode.compareTo(b.episode));
+    return out;
   }
 
-  Future<List<Episode>> _tmdbEpisodes() async {
-    try {
-      if (!await ref.read(rdEnabledProvider.future)) return const [];
-      final svc = await ref.read(tmdbServiceProvider.future);
-      final info = await svc.lookup(_showTitle, isShow: true);
-      final seasons = info?.seasonNumbers ?? const <int>[];
-      if (seasons.isEmpty) return const [];
-      // Bounded batches (4 in flight) — a 20-season show must not fire 20
-      // concurrent TMDB calls and trip its rate limit into missing seasons.
-      final bySeason = <(int, List<TmdbEpisode>)>[];
-      for (var i = 0; i < seasons.length; i += 4) {
-        final batch = seasons.skip(i).take(4);
-        bySeason.addAll(await Future.wait([
-          for (final s in batch)
-            svc.seasonEpisodes(_showTitle, s).then((eps) => (s, eps)),
-        ]));
-      }
-      final out = <Episode>[];
-      for (final (s, eps) in bySeason) {
-        for (final e in eps) {
-          out.add(Episode(
+  /// TMDB-built episodes (url empty — resolved per episode via Real-Debrid at
+  /// play time) for the given seasons, fetched in bounded batches so a
+  /// 20-season show never trips TMDB's rate limit into missing seasons.
+  Future<List<Episode>> _tmdbEpisodesFor(List<int> seasons) async {
+    if (seasons.isEmpty) return const [];
+    final svc = await ref.read(tmdbServiceProvider.future);
+    final bySeason = <(int, List<TmdbEpisode>)>[];
+    for (var i = 0; i < seasons.length; i += 4) {
+      final batch = seasons.skip(i).take(4);
+      bySeason.addAll(await Future.wait([
+        for (final s in batch)
+          svc.seasonEpisodes(_showTitle, s).then((eps) => (s, eps)),
+      ]));
+    }
+    return [
+      for (final (s, eps) in bySeason)
+        for (final e in eps)
+          Episode(
             id: 'tmdb:$s:${e.number}',
             title: e.name.trim().isEmpty ? 'Episode ${e.number}' : e.name,
             season: s,
             episode: e.number,
-            url: '', // resolved per episode via Real-Debrid at play time
+            url: '',
             plot: e.overview,
             still: e.still,
-          ));
-        }
-      }
-      return out;
-    } catch (_) {
-      return const [];
-    }
+          ),
+    ];
   }
 
   ({double fraction, bool watched, int updatedAt})? _progFor(Episode e) =>
@@ -184,6 +214,10 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
           title: widget.series.name,
           isShow: true,
           episodes: [for (final e in all) (e.season, e.episode)],
+          overviews: [
+            for (final e in all)
+              _tmdb[(e.season, e.episode)]?.overview ?? e.plot,
+          ],
         ),
       ),
     ));
@@ -426,6 +460,16 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                   });
                 }
 
+                // A season is "watched" when every one of its episodes is —
+                // locally or on Trakt. Drives the check on the season chips.
+                final watchedSeasons = <int>{
+                  for (final s in seasons)
+                    if (eps
+                        .where((e) => e.season == s)
+                        .every(_isWatched))
+                      s,
+                };
+
                 return Padding(
                   padding:
                       EdgeInsets.symmetric(horizontal: margin, vertical: 14),
@@ -435,6 +479,7 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                       _SeasonRail(
                         seasons: seasons,
                         selected: _season,
+                        watchedSeasons: watchedSeasons,
                         onPick: (s) => setState(() {
                           _season = s;
                           _scrolledToResume = true; // manual pick — don't yank
@@ -523,10 +568,14 @@ class _SeasonRail extends StatelessWidget {
     required this.seasons,
     required this.selected,
     required this.onPick,
+    this.watchedSeasons = const {},
   });
   final List<int> seasons;
   final int selected;
   final ValueChanged<int> onPick;
+
+  /// Seasons whose every episode is watched — chip gets a check.
+  final Set<int> watchedSeasons;
 
   @override
   Widget build(BuildContext context) {
@@ -541,6 +590,7 @@ class _SeasonRail extends StatelessWidget {
           itemBuilder: (context, i) {
             final s = seasons[i];
             final sel = s == selected;
+            final done = watchedSeasons.contains(s);
             return AuroraFocusable(
               ring: false,
               scale: 1.0,
@@ -557,15 +607,23 @@ class _SeasonRail extends StatelessWidget {
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: Aurora.hairline),
                 ),
-                child: Text('Season $s',
-                    style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: sel || focused
-                            ? FontWeight.w800
-                            : FontWeight.w600,
-                        color: focused
-                            ? Aurora.bg
-                            : (sel ? Aurora.text : Aurora.textDim))),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  if (done) ...[
+                    Icon(Icons.check_rounded,
+                        size: 14,
+                        color: focused ? Aurora.bg : Aurora.good),
+                    const SizedBox(width: 4),
+                  ],
+                  Text('Season $s',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: sel || focused
+                              ? FontWeight.w800
+                              : FontWeight.w600,
+                          color: focused
+                              ? Aurora.bg
+                              : (sel ? Aurora.text : Aurora.textDim))),
+                ]),
               ),
             );
           },
@@ -638,6 +696,16 @@ class _EpisodeCard extends StatelessWidget {
                 fallbackText: title,
               ),
             ),
+            // Watched check, centred on the still (local progress OR Trakt).
+            // Fades out while focused so the play affordance below reads.
+            if (watched)
+              Positioned.fill(
+                child: AnimatedOpacity(
+                  opacity: focused ? 0 : 1,
+                  duration: Aurora.fast,
+                  child: const CenterSeenBadge(),
+                ),
+              ),
             // Play affordance on focus.
             Positioned.fill(
               child: AnimatedOpacity(
@@ -653,8 +721,6 @@ class _EpisodeCard extends StatelessWidget {
                 ),
               ),
             ),
-            // Watched check (SeenBadge positions itself within the Stack).
-            if (watched) const SeenBadge(),
             // Resume progress overlay along the bottom of the still.
             if (inProgress)
               Positioned(

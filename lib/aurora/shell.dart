@@ -238,7 +238,8 @@ class _TopBarState extends ConsumerState<_TopBar> {
   ];
 
   // Stable per-tab focus nodes — created once, never swapped. The selected
-  // tab's node is published as [auroraNavTarget] so pages can return focus here.
+  // tab's node is published as [auroraNavTarget] so pages can return focus
+  // here, and the full map as [auroraTabNodes] for programmatic tab switches.
   final Map<AuroraTab, FocusNode> _nodes = {
     for (final t in AuroraTab.values)
       t: FocusNode(debugLabel: 'aurora-tab-${t.name}'),
@@ -246,10 +247,19 @@ class _TopBarState extends ConsumerState<_TopBar> {
   Timer? _debounce;
 
   @override
+  void initState() {
+    super.initState();
+    auroraTabNodes
+      ..clear()
+      ..addAll(_nodes);
+  }
+
+  @override
   void dispose() {
     _debounce?.cancel();
-    for (final n in _nodes.values) {
-      n.dispose();
+    for (final e in _nodes.entries) {
+      if (auroraTabNodes[e.key] == e.value) auroraTabNodes.remove(e.key);
+      e.value.dispose();
     }
     super.dispose();
   }
