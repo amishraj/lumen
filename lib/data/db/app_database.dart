@@ -180,6 +180,29 @@ class AppDatabase {
     );
   }
 
+  /// Seed an episode's progress from a known fraction (a Trakt cross-device
+  /// resume point) rather than a real position/duration. The player resumes by
+  /// fraction (dur * frac), so a synthetic position/duration whose ratio is the
+  /// fraction restores the right spot; the first local checkpoint then overwrites
+  /// it with the true position. [updatedAt] carries Trakt's `paused_at` so this
+  /// orders correctly against local activity in Continue Watching (0 → now).
+  Future<void> saveEpisodeProgressFraction(String key, double fraction,
+      {int updatedAt = 0}) async {
+    final frac = fraction.clamp(0.0, 1.0);
+    await db.insert(
+      'episode_progress',
+      {
+        'ep_key': key,
+        'position_ms': (frac * 100000).round(),
+        'duration_ms': 100000,
+        'watched': frac >= 0.9 ? 1 : 0,
+        'updated_at':
+            updatedAt > 0 ? updatedAt : DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
   /// Explicitly set the watched flag for a batch of episode keys (the "mark
   /// season watched" toggle). Watched rows are stored flag-only (0/0 pos/dur);
   /// un-watching removes the row so the episode reverts to untouched. One

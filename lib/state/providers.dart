@@ -512,10 +512,19 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
       final svc = await ref.read(traktServiceProvider.future);
       final index = await ref.read(titleIndexProvider.future);
       if (index == null) return;
+      // Shows: seed Trakt's in-progress episodes into the LOCAL episode_progress
+      // table so they surface through the same "one card per show" path as
+      // on-device activity (accurate resume point, and persistent across a
+      // reinstall since relinking re-seeds). A re-emit below picks them up.
+      final seeded = await svc.hydrateEpisodeProgress();
+      // Movies: cross-device resume points the library carries but this device
+      // hasn't touched — matched movie-only so a title shared with a show can't
+      // cross-wire. Shows are handled above, not here.
       final extras = <StreamItem>[];
       final xKeys = <String>{};
       for (final p in (await svc.playback()).take(20)) {
-        final hit = index.matchVod(p.item.title);
+        if (p.isShow) continue;
+        final hit = index.match(p.item.title, kind: StreamKind.movie);
         if (hit == null) continue;
         final key = cwDismissKey(hit);
         // Skip anything already shown from local activity, and de-dupe the
@@ -524,10 +533,11 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
         extras.add(hit);
       }
       final enc = encodeStreamItems(extras);
-      if (enc != raw) {
-        await repo.setSetting(extrasKey, enc);
-        ref.invalidateSelf();
-      }
+      if (enc != raw) await repo.setSetting(extrasKey, enc);
+      // Re-emit if movie extras changed OR we seeded new show progress (the
+      // seeded rows are read from episode_progress on the next build). Both are
+      // deterministic, so this settles after one pass — no flicker loop.
+      if (enc != raw || seeded) ref.invalidateSelf();
     } catch (_) {/* offline / not connected — local list already shown */}
   }());
   return result;
@@ -609,7 +619,10 @@ final progressFractionsProvider = FutureProvider<Map<int, double>>((ref) async {
       if (idx == null) return;
       final extras = <String, double>{};
       for (final p in (await svc.playback()).take(30)) {
-        final hit = idx.matchVod(p.item.title);
+        // Match to the same kind Trakt reported so a title shared by a movie
+        // and a show can't paint the wrong poster's progress bar.
+        final hit = idx.match(p.item.title,
+            kind: p.isShow ? StreamKind.series : StreamKind.movie);
         if (hit?.id != null) {
           extras['${hit!.id}'] = p.progress.clamp(0.0, 1.0);
         }

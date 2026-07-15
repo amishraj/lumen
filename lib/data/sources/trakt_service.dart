@@ -5,7 +5,9 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../repositories/library_repository.dart';
+import '../models/models.dart';
 import '../../state/providers.dart';
+import '../../ui/title_utils.dart';
 
 /// Minimal Trakt client using the OAuth **device flow** — ideal for a
 /// sideloaded app: the user enters a short code at trakt.tv/activate, no
@@ -530,6 +532,7 @@ class TraktService {
     await probe('Custom lists', '$_api/users/me/lists');
     await probe('In-progress (playback)', '$_api/sync/playback');
     await probe('Watched movies', '$_api/sync/watched/movies');
+    await probe('Watched shows', '$_api/sync/watched/shows');
     return out;
   }
 
@@ -545,23 +548,84 @@ class TraktService {
       if (list is List) {
         for (final e in list) {
           if (e is! Map) continue;
-          final type = '${e['type']}';
-          final node = e[type];
           final prog = (e['progress'] as num?)?.toDouble();
-          if (node is Map && node['title'] != null && prog != null) {
+          if (prog == null) continue;
+          final pausedAt =
+              DateTime.tryParse('${e['paused_at'] ?? ''}')?.millisecondsSinceEpoch ??
+                  0;
+          // Trakt returns an in-progress episode as type 'episode' with the
+          // title split across a `show` node (the series) and an `episode` node
+          // (season/number + the episode's own title). Continue Watching groups
+          // on the SHOW title, so read that — reading e[type] here grabbed the
+          // episode title ("Ozymandias"), which never matched the library and
+          // silently dropped every show.
+          if ('${e['type']}' == 'episode' || e['show'] is Map) {
+            final show = e['show'];
+            final ep = e['episode'];
+            if (show is! Map || show['title'] == null) continue;
             out.add(TraktPlayback(
               item: TraktItem(
-                  title: '${node['title']}',
-                  year: (node['year'] as num?)?.toInt(),
-                  type: type),
+                  title: '${show['title']}',
+                  year: (show['year'] as num?)?.toInt(),
+                  type: 'show'),
               progress: prog / 100.0,
+              season: ep is Map ? (ep['season'] as num?)?.toInt() : null,
+              episode: ep is Map ? (ep['number'] as num?)?.toInt() : null,
+              pausedAt: pausedAt,
             ));
+          } else {
+            final node = e['movie'];
+            if (node is Map && node['title'] != null) {
+              out.add(TraktPlayback(
+                item: TraktItem(
+                    title: '${node['title']}',
+                    year: (node['year'] as num?)?.toInt(),
+                    type: 'movie'),
+                progress: prog / 100.0,
+                pausedAt: pausedAt,
+              ));
+            }
           }
         }
       }
       return out;
     } catch (_) {
       return [];
+    }
+  }
+
+  /// Seed the local per-episode progress table from Trakt's cross-device resume
+  /// points. A show the user is mid-way through on another device — or before a
+  /// reinstall — then surfaces in Continue Watching through the exact same local
+  /// path as on-device activity, with an accurate resume point, and persists
+  /// because relinking Trakt re-seeds it. Never overwrites a fresher local row
+  /// (compared on Trakt's `paused_at`) or one already finished locally. Returns
+  /// true when at least one row was written, so the caller can re-emit the row.
+  Future<bool> hydrateEpisodeProgress() async {
+    if (!await isConnected()) return false;
+    try {
+      final resume = await playback();
+      final existing = await _repo.db.episodeProgressAll();
+      var changed = false;
+      for (final p in resume) {
+        if (!p.isShow || p.season == null || p.episode == null) continue;
+        if (p.progress <= 0.02 || p.progress >= 0.97) continue;
+        final ek =
+            episodeKey(cleanTitle(p.item.title).title, p.season!, p.episode!);
+        final have = existing[ek];
+        if (have != null && have.watched) continue; // finished locally already
+        // A local row with a real position wins unless Trakt's checkpoint is
+        // newer (watched elsewhere since). paused_at == 0 → unknown, don't clobber.
+        if (have != null && (p.pausedAt == 0 || have.updatedAt >= p.pausedAt)) {
+          continue;
+        }
+        await _repo.db
+            .saveEpisodeProgressFraction(ek, p.progress, updatedAt: p.pausedAt);
+        changed = true;
+      }
+      return changed;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -800,9 +864,19 @@ class TraktList {
 }
 
 class TraktPlayback {
-  final TraktItem item;
+  final TraktItem item; // for shows, item.title is the SHOW title (type 'show')
   final double progress; // 0..1
-  const TraktPlayback({required this.item, required this.progress});
+  final int? season; // set for episode resume points
+  final int? episode; // set for episode resume points
+  final int pausedAt; // Trakt paused_at in ms since epoch (0 if unknown)
+  const TraktPlayback({
+    required this.item,
+    required this.progress,
+    this.season,
+    this.episode,
+    this.pausedAt = 0,
+  });
+  bool get isShow => item.type == 'show';
 }
 
 /// One line of the Trakt connectivity sanity check.
