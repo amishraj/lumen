@@ -238,11 +238,16 @@ class TmdbService {
   final _searchCache = <String, List<TmdbItem>>{};
 
   /// Interactive title search for the search page. Queries the dedicated
-  /// /search/movie and /search/tv endpoints in parallel (each ranks its own
-  /// type by popularity) rather than /search/multi — multi interleaves people
-  /// and cross-type popularity, which buried a specific new film ("Backrooms")
-  /// below found-footage shorts and the web series. Interleaved movie/show,
-  /// artwork-only, bounded latency, session-cached per query.
+  /// /search/movie and /search/tv endpoints (not /search/multi, which
+  /// interleaves people and cross-type popularity).
+  ///
+  /// Pulls the first few PAGES per type — a brand-new release ("Backrooms",
+  /// "Obsession", both 2026) has almost no popularity yet, so TMDB ranks it
+  /// past page 1 and a single-page fetch never sees it (you had to add the
+  /// year to surface it). Then orders the whole pool by: how well the title
+  /// matches what was typed → newest release first → TMDB popularity. So the
+  /// current-year film outranks a decades-old namesake without the user
+  /// typing a year. Interleaved movie/show, artwork-only, session-cached.
   Future<List<TmdbItem>> searchTitles(String query, {int limit = 40}) async {
     final k = await key();
     if (k == null || k.isEmpty) return [];
@@ -253,42 +258,74 @@ class TmdbService {
     if (cached != null) return cached;
     try {
       final (auth, opts) = await _auth();
+      Future<List<TmdbItem>> page(String type, bool show, int p) async {
+        try {
+          final res = await _dio
+              .get('$_api/search/$type',
+                  queryParameters: {
+                    ...auth,
+                    'query': q,
+                    'include_adult': 'false',
+                    'page': '$p',
+                  },
+                  options: opts)
+              .timeout(const Duration(seconds: 6));
+          if (res.statusCode != 200) return const [];
+          final data = res.data is String ? jsonDecode(res.data) : res.data;
+          return _parseResults(data, forceShow: show);
+        } catch (_) {
+          // One slow/failed page (incl. an out-of-range page) must not sink the
+          // whole search — the other pages still return their results.
+          return const [];
+        }
+      }
+
+      // Dedupe by TMDB id, keep only art-having entries (blank cards read as
+      // broken). 3 pages ≈ 60 candidates per type — enough to include a
+      // low-popularity new release without paging the world.
       Future<List<TmdbItem>> one(String type, bool show) async {
-        final res = await _dio
-            .get('$_api/search/$type',
-                queryParameters: {
-                  ...auth,
-                  'query': q,
-                  'include_adult': 'false',
-                },
-                options: opts)
-            .timeout(const Duration(seconds: 6));
-        if (res.statusCode != 200) return const [];
-        final data = res.data is String ? jsonDecode(res.data) : res.data;
-        return _parseResults(data, forceShow: show)
-            .where((t) => t.poster != null || t.backdrop != null)
-            .toList();
+        final pages =
+            await Future.wait([for (var p = 1; p <= 3; p++) page(type, show, p)]);
+        final seen = <int>{};
+        return [
+          for (final pg in pages)
+            for (final t in pg)
+              if ((t.poster != null || t.backdrop != null) &&
+                  (t.tmdbId == null || seen.add(t.tmdbId!)))
+                t,
+        ];
       }
 
       final both = await Future.wait([one('movie', false), one('tv', true)]);
-      // Rank each type by how well the title matches what was typed BEFORE
-      // popularity — otherwise a specific new film ("Backrooms") sits below
-      // more-popular same-name content and gets cut by the cap. Stable within
-      // a tier so TMDB's popularity order is preserved among equal matches.
+
+      // Relevance tier, article-tolerant ("The Backrooms" matches "backrooms").
+      String bare(String s) {
+        for (final a in const ['the ', 'a ', 'an ']) {
+          if (s.startsWith(a)) return s.substring(a.length);
+        }
+        return s;
+      }
+
+      final qb = bare(ql);
       int rel(TmdbItem t) {
         final n = t.title.toLowerCase();
-        if (n == ql) return 0; // exact title
-        if (n.startsWith(ql)) return 1; // prefix ("Backrooms" ⊂ "Backrooms 2")
+        final nb = bare(n);
+        if (n == ql || nb == qb) return 0; // exact title
+        if (n.startsWith(ql) || nb.startsWith(qb)) return 1; // prefix
         if (n.contains(' $ql') || n.contains('$ql ')) return 2; // whole word
         if (n.contains(ql)) return 3; // substring
         return 4; // fuzzy / other
       }
 
+      // Order: best name match → newest release → TMDB popularity (source
+      // order, preserved as the final tiebreak).
       List<TmdbItem> ranked(List<TmdbItem> l) {
         final withIdx = [for (var i = 0; i < l.length; i++) (i, l[i])];
         withIdx.sort((a, b) {
           final r = rel(a.$2).compareTo(rel(b.$2));
-          return r != 0 ? r : a.$1.compareTo(b.$1);
+          if (r != 0) return r;
+          final y = (b.$2.year ?? 0).compareTo(a.$2.year ?? 0); // newest first
+          return y != 0 ? y : a.$1.compareTo(b.$1);
         });
         return [for (final e in withIdx) e.$2];
       }
