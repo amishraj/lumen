@@ -416,11 +416,17 @@ class TraktService {
       final list = await _cachedJson('trakt:cache:watched:shows',
           () => _authGet('$_api/sync/watched/shows'));
       if (list is! List) return {};
-      final want = _titleKey(title);
+      final want = _titleKeyVariants(title);
       for (final e in list) {
         final show = e is Map ? e['show'] : null;
         if (show is! Map || show['title'] == null) continue;
-        if (_titleKey('${show['title']}') != want) continue;
+        // Tolerant match: a bare trailing year ("Gen V 2023") or a leading
+        // "The" in the library's name must still line up with Trakt's clean
+        // title, or every episode silently reads as un-watched. Mirrors the
+        // article/year tolerance the library TitleIndex already uses.
+        if (want.intersection(_titleKeyVariants('${show['title']}')).isEmpty) {
+          continue;
+        }
         final out = <(int, int)>{};
         final seasons = e['seasons'];
         if (seasons is List) {
@@ -443,9 +449,30 @@ class TraktService {
   }
 
   /// Loose title key for matching a library show against a Trakt show —
-  /// l-case, alphanumerics only (drops punctuation, spacing, year suffixes).
+  /// l-case, alphanumerics only (drops punctuation and spacing).
   static String _titleKey(String s) =>
       s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+  static final _trailingYearKey = RegExp(r'(19|20)\d{2}$');
+
+  /// Equivalent title keys for a show name: the base key plus leading-"the"
+  /// and trailing-year variants, so "The Office"/"Office" and "Gen V"/"Gen V
+  /// 2023" match. Two shows match when their variant sets intersect. Mirrors
+  /// [TitleIndex]'s `_bucketFor` tolerance so watched-episode marks line up
+  /// with the same shows the library already reconciles.
+  static Set<String> _titleKeyVariants(String s) {
+    final k = _titleKey(s);
+    if (k.isEmpty) return const {};
+    final out = <String>{k};
+    if (k.startsWith('the') && k.length > 3) {
+      out.add(k.substring(3));
+    } else {
+      out.add('the$k');
+    }
+    final m = _trailingYearKey.firstMatch(k);
+    if (m != null && m.start > 0) out.add(k.substring(0, m.start));
+    return out;
+  }
 
   /// The user's custom Trakt lists.
   Future<List<TraktList>> lists() async {
