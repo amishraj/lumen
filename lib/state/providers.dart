@@ -240,13 +240,25 @@ final groupedSearchProvider =
   // Order each rail by how well the title matches what was typed, then newest
   // release first — so "backrooms" leads with the 2026 film instead of burying
   // it in a decade of same-named horror. Stable within a tier (source order).
-  final qn = TitleIndex.normalize(q);
+  //
+  // The relevance key drops a leading article AND a trailing year, so "The
+  // Backrooms (2026)" scores as the SAME title as a query for "backrooms"
+  // (rank 0) rather than a weak substring match — otherwise the exact film
+  // the user wants sorts below unrelated "…Backrooms…" entries and off-screen.
+  String coreKey(String s) {
+    var k = TitleIndex.normalize(s);
+    if (k.startsWith('the') && k.length > 3) k = k.substring(3);
+    return k.replaceFirst(RegExp(r'(?:19|20)\d{2}$'), '');
+  }
+
+  final qk = coreKey(q);
   List<StreamItem> ordered(List<StreamItem> l) {
     int rel(StreamItem it) {
-      final n = TitleIndex.normalize(it.name);
-      if (n == qn) return 0;
-      if (n.startsWith(qn)) return 1;
-      if (n.contains(qn)) return 2;
+      final n = coreKey(it.name);
+      if (qk.isEmpty) return 3;
+      if (n == qk) return 0;
+      if (n.startsWith(qk)) return 1;
+      if (n.contains(qk)) return 2;
       return 3;
     }
 
