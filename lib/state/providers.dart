@@ -124,6 +124,10 @@ class GroupedResults {
   bool get isEmpty => live.isEmpty && movies.isEmpty && series.isEmpty;
 }
 
+/// A standalone 4-digit year token (not part of a longer number), used to keep
+/// same-titled films of different years distinct in search dedupe/ordering.
+final _searchYearTok = RegExp(r'(?<![0-9])(?:19|20)\d{2}(?![0-9])');
+
 final groupedSearchProvider =
     FutureProvider.autoDispose<GroupedResults>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
@@ -167,12 +171,28 @@ final groupedSearchProvider =
     rdOn = await ref.read(rdEnabledProvider.future);
   } catch (_) {}
 
+  // Release year embedded in the raw provider name (last plausible 19xx/20xx
+  // token). cleanTitle strips "- 2026"/"(2026)" from the display title, so
+  // without this a 2026 release normalises to the same key as an older namesake
+  // and the dedupe collapses it onto that card — the exact reason searching
+  // "backrooms"/"obsession" hid the current film until the year was typed.
+  int yearOf(String name) {
+    var y = 0;
+    for (final m in _searchYearTok.allMatches(name)) {
+      final v = int.parse(m.group(0)!);
+      if (v >= 1900 && v <= 2100) y = v; // last plausible year wins
+    }
+    return y;
+  }
+
   List<StreamItem> dedupe(List<StreamItem> items) {
     final byKey = <String, List<StreamItem>>{};
     final order = <String>[];
     for (final it in items) {
       var key = TitleIndex.normalize(it.name);
       if (key.isEmpty) key = it.name.toLowerCase();
+      final y = yearOf(it.name);
+      if (y != 0) key = '$key|$y'; // keep different-year films apart
       (byKey[key] ??= (() {
         order.add(key);
         return <StreamItem>[];
@@ -217,7 +237,30 @@ final groupedSearchProvider =
     }
   }
 
-  return GroupedResults(live, outMovies, outSeries);
+  // Order each rail by how well the title matches what was typed, then newest
+  // release first — so "backrooms" leads with the 2026 film instead of burying
+  // it in a decade of same-named horror. Stable within a tier (source order).
+  final qn = TitleIndex.normalize(q);
+  List<StreamItem> ordered(List<StreamItem> l) {
+    int rel(StreamItem it) {
+      final n = TitleIndex.normalize(it.name);
+      if (n == qn) return 0;
+      if (n.startsWith(qn)) return 1;
+      if (n.contains(qn)) return 2;
+      return 3;
+    }
+
+    final w = [for (var i = 0; i < l.length; i++) (i, l[i])];
+    w.sort((a, b) {
+      final r = rel(a.$2).compareTo(rel(b.$2));
+      if (r != 0) return r;
+      final y = yearOf(b.$2.name).compareTo(yearOf(a.$2.name)); // newest first
+      return y != 0 ? y : a.$1.compareTo(b.$1);
+    });
+    return [for (final e in w) e.$2];
+  }
+
+  return GroupedResults(live, ordered(outMovies), ordered(outSeries));
 });
 
 // ---------------------------------------------------------------------------
