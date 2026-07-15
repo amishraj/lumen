@@ -243,12 +243,13 @@ class TmdbService {
   /// and cross-type popularity, which buried a specific new film ("Backrooms")
   /// below found-footage shorts and the web series. Interleaved movie/show,
   /// artwork-only, bounded latency, session-cached per query.
-  Future<List<TmdbItem>> searchTitles(String query, {int limit = 16}) async {
+  Future<List<TmdbItem>> searchTitles(String query, {int limit = 40}) async {
     final k = await key();
     if (k == null || k.isEmpty) return [];
-    final q = query.trim().toLowerCase();
+    final q = query.trim();
     if (q.length < 2) return [];
-    final cached = _searchCache[q];
+    final ql = q.toLowerCase();
+    final cached = _searchCache[ql];
     if (cached != null) return cached;
     try {
       final (auth, opts) = await _auth();
@@ -257,11 +258,11 @@ class TmdbService {
             .get('$_api/search/$type',
                 queryParameters: {
                   ...auth,
-                  'query': query,
+                  'query': q,
                   'include_adult': 'false',
                 },
                 options: opts)
-            .timeout(const Duration(seconds: 4));
+            .timeout(const Duration(seconds: 6));
         if (res.statusCode != 200) return const [];
         final data = res.data is String ? jsonDecode(res.data) : res.data;
         return _parseResults(data, forceShow: show)
@@ -270,7 +271,29 @@ class TmdbService {
       }
 
       final both = await Future.wait([one('movie', false), one('tv', true)]);
-      final movies = both[0], shows = both[1];
+      // Rank each type by how well the title matches what was typed BEFORE
+      // popularity — otherwise a specific new film ("Backrooms") sits below
+      // more-popular same-name content and gets cut by the cap. Stable within
+      // a tier so TMDB's popularity order is preserved among equal matches.
+      int rel(TmdbItem t) {
+        final n = t.title.toLowerCase();
+        if (n == ql) return 0; // exact title
+        if (n.startsWith(ql)) return 1; // prefix ("Backrooms" ⊂ "Backrooms 2")
+        if (n.contains(' $ql') || n.contains('$ql ')) return 2; // whole word
+        if (n.contains(ql)) return 3; // substring
+        return 4; // fuzzy / other
+      }
+
+      List<TmdbItem> ranked(List<TmdbItem> l) {
+        final withIdx = [for (var i = 0; i < l.length; i++) (i, l[i])];
+        withIdx.sort((a, b) {
+          final r = rel(a.$2).compareTo(rel(b.$2));
+          return r != 0 ? r : a.$1.compareTo(b.$1);
+        });
+        return [for (final e in withIdx) e.$2];
+      }
+
+      final movies = ranked(both[0]), shows = ranked(both[1]);
       // Interleave so both types surface near the top of the merged list.
       final merged = <TmdbItem>[];
       for (var i = 0; merged.length < limit; i++) {
@@ -285,7 +308,7 @@ class TmdbService {
         }
         if (!added) break;
       }
-      return _searchCache[q] = merged;
+      return _searchCache[ql] = merged;
     } catch (_) {
       return [];
     }
