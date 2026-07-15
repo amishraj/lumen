@@ -407,71 +407,45 @@ class TraktService {
     }
   }
 
-  /// The (season, episode) pairs the user has watched on Trakt for the show
-  /// matching [title]. Empty when disconnected, on a cache miss, or when no
-  /// show matches. Reuses the same cached `/sync/watched/shows` payload as
-  /// [watchedShows], so it's effectively free once that's warm.
-  Future<Set<(int, int)>> watchedEpisodesFor(String title) async {
+  /// The (season, episode) pairs the user has completed on Trakt for the show
+  /// matching [title]. Empty when disconnected or the show can't be resolved.
+  ///
+  /// Uses the per-show progress endpoint (`/shows/{id}/progress/watched`), NOT
+  /// `/sync/watched/shows`: as of the June 2026 Trakt API change the sync
+  /// endpoint no longer returns any season/episode breakdown by default (and is
+  /// now paginated), so the old approach reported every episode as un-watched
+  /// for every show. The progress endpoint returns the full season → episode
+  /// `completed` map for one show in a single call, always current.
+  Future<Set<(int, int)>> watchedEpisodesFor(String title, {int? year}) async {
+    if (!await isConnected()) return {};
     try {
-      final list = await _cachedJson('trakt:cache:watched:shows',
-          () => _authGet('$_api/sync/watched/shows'));
-      if (list is! List) return {};
-      final want = _titleKeyVariants(title);
-      for (final e in list) {
-        final show = e is Map ? e['show'] : null;
-        if (show is! Map || show['title'] == null) continue;
-        // Tolerant match: a bare trailing year ("Gen V 2023") or a leading
-        // "The" in the library's name must still line up with Trakt's clean
-        // title, or every episode silently reads as un-watched. Mirrors the
-        // article/year tolerance the library TitleIndex already uses.
-        if (want.intersection(_titleKeyVariants('${show['title']}')).isEmpty) {
-          continue;
-        }
-        final out = <(int, int)>{};
-        final seasons = e['seasons'];
-        if (seasons is List) {
-          for (final s in seasons) {
-            final sn = (s is Map ? s['number'] : null) as num?;
-            final eps = s is Map ? s['episodes'] : null;
-            if (sn == null || eps is! List) continue;
-            for (final ep in eps) {
-              final en = (ep is Map ? ep['number'] : null) as num?;
-              if (en != null) out.add((sn.toInt(), en.toInt()));
-            }
+      final ids = await idsFor(title, year: year, isShow: true);
+      final showId = ids?['trakt'] ?? ids?['slug'];
+      if (showId == null) return {};
+      final data = await _cachedJson(
+        'trakt:cache:show_progress:$showId',
+        () => _authGet('$_api/shows/$showId/progress/watched'),
+        ttl: const Duration(hours: 6),
+      );
+      if (data is! Map) return {};
+      final out = <(int, int)>{};
+      final seasons = data['seasons'];
+      if (seasons is List) {
+        for (final s in seasons) {
+          final sn = (s is Map ? s['number'] : null) as num?;
+          final eps = s is Map ? s['episodes'] : null;
+          if (sn == null || eps is! List) continue;
+          for (final ep in eps) {
+            if (ep is! Map) continue;
+            final en = (ep['number'] as num?)?.toInt();
+            if (en != null && ep['completed'] == true) out.add((sn.toInt(), en));
           }
         }
-        return out;
       }
-      return {};
+      return out;
     } catch (_) {
       return {};
     }
-  }
-
-  /// Loose title key for matching a library show against a Trakt show —
-  /// l-case, alphanumerics only (drops punctuation and spacing).
-  static String _titleKey(String s) =>
-      s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
-
-  static final _trailingYearKey = RegExp(r'(19|20)\d{2}$');
-
-  /// Equivalent title keys for a show name: the base key plus leading-"the"
-  /// and trailing-year variants, so "The Office"/"Office" and "Gen V"/"Gen V
-  /// 2023" match. Two shows match when their variant sets intersect. Mirrors
-  /// [TitleIndex]'s `_bucketFor` tolerance so watched-episode marks line up
-  /// with the same shows the library already reconciles.
-  static Set<String> _titleKeyVariants(String s) {
-    final k = _titleKey(s);
-    if (k.isEmpty) return const {};
-    final out = <String>{k};
-    if (k.startsWith('the') && k.length > 3) {
-      out.add(k.substring(3));
-    } else {
-      out.add('the$k');
-    }
-    final m = _trailingYearKey.firstMatch(k);
-    if (m != null && m.start > 0) out.add(k.substring(0, m.start));
-    return out;
   }
 
   /// The user's custom Trakt lists.
@@ -776,6 +750,12 @@ class TraktService {
         options: Options(headers: await _authHeaders()),
       );
       await _repo.setSetting('trakt:cache:watched:shows', null);
+      // Drop the per-show progress snapshot too, or the season's episode checks
+      // would keep reading the pre-toggle state for up to the 6h TTL.
+      final sid = ids['trakt'] ?? ids['slug'];
+      if (sid != null) {
+        await _repo.setSetting('trakt:cache:show_progress:$sid', null);
+      }
     } catch (_) {/* best effort */}
   }
 
