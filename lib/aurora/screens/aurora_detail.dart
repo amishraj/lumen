@@ -61,9 +61,17 @@ class _AuroraDetailScreenState extends ConsumerState<AuroraDetailScreen> {
     final loading = bundle.isLoading;
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = item.id != null && favs.contains(item.id);
-    final fraction = item.id == null
-        ? null
-        : ref.watch(progressFractionsProvider).valueOrNull?[item.id];
+    // Library items resume by stream id; debrid-only titles (no id) by their
+    // title-keyed local progress — previously they simply had no Resume.
+    double? fraction;
+    if (item.id != null) {
+      fraction = ref.watch(progressFractionsProvider).valueOrNull?[item.id];
+    } else {
+      fraction = ref
+          .watch(titleProgressProvider(cleanTitle(item.name).title))
+          .valueOrNull
+          ?.fraction;
+    }
     final resumable = fraction != null && fraction >= 0.02 && fraction <= 0.97;
     final rdOn = ref.watch(rdEnabledProvider).valueOrNull ?? false;
     final recs = ref

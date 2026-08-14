@@ -132,7 +132,11 @@ class LumenRoot extends ConsumerWidget {
         }
 
         // Default the active source so every shell (and the gate) has one —
-        // restoring the last-used source when it still exists.
+        // restoring the last-used source when it still exists. Crucially the
+        // splash STAYS UP until it's set: building the shell with a null
+        // active playlist rendered one frame of empty rows (every provider
+        // resolves to [] and the hero collapses), then re-ran ALL of them when
+        // the playlist landed — a visible flash plus double the startup work.
         final active = ref.watch(activePlaylistProvider);
         if (active == null) {
           WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -143,6 +147,7 @@ class LumenRoot extends ConsumerWidget {
                 orElse: () => list.first);
             ref.read(activePlaylistProvider.notifier).state = chosen;
           });
+          return const _Splash();
         }
 
         final experience = ref.watch(uiExperienceProvider);

@@ -184,6 +184,33 @@ class TraktService {
     return res;
   }
 
+  /// Authenticated POST with the same self-healing 401 → refresh → retry as
+  /// [_authGet]. Every WRITE goes through here: the old raw posts treated an
+  /// expired-token 401 as success (validateStatus < 500 never throws), so for
+  /// up to three months of token age every watch event was silently lost.
+  /// Returns the HTTP status, or null on a transport failure (offline / DNS /
+  /// timeout) — callers use that distinction to decide queue vs drop.
+  Future<int?> _authPostStatus(String url, Object body) async {
+    try {
+      Future<Response<dynamic>> go() async => _dio.post(url,
+          data: body is String ? body : jsonEncode(body),
+          options: Options(headers: await _authHeaders()));
+      var res = await go();
+      if (res.statusCode == 401 && await _refreshToken()) {
+        res = await go();
+      }
+      return res.statusCode;
+    } catch (_) {
+      return null; // offline / DNS / timeout — caller queues if it matters
+    }
+  }
+
+  /// True on a 2xx response. See [_authPostStatus].
+  Future<bool> _authPost(String url, Object body) async {
+    final code = await _authPostStatus(url, body) ?? 0;
+    return code >= 200 && code < 300;
+  }
+
   /// DB-backed **stale-while-revalidate** cache for a Trakt read.
   ///
   /// Returns the cached response instantly when present — even if stale — and
@@ -234,6 +261,143 @@ class TraktService {
   /// freshly-linked account never shows the previous one's rows).
   Future<void> _clearCaches() => _repo.db.deleteSettingsPrefix('trakt:cache:');
 
+  // ---- Write outbox --------------------------------------------------------
+  //
+  // The invariant: anything marked watched locally MUST eventually exist on
+  // Trakt. A write that fails (offline, expired token mid-refresh, search
+  // miss) is queued here as a self-describing op and replayed on the next app
+  // open / flush — instead of being silently dropped forever.
+
+  Future<void> _enqueue(Map<String, dynamic> op) async {
+    try {
+      await _repo.db.outboxAdd(jsonEncode(op));
+    } catch (_) {/* the local DB failing is beyond rescue here */}
+  }
+
+  bool _flushing = false;
+
+  /// Outcome of replaying one queued op.
+  static const _opDone = 0; // sent (or already recorded) — delete the row
+  static const _opRetry = 1; // deterministic failure — bump, try NEXT row
+  static const _opOffline = 2; // transport failure — bump, stop the flush
+
+  /// Replay every queued write. Called on app open (after the token refresh
+  /// path has run) and after a successful stop scrobble (connectivity just
+  /// proved itself). A transport failure stops the flush (offline — retry
+  /// later); a deterministic failure (title with no Trakt match, deleted
+  /// show) moves ON to the next row so one bad op can't block every valid
+  /// watch event queued behind it. Deterministic failures drop after 5
+  /// attempts, transport failures after 25.
+  Future<void> flushOutbox() async {
+    if (_flushing || !await isConnected()) return;
+    _flushing = true;
+    try {
+      final rows = await _repo.db.outboxAll();
+      for (final row in rows) {
+        Map<String, dynamic> op;
+        try {
+          op = Map<String, dynamic>.from(jsonDecode(row.payload) as Map);
+        } catch (_) {
+          await _repo.db.outboxDelete(row.id); // corrupt — drop
+          continue;
+        }
+        final outcome = await _executeOp(op);
+        if (outcome == _opDone) {
+          await _repo.db.outboxDelete(row.id);
+        } else if (outcome == _opRetry) {
+          if (row.attempts >= 5) {
+            await _repo.db.outboxDelete(row.id);
+          } else {
+            await _repo.db.outboxBumpAttempts(row.id);
+          }
+          // fall through to the next row — this failure is op-specific
+        } else {
+          if (row.attempts >= 25) {
+            await _repo.db.outboxDelete(row.id);
+          } else {
+            await _repo.db.outboxBumpAttempts(row.id);
+          }
+          break; // offline — stop hammering, retry next flush
+        }
+      }
+    } catch (_) {/* next flush retries */} finally {
+      _flushing = false;
+    }
+  }
+
+  /// Execute one queued op. Ids are resolved at REPLAY time (the enqueue may
+  /// have happened fully offline, when no search was possible).
+  Future<int> _executeOp(Map<String, dynamic> op) async {
+    final title = '${op['title'] ?? ''}';
+    if (title.isEmpty) return _opDone; // malformed — treat as done
+    final isShow = op['isShow'] == true;
+    final year = (op['year'] as num?)?.toInt();
+    switch ('${op['op']}') {
+      case 'history_add':
+        final ids = await idsFor(title, year: year, isShow: isShow);
+        if (ids == null) return _opRetry; // no Trakt match (yet)
+        final season = (op['season'] as num?)?.toInt();
+        final episode = (op['episode'] as num?)?.toInt();
+        final watchedAt = '${op['watched_at'] ?? ''}';
+        final isEpisode = isShow && season != null && episode != null;
+        final Map<String, dynamic> body;
+        if (isEpisode) {
+          body = {
+            'shows': [
+              {
+                'ids': ids,
+                'seasons': [
+                  {
+                    'number': season,
+                    'episodes': [
+                      {
+                        'number': episode,
+                        if (watchedAt.isNotEmpty) 'watched_at': watchedAt,
+                      }
+                    ],
+                  }
+                ],
+              }
+            ]
+          };
+        } else {
+          body = {
+            'movies': [
+              {'ids': ids, if (watchedAt.isNotEmpty) 'watched_at': watchedAt}
+            ]
+          };
+        }
+        final status = await _authPostStatus('$_api/sync/history', body);
+        if (status == null) return _opOffline;
+        if (status >= 200 && status < 300) {
+          // Invalidate the snapshot the write actually changed, so the synced
+          // watch shows up on the next read instead of after the 24h TTL.
+          if (isEpisode) {
+            await _repo.setSetting('trakt:cache:watched:shows', null);
+            final sid = ids['trakt'] ?? ids['slug'];
+            if (sid != null) {
+              await _repo.setSetting('trakt:cache:show_progress:$sid', null);
+            }
+          } else {
+            await _repo.setSetting('trakt:cache:watched:movies', null);
+          }
+          return _opDone;
+        }
+        return status >= 500 ? _opOffline : _opRetry;
+      case 'season':
+        return await _postSeason(title, (op['season'] as num?)?.toInt() ?? 0,
+                watched: op['watched'] == true)
+            ? _opDone
+            : _opRetry;
+      case 'watchlist':
+        return await _postWatchlist(title,
+                year: year, isShow: isShow, inList: op['inList'] == true)
+            ? _opDone
+            : _opRetry;
+    }
+    return _opDone; // unknown op — drop
+  }
+
   /// Force-refresh the snapshots behind the home rows (resume points, watched
   /// history, watchlist), ignoring their TTLs. Called once per app open so
   /// activity from other devices shows up within seconds of launch instead of
@@ -245,7 +409,9 @@ class TraktService {
     var changed = false;
     Future<void> pull(String cacheKey, String url) async {
       try {
-        final res = await _authGet(url);
+        // The sync endpoints are paginated since the June 2026 API change; an
+        // explicit large limit keeps big histories intact in one request.
+        final res = await _authGet(url, queryParameters: {'limit': '1000'});
         if (res.statusCode != 200) return;
         final data = res.data is String ? jsonDecode(res.data) : res.data;
         final fresh = jsonEncode(data);
@@ -280,7 +446,8 @@ class TraktService {
   Future<void> refreshPlaybackCache() async {
     if (!await isConnected()) return;
     try {
-      final res = await _authGet('$_api/sync/playback');
+      final res =
+          await _authGet('$_api/sync/playback', queryParameters: {'limit': '1000'});
       if (res.statusCode != 200) return;
       final data = res.data is String ? jsonDecode(res.data) : res.data;
       await _repo.setSetting('trakt:cache:playback',
@@ -358,14 +525,21 @@ class TraktService {
   }
 
   /// The user's Trakt watchlist (movies + shows), as discovery items.
-  Future<List<TraktItem>> watchlist() =>
-      _itemsFrom('$_api/sync/watchlist', 'trakt:cache:watchlist');
+  /// Same explicit limit as refreshHomeSnapshots' pull of the SAME cache key:
+  /// a bare fetch here got page one only (the endpoint paginates now), which
+  /// truncated My List after every watchlist toggle AND made the byte-compare
+  /// in refreshHomeSnapshots flag a phantom change on every open.
+  Future<List<TraktItem>> watchlist() => _itemsFrom(
+      '$_api/sync/watchlist', 'trakt:cache:watchlist',
+      queryParameters: {'limit': '1000'});
 
   /// Movies the user has marked watched on Trakt.
   Future<List<TraktItem>> watchedMovies() async {
     try {
-      final list = await _cachedJson('trakt:cache:watched:movies',
-          () => _authGet('$_api/sync/watched/movies'));
+      final list = await _cachedJson(
+          'trakt:cache:watched:movies',
+          () => _authGet('$_api/sync/watched/movies',
+              queryParameters: {'limit': '1000'}));
       final out = <TraktItem>[];
       if (list is List) {
         for (final e in list) {
@@ -387,8 +561,10 @@ class TraktService {
   /// Shows the user has watched (any episodes) on Trakt.
   Future<List<TraktItem>> watchedShows() async {
     try {
-      final list = await _cachedJson('trakt:cache:watched:shows',
-          () => _authGet('$_api/sync/watched/shows'));
+      final list = await _cachedJson(
+          'trakt:cache:watched:shows',
+          () => _authGet('$_api/sync/watched/shows',
+              queryParameters: {'limit': '1000'}));
       final out = <TraktItem>[];
       if (list is List) {
         for (final e in list) {
@@ -472,7 +648,8 @@ class TraktService {
 
   Future<List<TraktItem>> listItems(String listId) => _itemsFrom(
       '$_api/users/me/lists/$listId/items/movies,shows',
-      'trakt:cache:list:$listId');
+      'trakt:cache:list:$listId',
+      queryParameters: {'limit': '1000'});
 
   /// Live end-to-end sanity check: verifies the token, forces a refresh if the
   /// account call 401s, and reports real HTTP status + counts for each Trakt
@@ -542,8 +719,10 @@ class TraktService {
   /// only adds cross-device resume points.
   Future<List<TraktPlayback>> playback() async {
     try {
-      final list = await _cachedJson('trakt:cache:playback',
-          () => _authGet('$_api/sync/playback'),
+      final list = await _cachedJson(
+          'trakt:cache:playback',
+          () => _authGet('$_api/sync/playback',
+              queryParameters: {'limit': '1000'}),
           ttl: const Duration(hours: 6));
       final out = <TraktPlayback>[];
       if (list is List) {
@@ -630,8 +809,10 @@ class TraktService {
     }
   }
 
-  Future<List<TraktItem>> _itemsFrom(String url, String cacheKey) async {
-    final list = await _cachedJson(cacheKey, () => _authGet(url));
+  Future<List<TraktItem>> _itemsFrom(String url, String cacheKey,
+      {Map<String, dynamic>? queryParameters}) async {
+    final list = await _cachedJson(
+        cacheKey, () => _authGet(url, queryParameters: queryParameters));
     final out = <TraktItem>[];
     if (list is List) {
       for (final e in list) {
@@ -651,22 +832,19 @@ class TraktService {
   }
 
   /// Resume point (0..1) for a title from Trakt's cross-device playback store.
-  /// Title-matched, so best-effort for IPTV items.
+  /// Served from the CACHED playback snapshot (refreshed at every app open and
+  /// after every stop scrobble) — the old live HTTP call here ran inside the
+  /// player's load path, so on a slow link playback visibly started at 0:00
+  /// and then jumped when the response landed. Title-matched, best-effort.
   Future<double?> resumeProgress(String title, {bool isShow = false}) async {
     if (!await isConnected()) return null;
     try {
-      final type = isShow ? 'episodes' : 'movies';
-      final res = await _authGet('$_api/sync/playback/$type');
-      final list = res.data is String ? jsonDecode(res.data) : res.data;
-      if (list is! List) return null;
       final needle = title.toLowerCase();
-      for (final e in list) {
-        if (e is! Map) continue;
-        final node = e[isShow ? 'show' : 'movie'];
-        final t = node is Map ? '${node['title']}'.toLowerCase() : '';
+      for (final p in await playback()) {
+        if (p.isShow != isShow) continue;
+        final t = p.item.title.toLowerCase();
         if (t.isNotEmpty && (needle.contains(t) || t.contains(needle))) {
-          final p = (e['progress'] as num?)?.toDouble();
-          if (p != null) return p / 100.0;
+          return p.progress;
         }
       }
     } catch (_) {/* best effort */}
@@ -725,19 +903,35 @@ class TraktService {
   }
 
   /// Mark (or un-mark) an entire season watched on Trakt for the show matching
-  /// [title]. Resolves the show's ids by search, then posts the season to
-  /// /sync/history (or /sync/history/remove) — Trakt expands a bare season to
-  /// all its episodes. Best-effort: a failure never blocks the local toggle.
-  /// Invalidates the cached watched-shows snapshot so the next read reflects it.
+  /// [title]. Never blocks the local toggle; a failed write is QUEUED and
+  /// replayed on the next flush instead of silently vanishing.
   Future<void> setSeasonWatched(String title, int season,
       {required bool watched}) async {
     if (!await isConnected()) return;
+    final ok = await _postSeason(title, season, watched: watched);
+    if (!ok) {
+      await _enqueue({
+        'op': 'season',
+        'title': title,
+        'isShow': true,
+        'season': season,
+        'watched': watched,
+      });
+    }
+  }
+
+  /// Raw season write (also the outbox replay path — must not re-enqueue).
+  /// Posts the season to /sync/history (or /remove) — Trakt expands a bare
+  /// season to all its episodes — then drops the affected snapshots so the
+  /// next read reflects the change instead of the pre-toggle 6h cache.
+  Future<bool> _postSeason(String title, int season,
+      {required bool watched}) async {
     try {
       final ids = await idsFor(title, isShow: true);
-      if (ids == null) return;
-      await _dio.post(
+      if (ids == null) return false;
+      final ok = await _authPost(
         watched ? '$_api/sync/history' : '$_api/sync/history/remove',
-        data: jsonEncode({
+        {
           'shows': [
             {
               'ids': ids,
@@ -746,9 +940,9 @@ class TraktService {
               ],
             }
           ]
-        }),
-        options: Options(headers: await _authHeaders()),
+        },
       );
+      if (!ok) return false;
       await _repo.setSetting('trakt:cache:watched:shows', null);
       // Drop the per-show progress snapshot too, or the season's episode checks
       // would keep reading the pre-toggle state for up to the 6h TTL.
@@ -756,7 +950,10 @@ class TraktService {
       if (sid != null) {
         await _repo.setSetting('trakt:cache:show_progress:$sid', null);
       }
-    } catch (_) {/* best effort */}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Session cache of title → Trakt ids so pause/resume/stop cycles don't
@@ -767,7 +964,11 @@ class TraktService {
   /// stop. Trakt records the exact progress: a `stop` below 80% is stored as
   /// a paused checkpoint (shows at that timestamp in continue watching); at or
   /// above 80% the play is scrobbled as watched. Shows require the episode's
-  /// season+number. Best-effort — never throws into playback.
+  /// season+number. Never throws into playback — but a WATCHED play (a stop at
+  /// >=80%) that fails to send is queued as a history write and replayed
+  /// later, so a flaky connection or expired token can't lose the watch.
+  /// start/pause scrobbles stay fire-and-forget: replaying a stale "watching
+  /// now" hours later would corrupt the user's live state.
   Future<void> scrobble(
     String action,
     String title, {
@@ -779,30 +980,73 @@ class TraktService {
     if (!await isConnected()) return;
     // A show scrobble without an episode is meaningless to Trakt.
     if (isShow && (season == null || episode == null)) return;
+    final isWatchedStop = action == 'stop' && progressPct >= 80;
+    var sent = false;
     try {
       final key = '${isShow ? 's' : 'm'}:${title.toLowerCase()}';
       final ids = _idsCache.containsKey(key)
           ? _idsCache[key]
           : _idsCache[key] = await idsFor(title, isShow: isShow);
-      if (ids == null) return;
-      final body = <String, dynamic>{
-        'progress': progressPct.clamp(0, 100),
-        if (!isShow) 'movie': {'ids': ids},
-        if (isShow) 'show': {'ids': ids},
-        if (isShow) 'episode': {'season': season, 'number': episode},
-      };
-      await _dio.post('$_api/scrobble/$action',
-          data: jsonEncode(body),
-          options: Options(headers: await _authHeaders()));
-    } catch (_) {/* best effort */}
+      if (ids != null) {
+        final body = <String, dynamic>{
+          'progress': progressPct.clamp(0, 100),
+          if (!isShow) 'movie': {'ids': ids},
+          if (isShow) 'show': {'ids': ids},
+          if (isShow) 'episode': {'season': season, 'number': episode},
+        };
+        final status = await _authPostStatus('$_api/scrobble/$action', body);
+        // 409 = Trakt already has this exact scrobble (a rewatch of the same
+        // ending within its dedupe window) — the play IS recorded; queueing a
+        // history add on top would double-count it.
+        sent = status != null &&
+            (status >= 200 && status < 300 || status == 409);
+      }
+    } catch (_) {/* fall through to the queue check */}
+    if (isWatchedStop) {
+      if (!sent) {
+        await _enqueue({
+          'op': 'history_add',
+          'title': title,
+          'isShow': isShow,
+          'season': season,
+          'episode': episode,
+          'watched_at': DateTime.now().toUtc().toIso8601String(),
+        });
+      } else {
+        // Connectivity just proved itself — drain anything queued earlier.
+        // This runs in BOTH experiences (classic + Aurora scrobble through
+        // this same service), so queued events never sit forever.
+        unawaited(flushOutbox());
+      }
+    }
   }
 
   /// Resolve a title to its Trakt id node (contains imdb/tmdb/trakt ids).
-  /// Public search endpoint — works with just the api key.
+  /// Public search endpoint — works with just the api key. Hits persist in
+  /// the DB for 30 days: repeat scrobbles, watched-episode checks and season
+  /// toggles for known titles cost ZERO search round-trips (misses are not
+  /// cached — they may be transient). The TTL bounds the damage of a wrong
+  /// first search hit for an ambiguous title: it self-corrects within a
+  /// month rather than mis-attributing that title's activity forever.
   Future<Map<String, dynamic>?> idsFor(String title,
       {int? year, bool isShow = false}) async {
+    final type = isShow ? 'show' : 'movie';
+    final cacheKey =
+        'trakt:cache:ids:$type:${title.trim().toLowerCase()}${year != null ? ':$year' : ''}';
+    const ttlMs = 30 * 24 * 3600 * 1000;
     try {
-      final type = isShow ? 'show' : 'movie';
+      final cached = await _repo.getSetting(cacheKey);
+      if (cached != null && cached.isNotEmpty) {
+        final wrap = jsonDecode(cached);
+        if (wrap is Map && wrap['v'] is Map) {
+          final at = (wrap['at'] as num?)?.toInt() ?? 0;
+          if (DateTime.now().millisecondsSinceEpoch - at < ttlMs) {
+            return Map<String, dynamic>.from(wrap['v'] as Map);
+          }
+        }
+      }
+    } catch (_) {/* corrupt — refetch */}
+    try {
       final search = await _dio.get('$_api/search/$type',
           queryParameters: {'query': title, if (year != null) 'years': '$year'},
           options: Options(headers: await _authHeaders()));
@@ -811,33 +1055,58 @@ class TraktService {
       if (list is! List || list.isEmpty) return null;
       final node = (list.first as Map)[type];
       if (node is! Map || node['ids'] is! Map) return null;
-      return Map<String, dynamic>.from(node['ids'] as Map);
+      final ids = Map<String, dynamic>.from(node['ids'] as Map);
+      try {
+        await _repo.setSetting(
+            cacheKey,
+            jsonEncode(
+                {'at': DateTime.now().millisecondsSinceEpoch, 'v': ids}));
+      } catch (_) {/* non-fatal */}
+      return ids;
     } catch (_) {
       return null;
     }
   }
 
   /// Keep the Trakt watchlist in sync with the in-app "My List": add/remove a
-  /// title (matched by name/year, like scrobbling). Best effort — a failure
-  /// never blocks the local favorite.
+  /// title (matched by name/year, like scrobbling). Never blocks the local
+  /// favorite; a failed write is queued for the next flush.
   Future<void> setInWatchlist(String title,
       {int? year, bool isShow = false, required bool inList}) async {
     if (!await isConnected()) return;
+    final ok =
+        await _postWatchlist(title, year: year, isShow: isShow, inList: inList);
+    if (!ok) {
+      await _enqueue({
+        'op': 'watchlist',
+        'title': title,
+        'year': year,
+        'isShow': isShow,
+        'inList': inList,
+      });
+    }
+  }
+
+  /// Raw watchlist write (also the outbox replay path — must not re-enqueue).
+  Future<bool> _postWatchlist(String title,
+      {int? year, bool isShow = false, required bool inList}) async {
     try {
       final ids = await idsFor(title, year: year, isShow: isShow);
-      if (ids == null) return;
+      if (ids == null) return false;
       final type = isShow ? 'show' : 'movie';
-      await _dio.post(
-          inList ? '$_api/sync/watchlist' : '$_api/sync/watchlist/remove',
-          data: jsonEncode({
-            '${type}s': [
-              {'ids': ids}
-            ]
-          }),
-          options: Options(headers: await _authHeaders()));
+      final ok = await _authPost(
+          inList ? '$_api/sync/watchlist' : '$_api/sync/watchlist/remove', {
+        '${type}s': [
+          {'ids': ids}
+        ]
+      });
+      if (!ok) return false;
       // The watchlist changed — drop its snapshot so the next read reflects it.
       await _repo.setSetting('trakt:cache:watchlist', null);
-    } catch (_) {/* best effort */}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 }
 

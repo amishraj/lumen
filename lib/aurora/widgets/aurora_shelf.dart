@@ -5,7 +5,8 @@ import '../aurora_theme.dart';
 /// A titled horizontal rail. The backbone of Home / My Stuff / Search.
 ///
 /// Pass [items] as:
-/// - null   → skeleton placeholders (still loading)
+/// - null   → skeleton placeholders (still loading), or nothing at all when
+///            [hideWhileLoading] is set
 /// - empty  → the shelf removes itself entirely
 /// - data   → a virtualized horizontal list built via [itemBuilder]
 class AuroraShelf<T> extends StatelessWidget {
@@ -18,6 +19,7 @@ class AuroraShelf<T> extends StatelessWidget {
     this.leading,
     this.skeletonWidth = 148,
     this.spacing = 14,
+    this.hideWhileLoading = false,
   });
 
   final String title;
@@ -30,10 +32,16 @@ class AuroraShelf<T> extends StatelessWidget {
   final double skeletonWidth;
   final double spacing;
 
+  /// Secondary rows (IPTV-derived: Live Now, library samples) collapse to
+  /// nothing while loading instead of holding skeleton space — the page is for
+  /// the content that's ready, and these simply appear when they are.
+  final bool hideWhileLoading;
+
   @override
   Widget build(BuildContext context) {
     final list = items;
     if (list != null && list.isEmpty) return const SizedBox.shrink();
+    if (list == null && hideWhileLoading) return const SizedBox.shrink();
     final margin = Aurora.margin(context);
 
     return Column(

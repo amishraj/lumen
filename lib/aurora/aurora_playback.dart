@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -61,28 +63,56 @@ class AuroraPlayback {
     double? resumeFraction,
   }) async {
     final title = cleanTitle(item.name).title;
-    final iptvUrl = await iptvUrlFor(ref, item);
+    // The IPTV lookup (local DB) and the debrid-enabled read are independent —
+    // run them together instead of serially before the scrape.
+    final iptvFuture = iptvUrlFor(ref, item);
+    final rdOnFuture = preference == PlayPreference.auto
+        ? ref.read(rdEnabledProvider.future).catchError((Object _) => false)
+        : Future.value(false);
 
     String? playUrl;
     var viaDebrid = false;
+    var fromRemembered = false;
 
-    if (preference == PlayPreference.auto) {
-      final rdOn = await ref.read(rdEnabledProvider.future);
-      if (rdOn) {
+    if (await rdOnFuture) {
+      // The link that played LAST time plays again — instantly, no scrape.
+      // (If it died since, the player re-resolves and repairs the memory.)
+      try {
+        final repo = await ref.read(repositoryProvider.future);
+        final choice =
+            await repo.db.getStreamChoice(movieProgressKey(title));
+        if (choice != null && choice.url.isNotEmpty) {
+          playUrl = choice.url;
+          viaDebrid = true;
+          fromRemembered = true;
+        }
+      } catch (_) {/* fall through to a fresh resolve */}
+
+      if (playUrl == null) {
         try {
           final imdb = await imdbIdForTitle(ref, title,
               isShow: item.kind == StreamKind.series);
           if (imdb != null) {
             final svc = await ref.read(realDebridServiceProvider.future);
-            final best = await svc.bestStream(imdb);
+            // Bounded: a slow Torrentio must not pin "Finding stream…"
+            // for Dio's full 15s+30s — fall back to IPTV instead.
+            final best =
+                await svc.bestStream(imdb).timeout(const Duration(seconds: 12));
             if (best != null) {
               playUrl = best.url;
               viaDebrid = true;
+              // Remember the pick — the next play of this title skips the
+              // scrape entirely and starts on this exact link.
+              final repo = await ref.read(repositoryProvider.future);
+              unawaited(repo.db.saveStreamChoice(
+                  movieProgressKey(title), best.url,
+                  label: best.label, quality: best.quality));
             }
           }
         } catch (_) {/* fall back to IPTV below */}
       }
     }
+    final iptvUrl = await iptvFuture;
 
     playUrl ??= iptvUrl ?? (item.url.startsWith('tmdb:') ? null : item.url);
 
@@ -119,6 +149,7 @@ class AuroraPlayback {
           title: title,
           isShow: item.kind == StreamKind.series,
           iptvUrl: iptvUrl,
+          rememberedUrl: fromRemembered,
         ),
       ),
     ));

@@ -33,6 +33,11 @@ class LibraryRepository {
   /// Full sync. Emits coarse progress so the UI can show a live status.
   Stream<SyncProgress> sync(Playlist pl) async* {
     if (pl.id == null) throw ArgumentError('playlist must be persisted first');
+    if (isDebridSentinel(pl)) {
+      // Debrid-only placeholder source — carries no streams, nothing to fetch.
+      yield const SyncProgress('Done', 0);
+      return;
+    }
 
     List<StreamItem> items;
     if (pl.kind == SourceKind.m3u) {

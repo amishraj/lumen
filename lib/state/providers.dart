@@ -291,6 +291,12 @@ final titleIndexProvider = FutureProvider<TitleIndex?>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return null;
+  // Yield briefly before the full VOD table scan: this provider is (indirectly)
+  // triggered by the very first home build, and sqflite serializes all queries
+  // through one connection — without the pause, the big scan lands in the queue
+  // AHEAD of the tiny `home:snap:*` reads that first paint depends on, stalling
+  // the "instant" snapshot path behind it on slow TV-box storage.
+  await Future<void>.delayed(const Duration(milliseconds: 350));
   final items = await repo.vodItems(pl!.id!);
   // Normalising tens of thousands of names is CPU work — off the UI thread.
   return compute(TitleIndex.build, (pl.id!, items));
@@ -492,18 +498,29 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
   final localMovies = await repo.continueWatching(plId);
   final ts = await repo.db.progressTimestamps();
 
-  // One row per show from per-episode progress, newest activity first.
+  // One row per show from per-episode progress, newest activity first. The
+  // same table also carries `movie:<title>` rows — local progress for movies
+  // with NO library stream row (debrid-only titles), which previously wrote
+  // nothing anywhere and so never appeared here at all.
   final nowMs = DateTime.now().millisecondsSinceEpoch;
   const recentFinishWindowMs = 30 * 24 * 3600 * 1000;
   final eps = await repo.db.episodeProgressAll();
   final byShow = <String, int>{}; // show title (from ep_key) → latest ms
+  final byMovie = <String, int>{}; // debrid-only movie title → latest ms
   eps.forEach((key, p) {
-    final bar = key.lastIndexOf('|');
-    if (bar <= 0) return;
-    final title = key.substring(0, bar);
     final inProgress = !p.watched && p.fraction > 0.02 && p.fraction < 0.97;
     final recentFinish =
         p.watched && nowMs - p.updatedAt < recentFinishWindowMs;
+    if (key.startsWith('movie:')) {
+      if (!inProgress) return; // finished movies don't need a CW card
+      final title = key.substring(6);
+      if (title.isEmpty) return;
+      if (p.updatedAt > (byMovie[title] ?? -1)) byMovie[title] = p.updatedAt;
+      return;
+    }
+    final bar = key.lastIndexOf('|');
+    if (bar <= 0) return;
+    final title = key.substring(0, bar);
     if (!inProgress && !recentFinish) return;
     if (p.updatedAt > (byShow[title] ?? -1)) byShow[title] = p.updatedAt;
   });
@@ -525,10 +542,23 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
         e.value,
       ),
   ];
+  final movieEntries = <(StreamItem, int)>[
+    for (final e in byMovie.entries)
+      (
+        idx?.match(e.key, kind: StreamKind.movie) ??
+            StreamItem(
+                playlistId: plId,
+                kind: StreamKind.movie,
+                name: titleCase(e.key),
+                url: ''),
+        e.value,
+      ),
+  ];
 
   final combined = <(StreamItem, int)>[
     for (final m in localMovies) (m, m.id != null ? (ts[m.id] ?? 0) : 0),
     ...showEntries,
+    ...movieEntries,
   ]..sort((a, b) => b.$2.compareTo(a.$2));
 
   final result = <StreamItem>[];
@@ -622,11 +652,11 @@ final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
         final idx = await ref.read(titleIndexProvider.future);
         if (idx == null) return;
         final toMark = <int>{};
-        for (final w in (await svc.watchedMovies()).take(300)) {
+        for (final w in (await svc.watchedMovies()).take(1000)) {
           final hit = idx.match(w.title, kind: StreamKind.movie);
           if (hit?.id != null && !local.contains(hit!.id)) toMark.add(hit.id!);
         }
-        for (final w in (await svc.watchedShows()).take(300)) {
+        for (final w in (await svc.watchedShows()).take(1000)) {
           final hit = idx.match(w.title, kind: StreamKind.series);
           if (hit?.id != null && !local.contains(hit!.id)) toMark.add(hit.id!);
         }
@@ -703,6 +733,19 @@ final recentlyWatchedProvider = FutureProvider<List<StreamItem>>((ref) async {
   return repo.recentlyWatched(pl!.id!);
 });
 
+/// Local progress fraction for a movie that has NO library stream row
+/// (debrid-only titles) — keyed by clean title via [movieProgressKey]. Backs
+/// the Resume button on detail pages for titles the id-keyed
+/// [progressFractionsProvider] can't cover.
+final titleProgressProvider = FutureProvider.autoDispose
+    .family<({double fraction, bool watched})?, String>((ref, cleanedTitle) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  final all = await repo.db.episodeProgressAll();
+  final p = all[movieProgressKey(cleanedTitle)];
+  if (p == null) return null;
+  return (fraction: p.fraction, watched: p.watched);
+});
+
 /// Every started episode's local progress, keyed by ep_key — backs the
 /// watched/season marks in the player's Episodes panel. autoDispose: the
 /// underlying table is tiny and re-read on each panel open, so marks are
@@ -742,13 +785,20 @@ final sportsEventsProvider = FutureProvider<List<StreamItem>>((ref) async {
 });
 
 /// First N items of a kind (for "Movies for You" / "TV Shows" home rows).
+/// Snapshot-backed: the underlying query sorts an entire (playlist, kind)
+/// partition just to emit 20 rows — fine in the background, not on the paint
+/// path of every single launch.
 final kindSampleProvider =
     FutureProvider.family<List<StreamItem>, StreamKind>((ref, kind) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
-  return repo.page(
-      playlistId: pl!.id!, kind: kind, groupTitle: null, offset: 0, limit: 20);
+  final plId = pl!.id!;
+  return snapshotStreamRow(
+      ref,
+      'home:snap:$plId:kind:${kind.name}',
+      () => repo.page(
+          playlistId: plId, kind: kind, groupTitle: null, offset: 0, limit: 20));
 });
 
 /// Catalogue of home rows the user can toggle/reorder.

@@ -51,6 +51,20 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
     if (pl?.id == null) {
       return const Center(child: Text('Add a source to get started.'));
     }
+    if (isDebridSentinel(pl)) {
+      // Debrid-only setup: live TV is the one thing that genuinely needs an
+      // IPTV source — say so instead of showing an empty category rail.
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Text(
+            'Live TV needs an IPTV source.\nAdd your M3U or Xtream account in Settings → Sources.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Aurora.textDim, height: 1.5),
+          ),
+        ),
+      );
+    }
     final margin = Aurora.margin(context);
     final cats =
         ref.watch(auroraOrderedCategoriesProvider(StreamKind.live)).valueOrNull;

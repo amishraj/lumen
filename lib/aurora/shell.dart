@@ -91,24 +91,23 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
     final compact = Aurora.isCompact(context);
 
     // Startup sequence (all background, none gates the first paint — home
-    // renders instantly off its persisted snapshots):
-    //  ~0.8s  prewarm the in-memory title index, so every discovery row and
-    //         Trakt reconciliation matches from memory (and it's built BEFORE
-    //         the IPTV re-sync can hog the single SQLite connection);
-    //  ~2s    force-fresh Trakt pull (resume points / watched / watchlist) —
-    //         cross-device progress lands seconds after open, not when a 6h
-    //         cache TTL happens to lapse;
-    //  ~6s    the once-a-day playlist re-sync.
+    // renders instantly off its persisted snapshots; the title index kicks
+    // itself off from the first home build with its own built-in yield):
+    //  ~2s    flush any queued Trakt writes (watch events that failed to send
+    //         last session), then force-fresh Trakt pull (resume points /
+    //         watched / watchlist) — cross-device progress lands seconds
+    //         after open, not when a 6h cache TTL happens to lapse;
+    //  ~6s    the once-a-WEEK playlist re-sync (no-op the other days).
     if (active != null && !_kickedOffSync) {
       _kickedOffSync = true;
-      Future.delayed(const Duration(milliseconds: 800), () {
-        if (!mounted) return;
-        unawaited(ref.read(titleIndexProvider.future));
-      });
       Future.delayed(const Duration(seconds: 2), () async {
         if (!mounted) return;
         try {
           final svc = await ref.read(traktServiceProvider.future);
+          // Local watch events queued while offline / token-expired reach
+          // Trakt BEFORE the pull below, so the refreshed snapshots already
+          // include them — local and Trakt agree within seconds of open.
+          await svc.flushOutbox();
           final changed = await svc.refreshHomeSnapshots();
           if (changed && mounted) {
             // Something new landed on Trakt since last open — re-run the

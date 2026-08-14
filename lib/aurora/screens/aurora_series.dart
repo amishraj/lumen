@@ -66,6 +66,12 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
   /// progress so episodes seen on another device still show a check.
   Set<(int, int)> _traktWatched = const {};
 
+  /// Episodes the user just UN-watched locally: their Trakt tick is ignored
+  /// until the (async) Trakt write lands. Without this, the OR-merge in
+  /// [_isWatched] read the still-cached pre-toggle Trakt state and the cleared
+  /// checkmarks visibly reappeared for a few seconds — then again on refetch.
+  final Set<(int, int)> _unwatchedLocally = {};
+
   String get _showTitle => cleanTitle(widget.series.name).title;
 
   @override
@@ -184,10 +190,12 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
   ({double fraction, bool watched, int updatedAt})? _progFor(Episode e) =>
       _prog[episodeKey(_showTitle, e.season, e.episode)];
 
-  /// Watched if local progress says so, or Trakt has it in the show's history.
+  /// Watched if local progress says so, or Trakt has it in the show's history
+  /// (unless the user just un-watched it here — local intent wins).
   bool _isWatched(Episode e) =>
       (_progFor(e)?.watched ?? false) ||
-      _traktWatched.contains((e.season, e.episode));
+      (!_unwatchedLocally.contains((e.season, e.episode)) &&
+          _traktWatched.contains((e.season, e.episode)));
 
   String _titleFor(Episode ep) {
     final t = _tmdb[(ep.season, ep.episode)];
@@ -252,18 +260,44 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
         for (final e in seasonEps) episodeKey(_showTitle, e.season, e.episode),
       ];
       await repo.db.setEpisodesWatched(keys, target);
-      // Optimistically fold Trakt's view into local state so the check lands
-      // instantly; the network call syncs the same in the background.
-      final svc = ref.read(traktServiceProvider).valueOrNull;
-      unawaited(
-          svc?.setSeasonWatched(_showTitle, season, watched: target));
+      // Local intent wins the merge with (still-stale) Trakt data instantly.
+      final pairs = [for (final e in seasonEps) (e.season, e.episode)];
+      if (target) {
+        _unwatchedLocally.removeAll(pairs);
+      } else {
+        _unwatchedLocally.addAll(pairs);
+      }
+      // Keep the series POSTER check truthful too: marking a season seen sets
+      // it now (Trakt's "any episode played → show watched" semantic, without
+      // the round-trip); clearing the LAST watched episodes removes it — the
+      // old code left a stale check that nothing could ever clear.
       await _loadProgress();
+      if (widget.series.id != null) {
+        final anyLocalWatched = _prog.entries.any((e) =>
+            e.value.watched &&
+            e.key.startsWith('${_showTitle.trim().toLowerCase()}|'));
+        if (target) {
+          unawaited(repo.db.markWatched(widget.series.id!));
+        } else if (!anyLocalWatched) {
+          unawaited(repo.db.unmarkWatched(widget.series.id!));
+        }
+      }
+      // The Trakt write is chained: its own snapshot invalidation happens
+      // inside setSeasonWatched, so refetching traktWatchedEpisodes BEFORE it
+      // completes just re-read the pre-toggle cache (the revert flicker).
+      final svc = ref.read(traktServiceProvider).valueOrNull;
+      unawaited(svc
+          ?.setSeasonWatched(_showTitle, season, watched: target)
+          .then((_) {
+        try {
+          ref.invalidate(traktWatchedEpisodesProvider(_showTitle));
+        } catch (_) {/* screen gone */}
+      }));
       if (mounted) {
         ref.invalidate(episodeProgressProvider);
         ref.invalidate(continueWatchingProvider);
         ref.invalidate(recentlyWatchedProvider);
         ref.invalidate(watchedIdsProvider);
-        ref.invalidate(traktWatchedEpisodesProvider(_showTitle));
       }
     } finally {
       if (mounted) setState(() => _markingSeason = false);

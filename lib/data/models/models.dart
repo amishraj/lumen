@@ -16,6 +16,21 @@ StreamKind streamKindFromString(String s) => StreamKind.values.firstWhere(
 String episodeKey(String cleanShowTitle, int season, int episode) =>
     '${cleanShowTitle.trim().toLowerCase()}|s${season}e$episode';
 
+/// Title-keyed identity for movies that have no library stream row (debrid-only
+/// titles from TMDB/Trakt discovery). Their progress lives in the same
+/// episode_progress table under this prefix — the `movie:` namespace can never
+/// collide with an episode key (those always contain a `|`).
+String movieProgressKey(String cleanTitle) =>
+    'movie:${cleanTitle.trim().toLowerCase()}';
+
+/// Sentinel "source" URL for a debrid-only setup (no IPTV provider). The row
+/// exists so every playlist-scoped provider/snapshot has an id to key on, but
+/// sync skips it entirely and it carries zero streams.
+const String kDebridSentinelUrl = 'debrid://only';
+
+/// True when [pl] is the debrid-only placeholder rather than a real IPTV source.
+bool isDebridSentinel(Playlist? pl) => pl?.url == kDebridSentinelUrl;
+
 /// A configured IPTV source (an M3U URL or Xtream Codes credentials).
 class Playlist {
   final int? id;

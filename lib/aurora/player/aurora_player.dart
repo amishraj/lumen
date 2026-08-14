@@ -37,6 +37,7 @@ class AuroraPlayContext {
     this.episodes,
     this.overviews,
     this.iptvUrl,
+    this.rememberedUrl = false,
   });
   final String title;
   final bool isShow;
@@ -46,6 +47,11 @@ class AuroraPlayContext {
   /// player's Episodes panel so the user can tell where they are in a season.
   final List<String?>? overviews;
   final String? iptvUrl;
+
+  /// True when the starting url is a REMEMBERED last-played link (skipped the
+  /// scrape). If it fails to open — the link can expire — the player drops the
+  /// memory, resolves fresh once, and retries instead of showing an error.
+  final bool rememberedUrl;
 }
 
 enum _Panel { none, queue, audio, subtitles }
@@ -267,6 +273,10 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       _maybePickEnglishAudio(t.audio);
       _maybePickEnglishSubtitle(t.subtitle);
     }));
+    _subs.add(_player.stream.error.listen(_onPlayerError));
+    if (widget.playContext?.rememberedUrl ?? false) {
+      _usedRemembered.add(widget.startIndex);
+    }
     _init();
     _resetHideTimer();
     // Seed the brightness rail with the device's current level (phones only —
@@ -281,6 +291,38 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
 
   bool _autoAudioPicked = false;
   bool _autoSubPicked = false;
+  bool _autoSubsFetched = false; // one online lookup per episode, max
+  Timer? _autoSubsTimer;
+
+  /// English subtitles by default, even when the file ships none: give the
+  /// embedded tracks ~6s to appear and be auto-picked; if none were, quietly
+  /// fetch the best English SRT from OpenSubtitles and attach it. Silent on
+  /// failure — never interrupts playback.
+  void _scheduleAutoSubs() {
+    _autoSubsTimer?.cancel();
+    if (_isLive) return;
+    final at = _index;
+    _autoSubsTimer = Timer(const Duration(seconds: 6), () {
+      if (!mounted || !_ownsPlayback || _index != at) return;
+      if (_autoSubPicked || _autoSubsFetched || _fetchingSubs) return;
+      _autoSubsFetched = true;
+      unawaited(_autoFetchOnlineSubs());
+    });
+  }
+
+  Future<void> _autoFetchOnlineSubs() async {
+    try {
+      final (title, isShow, season, episode) = _scrobbleIdentity();
+      final imdb = await imdbIdForTitle(ref, title, isShow: isShow);
+      if (imdb == null) return;
+      final srt = await OpenSubtitlesService()
+          .englishSrt(imdb, season: season, episode: episode);
+      if (srt == null || !mounted || !_ownsPlayback) return;
+      if (_autoSubPicked) return; // an embedded track appeared meanwhile
+      await _player.setSubtitleTrack(
+          SubtitleTrack.data(srt, title: 'English (online)', language: 'en'));
+    } catch (_) {/* quiet — the manual Subtitles panel still exists */}
+  }
 
   void _maybePickEnglishAudio(List<AudioTrack> tracks) {
     if (!_ownsPlayback || _autoAudioPicked || _isLive) return;
@@ -338,10 +380,8 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
 
     await set('hwdec', 'auto-safe');
     await set('cache', 'yes');
-    await set('cache-secs', '30');
     await set('demuxer-max-bytes', '${96 * 1024 * 1024}');
     await set('demuxer-max-back-bytes', '${48 * 1024 * 1024}');
-    await set('demuxer-readahead-secs', '20');
     await set('network-timeout', '60');
     await set('stream-lavf-o',
         'reconnect=1,reconnect_streamed=1,reconnect_delay_max=10,reconnect_on_network_error=1');
@@ -352,15 +392,118 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       // waiting out ffmpeg's ~5s/5MB defaults — and start playing on the first
       // frame rather than filling the whole cache first. Decode quality is
       // untouched (same bitrate/resolution/codec); this only affects how fast
-      // playback *begins*, while the 30s cache above keeps it smooth after.
+      // playback *begins*, while the cache keeps it smooth after.
+      await set('cache-secs', '30');
+      await set('demuxer-readahead-secs', '20');
       await set('demuxer-lavf-analyzeduration', '2');
       await set('demuxer-lavf-probesize', '2500000'); // ~2.5 MB
+      await set('cache-pause-initial', 'no');
+    } else {
+      // VOD/debrid: the same fast-start treatment live already had — these
+      // files previously waited out ffmpeg's full ~5s/5MB probe and mpv's
+      // initial cache fill before first frame. A slightly larger probe than
+      // live (MKV headers are heavier than MPEG-TS), start on the first
+      // frame, and a DEEPER readahead so average connections build a big
+      // safety buffer while watching.
+      await set('cache-secs', '60');
+      await set('demuxer-readahead-secs', '45');
+      await set('demuxer-lavf-analyzeduration', '2');
+      await set('demuxer-lavf-probesize', '5000000'); // ~5 MB
       await set('cache-pause-initial', 'no');
     }
   }
 
   /// Per-queue-index URL overrides from the in-player source switch.
   final Map<int, String> _urlOverrides = {};
+
+  /// Indices playing a REMEMBERED link (stored last-played choice) — eligible
+  /// for the drop-memory-and-resolve-fresh recovery when the link is dead.
+  final Set<int> _usedRemembered = {};
+
+  /// Indices that already did the one-shot fresh re-resolve (no retry loops).
+  final Set<int> _freshRetried = {};
+  bool _recovering = false;
+
+  /// Stable stream_choice key for queue index [i]: episodeKey for an
+  /// identified episode, movieProgressKey for a movie, null otherwise.
+  String? _choiceKeyAt(int i) {
+    if (i < 0 || i >= _queue.length) return null;
+    final ctx = widget.playContext;
+    final item = _queue[i];
+    if (item.kind == StreamKind.live) return null;
+    final isShow = ctx?.isShow ?? item.kind == StreamKind.series;
+    final raw = ctx?.title ?? item.name;
+    final title = cleanTitle(raw).title;
+    if (!isShow) return movieProgressKey(title);
+    (int, int)? se;
+    if (ctx?.episodes != null && i < ctx!.episodes!.length) {
+      se = ctx.episodes![i];
+    } else {
+      final m = RegExp(r'^S(\d+)E(\d+)').firstMatch(item.name);
+      final s = int.tryParse(m?.group(1) ?? '');
+      final e = int.tryParse(m?.group(2) ?? '');
+      if (s != null && e != null) se = (s, e);
+    }
+    if (se == null) return null;
+    return episodeKey(title, se.$1, se.$2);
+  }
+
+  /// Remember [url] as the link to replay for index [i] next time.
+  void _persistChoice(int i, String url, {String? label, String? quality}) {
+    final key = _choiceKeyAt(i);
+    if (key == null || url.isEmpty) return;
+    final repo = ref.read(repositoryProvider).valueOrNull;
+    unawaited(
+        repo?.db.saveStreamChoice(key, url, label: label, quality: quality));
+  }
+
+  /// One-shot fresh debrid resolve for the current index — the repair path
+  /// when a remembered link turns out to be dead. Persists the new pick.
+  Future<bool> _reresolveFresh() async {
+    try {
+      if (!await ref.read(rdEnabledProvider.future)) return false;
+      final (title, isShow, season, episode) = _scrobbleIdentity();
+      final imdb = await imdbIdForTitle(ref, title, isShow: isShow);
+      if (imdb == null) return false;
+      final svc = await ref.read(realDebridServiceProvider.future);
+      final best = await svc
+          .bestStream(imdb,
+              season: isShow ? season : null, episode: isShow ? episode : null)
+          .timeout(const Duration(seconds: 15));
+      if (best == null || !mounted) return false;
+      _urlOverrides[_index] = best.url;
+      _usedRemembered.remove(_index);
+      _persistChoice(_index, best.url, label: best.label, quality: best.quality);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// A dead link surfaced from mpv mid-load (open() itself rarely throws for
+  /// HTTP failures — they arrive as error events). If we were replaying a
+  /// remembered link, silently swap to a fresh resolve and keep going.
+  void _onPlayerError(String message) {
+    if (!_ownsPlayback || !mounted || _isLive) return;
+    if (_recovering || _freshRetried.contains(_index)) return;
+    if (!_usedRemembered.contains(_index)) return;
+    _recovering = true;
+    _freshRetried.add(_index);
+    final key = _choiceKeyAt(_index);
+    if (key != null) {
+      unawaited(
+          ref.read(repositoryProvider).valueOrNull?.db.deleteStreamChoice(key));
+    }
+    () async {
+      try {
+        if (await _reresolveFresh() && mounted) {
+          await _load();
+        }
+      } finally {
+        _recovering = false;
+      }
+    }();
+  }
 
   Future<void> _openAt(int i) async {
     _livePlayedOnce = false;
@@ -381,6 +524,8 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       _lastDurMs = 0;
       _autoAudioPicked = false;
       _autoSubPicked = false;
+      _autoSubsFetched = false;
+      _prefetchedNext = false;
       _thumbsScheduled = false;
       _buffered = Duration.zero;
       _position = Duration.zero;
@@ -402,6 +547,21 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     final ctx = widget.playContext;
     if (_isLive || ctx?.episodes == null) return; // only series episodes
     if (_urlOverrides.containsKey(_index)) return; // already chosen a source
+    // The link that played this episode LAST time plays again instantly — no
+    // imdb lookup, no scrape, no 8s stall. Dead links self-repair via
+    // [_onPlayerError]'s drop-and-resolve-fresh path.
+    final key = _choiceKeyAt(_index);
+    if (key != null) {
+      try {
+        final repo = await ref.read(repositoryProvider.future);
+        final choice = await repo.db.getStreamChoice(key);
+        if (choice != null && choice.url.isNotEmpty) {
+          _urlOverrides[_index] = choice.url;
+          _usedRemembered.add(_index);
+          return;
+        }
+      } catch (_) {/* fall through to a fresh resolve */}
+    }
     bool rdOn;
     try {
       rdOn = await ref.read(rdEnabledProvider.future);
@@ -418,8 +578,45 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       final best = await svc
           .bestStream(imdb, season: se.$1, episode: se.$2)
           .timeout(const Duration(seconds: 8));
-      if (best != null && mounted) _urlOverrides[_index] = best.url;
+      if (best != null && mounted) {
+        _urlOverrides[_index] = best.url;
+        _persistChoice(_index, best.url,
+            label: best.label, quality: best.quality);
+      }
     } catch (_) {/* fall back to the IPTV episode url */}
+  }
+
+  /// Resolve the NEXT episode's stream ahead of time (remembered link first,
+  /// fresh scrape otherwise) so the episode-to-episode transition is instant.
+  Future<void> _prefetchNextEpisode() async {
+    final next = _index + 1;
+    final ctx = widget.playContext;
+    if (_isLive || ctx?.episodes == null || next >= _queue.length) return;
+    if (_urlOverrides.containsKey(next)) return;
+    try {
+      final repo = ref.read(repositoryProvider).valueOrNull;
+      final key = _choiceKeyAt(next);
+      if (key != null) {
+        final choice = await repo?.db.getStreamChoice(key);
+        if (choice != null && choice.url.isNotEmpty) {
+          _urlOverrides[next] = choice.url;
+          _usedRemembered.add(next);
+          return;
+        }
+      }
+      if (!await ref.read(rdEnabledProvider.future)) return;
+      final se = next < ctx!.episodes!.length ? ctx.episodes![next] : null;
+      if (se == null) return;
+      final imdb = await imdbIdForTitle(ref, ctx.title, isShow: true);
+      if (imdb == null) return;
+      final svc = await ref.read(realDebridServiceProvider.future);
+      final best = await svc
+          .bestStream(imdb, season: se.$1, episode: se.$2)
+          .timeout(const Duration(seconds: 15));
+      if (best == null || !mounted) return;
+      _urlOverrides[next] = best.url;
+      _persistChoice(next, best.url, label: best.label, quality: best.quality);
+    } catch (_) {/* the next episode resolves on open, as before */}
   }
 
   Future<void> _load() async {
@@ -429,15 +626,31 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     } catch (e) {
       if (_isLive) {
         _scheduleLiveReconnect();
-      } else if (mounted) {
-        setState(() => _error = '$e');
+        return;
       }
+      // A remembered link may have expired since it was stored — drop the
+      // memory, resolve fresh ONCE, and retry before surfacing an error.
+      if (_usedRemembered.contains(_index) &&
+          !_freshRetried.contains(_index)) {
+        _freshRetried.add(_index);
+        final key = _choiceKeyAt(_index);
+        if (key != null) {
+          unawaited(ref
+              .read(repositoryProvider)
+              .valueOrNull
+              ?.db
+              .deleteStreamChoice(key));
+        }
+        if (await _reresolveFresh()) return _load();
+      }
+      if (mounted) setState(() => _error = '$e');
       return;
     }
     if (mounted) setState(() => _reconnecting = false);
     _liveRetries = 0;
     if (_isLive) return;
     _scrobble('start');
+    _scheduleAutoSubs();
     final requested = widget.resumeFraction;
     if (requested != null && _index == widget.startIndex) {
       if (requested <= 0.005) {
@@ -447,17 +660,24 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       }
       return;
     }
-    // Local per-episode resume first (works offline, no Trakt needed).
-    final ek = _episodeKey();
-    if (ek != null) {
+    // Local resume first (works offline, no Trakt needed) — per-episode key
+    // for shows, title key for movies without a library stream row.
+    final localKey = _episodeKey() ??
+        (_current.kind != StreamKind.series && _current.id == null
+            ? movieProgressKey(cleanTitle(_current.name).title)
+            : null);
+    if (localKey != null) {
       final all =
           await ref.read(repositoryProvider).valueOrNull?.db.episodeProgressAll();
-      final ep = all?[ek];
+      final ep = all?[localKey];
       if (ep != null && ep.fraction > 0.02 && ep.fraction < 0.97) {
         _resume = ep.fraction;
         return;
       }
     }
+    // Cross-device fallback — served from the CACHED Trakt playback snapshot
+    // (refreshed at app open + after every stop scrobble), so this no longer
+    // fires a blocking HTTP call in the middle of playback start.
     final svc = ref.read(traktServiceProvider).valueOrNull;
     _resume = await svc?.resumeProgress(_current.name,
         isShow: _current.kind == StreamKind.series);
@@ -551,15 +771,32 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   }
 
   bool _thumbsScheduled = false;
+  bool _prefetchedNext = false;
   int _lastSavedPosMs = -1;
 
   Future<void> _onPosition(Duration pos) async {
-    if (mounted) setState(() => _position = pos);
+    // Rebuild at most once per second of playback: position events arrive many
+    // times a second and each setState rebuilt the whole player Stack — real
+    // jank on TV boxes exactly while the buffer is still filling. Seeks stay
+    // instant (they set _position directly).
+    if (mounted && pos.inSeconds != _position.inSeconds) {
+      setState(() => _position = pos);
+    } else {
+      _position = pos;
+    }
     if (!_ownsPlayback || _isLive) return;
     final dur = _player.state.duration;
     if (dur.inMilliseconds <= 0) return;
     _lastPosMs = pos.inMilliseconds;
     _lastDurMs = dur.inMilliseconds;
+
+    // Pre-resolve the NEXT episode's stream during the tail of this one, so
+    // auto-advance (and pressing next) starts instantly instead of paying an
+    // imdb lookup + scrape between episodes.
+    if (!_prefetchedNext && _lastPosMs / _lastDurMs > 0.8) {
+      _prefetchedNext = true;
+      unawaited(_prefetchNextEpisode());
+    }
 
     if (!_thumbsScheduled) {
       _thumbsScheduled = true;
@@ -587,7 +824,13 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
         unawaited(repo?.db.saveProgress(
             _current.id!, pos.inMilliseconds, dur.inMilliseconds));
       } else {
-        final ek = _episodeKey();
+        // No stream row: per-episode key for shows, title key for debrid-only
+        // movies — which previously saved NOTHING locally, so they never
+        // appeared in Continue Watching and resume depended on live Trakt.
+        final ek = _episodeKey() ??
+            (_current.kind != StreamKind.series
+                ? movieProgressKey(cleanTitle(_current.name).title)
+                : null);
         if (ek != null) {
           unawaited(repo?.db.saveEpisodeProgress(
               ek, pos.inMilliseconds, dur.inMilliseconds));
@@ -652,7 +895,10 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     if (_current.id != null) {
       unawaited(repo?.db.saveProgress(_current.id!, _lastPosMs, _lastDurMs));
     } else {
-      final ek = _episodeKey();
+      final ek = _episodeKey() ??
+          (_current.kind != StreamKind.series
+              ? movieProgressKey(cleanTitle(_current.name).title)
+              : null);
       if (ek != null) {
         unawaited(repo?.db.saveEpisodeProgress(ek, _lastPosMs, _lastDurMs));
       }
@@ -690,6 +936,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
           .catchError((_) {}));
     }
     _unlockHintTimer?.cancel();
+    _autoSubsTimer?.cancel();
     _brightness.dispose();
     _hideTimer?.cancel();
     _digitTimer?.cancel();
@@ -850,6 +1097,10 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       _urlOverrides[_index] = picked.url;
       _buffering = true;
     });
+    // An explicit pick is the strongest "play THIS one next time" signal.
+    _usedRemembered.remove(_index);
+    _freshRetried.remove(_index);
+    _persistChoice(_index, picked.url, label: picked.label);
     await _load();
     if (!_isLive && resumeAt > Duration.zero) {
       await _player.seek(resumeAt);

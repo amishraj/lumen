@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/models.dart';
+import '../../../data/sources/trakt_service.dart';
 import '../../../state/credential_vault.dart';
 import '../../../state/providers.dart';
 import '../../../state/service_status.dart';
@@ -140,6 +141,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           Future.delayed(const Duration(seconds: 6), () {
             if (!mounted) return;
             ref.read(syncControllerProvider.notifier).resync(active);
+          });
+          // Classic runs the same Trakt service as Aurora — drain any watch
+          // events queued while offline / token-expired here too, so the
+          // "reaches Trakt eventually" guarantee holds in both experiences.
+          Future.delayed(const Duration(seconds: 2), () async {
+            if (!mounted) return;
+            try {
+              final svc = await ref.read(traktServiceProvider.future);
+              await svc.flushOutbox();
+            } catch (_) {/* offline — next open retries */}
           });
         }
 

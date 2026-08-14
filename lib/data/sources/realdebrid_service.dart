@@ -224,12 +224,15 @@ class RealDebridService {
   /// Fetch cached streams for a title and return the smart default pick.
   Future<RdStream?> bestStream(String imdbId,
           {int? season, int? episode}) async =>
-      pickBest(await streams(imdbId, season: season, episode: episode));
+      pickBest(await streams(imdbId, season: season, episode: episode),
+          isEpisode: season != null && episode != null);
 
-  /// The smart default among candidate streams: a 1080p, non-junk release —
-  /// preferring one that advertises English / multi subtitles — then the most
-  /// compact file so playback starts fast without a needless 40 GB remux.
-  static RdStream? pickBest(List<RdStream> list) {
+  /// The smart default among candidate streams: a 1080p, non-junk release
+  /// inside a sane size band — big enough that the bitrate isn't starved
+  /// (a 700 MB "1080p" is a mush of blocks), small enough to start fast and
+  /// survive an average connection (no 40 GB remuxes) — preferring one that
+  /// advertises English / multi subtitles, then the most compact in-band file.
+  static RdStream? pickBest(List<RdStream> list, {bool isEpisode = false}) {
     if (list.isEmpty) return null;
     bool hasEnglishSubs(RdStream s) {
       final l = '${s.label} ${s.size ?? ''}'.toLowerCase();
@@ -242,10 +245,17 @@ class RealDebridService {
           RegExp(r'\bsubs?\b').hasMatch(l);
     }
 
-    // streams() already sorts best-quality-then-smallest; keep that ordering
-    // but float a subtitled 1080p pick to the front when one exists.
+    // streams() already sorts best-quality-then-smallest.
     final hd = list.where((s) => s.quality == '1080p').toList();
-    final pool = hd.isNotEmpty ? hd : list;
+    var pool = hd.isNotEmpty ? hd : list;
+    // Quality floor / speed ceiling (MB). Unknown sizes stay eligible.
+    final minMb = isEpisode ? 250 : 1200;
+    final maxMb = isEpisode ? 3000 : 9000;
+    final band = pool
+        .where((s) =>
+            s.sizeMb == null || (s.sizeMb! >= minMb && s.sizeMb! <= maxMb))
+        .toList();
+    if (band.isNotEmpty) pool = band;
     for (final s in pool.take(8)) {
       if (hasEnglishSubs(s)) return s;
     }

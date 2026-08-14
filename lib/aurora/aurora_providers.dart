@@ -100,7 +100,9 @@ final auroraMyListProvider = FutureProvider<List<StreamItem>>((ref) async {
 });
 
 /// The Live Now rail on Home: your favorite channels, else a taste of the
-/// first channels in the library.
+/// first channels in the library. The fallback is snapshot-backed — it sorts
+/// the whole live partition to emit 20 rows, which belongs in the background,
+/// not on the launch paint path.
 final auroraLiveNowProvider = FutureProvider<List<StreamItem>>((ref) async {
   final favs =
       await ref.watch(favoritesByKindProvider(StreamKind.live).future);
@@ -108,12 +110,16 @@ final auroraLiveNowProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return [];
-  return repo.page(
-      playlistId: pl!.id!,
-      kind: StreamKind.live,
-      groupTitle: null,
-      offset: 0,
-      limit: 20);
+  final plId = pl!.id!;
+  return snapshotStreamRow(
+      ref,
+      'home:snap:$plId:livenow',
+      () => repo.page(
+          playlistId: plId,
+          kind: StreamKind.live,
+          groupTitle: null,
+          offset: 0,
+          limit: 20));
 });
 
 /// Sports events bucketed by sport — ordered, non-empty buckets only.

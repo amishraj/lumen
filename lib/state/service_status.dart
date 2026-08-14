@@ -76,13 +76,15 @@ class SyncController extends StateNotifier<SyncState> {
   /// providers on completion so freshly-synced content appears.
   ///
   /// [minInterval] skips the sync if the source was refreshed recently —
-  /// playlists rarely change, and re-downloading + re-parsing 40k channels on
-  /// every launch made browsing feel slow. Defaults to **once a day**: an
-  /// index at most every 24h, so repeated opens are instant off the persisted
-  /// SQLite library. Manual re-sync (Settings) forces it with Duration.zero.
+  /// playlists rarely change, and re-downloading + re-parsing 40k channels
+  /// made browsing feel slow. Defaults to **once a week**: IPTV catalogs are
+  /// near-static, so the multi-minute full re-download shouldn't run daily;
+  /// day-to-day opens serve entirely off the persisted SQLite library. Manual
+  /// re-sync (Settings → Re-sync now) forces it with Duration.zero.
   Future<void> resync(Playlist pl,
-      {Duration minInterval = const Duration(hours: 24)}) async {
+      {Duration minInterval = const Duration(days: 7)}) async {
     if (state.running || pl.id == null) return;
+    if (isDebridSentinel(pl)) return; // debrid-only setup — nothing to sync
     final repo = await ref.read(repositoryProvider.future);
     // Read the AUTHORITATIVE last-sync time from the DB — the passed-in
     // Playlist is a snapshot taken at app launch and its lastSyncedAt can be

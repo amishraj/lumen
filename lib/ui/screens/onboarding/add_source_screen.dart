@@ -42,6 +42,11 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
   /// false = IPTV only, true = IPTV + Real-Debrid. When this screen is pushed
   /// from Settings the chooser is skipped entirely.
   bool? _withDebrid;
+
+  /// Debrid-only setup: no IPTV form at all — connect Real-Debrid and start.
+  /// A placeholder source row is created so the rest of the app has an id to
+  /// key on; live/IPTV surfaces simply stay empty until a source is added.
+  bool _debridOnly = false;
   bool _rdConnected = false;
 
   @override
@@ -110,6 +115,89 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
     }
   }
 
+  /// Debrid-only path: persist the placeholder source and enter the app —
+  /// there is nothing to download or sync.
+  Future<void> _saveDebridOnly() async {
+    setState(() {
+      _busy = true;
+      _status = 'Setting up…';
+    });
+    try {
+      final repo = await ref.read(repositoryProvider.future);
+      final saved = await repo.addPlaylist(Playlist(
+        name: 'Real-Debrid',
+        kind: SourceKind.m3u,
+        url: kDebridSentinelUrl,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ));
+      ref.read(activePlaylistProvider.notifier).state =
+          (await repo.playlists()).firstWhere((e) => e.id == saved.id);
+      ref.invalidate(playlistsProvider);
+      // Snapshot the setup (+ tokens) into the reinstall vault.
+      unawaited(CredentialVault.instance.save(repo));
+      if (!mounted) return;
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop(true);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _status = 'Failed: $e';
+        });
+      }
+    }
+  }
+
+  /// Debrid-only pane: a single connect step, then straight into the app.
+  Widget _debridOnlyPane() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        FocusableItem(
+          autofocus: true,
+          borderRadius: 14,
+          onActivate: () async {
+            final ok = await showRdConnectSheet(context, ref);
+            if (ok && mounted) setState(() => _rdConnected = true);
+          },
+          builder: (context, focused) => Container(
+            height: 52,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: LumenTheme.surface,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                  color:
+                      focused ? LumenTheme.accent : const Color(0xFF2A2E3A)),
+            ),
+            child: Row(children: [
+              Icon(_rdConnected ? Icons.check_circle : Icons.cloud_outlined,
+                  size: 20,
+                  color: _rdConnected
+                      ? const Color(0xFF35C759)
+                      : const Color(0xFF9AA0B0)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  _rdConnected
+                      ? 'Real-Debrid connected'
+                      : 'Connect Real-Debrid (enter a code)',
+                  style: const TextStyle(fontSize: 14.5),
+                ),
+              ),
+              const Icon(Icons.chevron_right,
+                  size: 18, color: Color(0xFF6B7080)),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 16),
+        const _Hint(
+            'Movies & shows stream on demand from Real-Debrid — no playlist '
+            'needed. Add a free TMDB key in Settings for rich artwork and '
+            'browse rows, and an IPTV source any time for live TV.'),
+      ],
+    );
+  }
+
   /// First-run "how will you watch?" chooser.
   Widget _modeChooser() {
     Widget option({
@@ -117,12 +205,16 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
       required String title,
       required String subtitle,
       required bool debrid,
+      bool debridOnly = false,
       bool autofocus = false,
     }) {
       return FocusableItem(
         autofocus: autofocus,
         borderRadius: 18,
-        onActivate: () => setState(() => _withDebrid = debrid),
+        onActivate: () => setState(() {
+          _withDebrid = debrid;
+          _debridOnly = debridOnly;
+        }),
         builder: (context, focused) => Container(
           padding: const EdgeInsets.all(18),
           margin: const EdgeInsets.only(bottom: 12),
@@ -177,17 +269,25 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
         const SizedBox(height: 14),
         option(
+          icon: Icons.cloud_outlined,
+          title: 'Real-Debrid',
+          subtitle: 'Premium on-demand movies & shows via your Real-Debrid '
+              'subscription — no IPTV needed. Add live TV any time later.',
+          debrid: true,
+          debridOnly: true,
+          autofocus: true,
+        ),
+        option(
           icon: Icons.live_tv,
           title: 'My IPTV provider',
           subtitle: 'Live TV, movies & shows from your M3U or Xtream account.',
           debrid: false,
-          autofocus: true,
         ),
         option(
-          icon: Icons.cloud_outlined,
+          icon: Icons.workspaces_outlined,
           title: 'IPTV + Real-Debrid',
-          subtitle: 'Everything above, plus premium on-demand streams via your '
-              'Real-Debrid subscription.',
+          subtitle: 'Both: your IPTV library and live channels, plus premium '
+              'on-demand streams via Real-Debrid.',
           debrid: true,
         ),
       ],
@@ -207,6 +307,7 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
         if (didPop || _busy) return;
         setState(() {
           _withDebrid = null;
+          _debridOnly = false;
           _status = null;
         });
       },
@@ -257,11 +358,14 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                         style: const TextStyle(
                             fontSize: 26, fontWeight: FontWeight.w900)),
                     const SizedBox(height: 6),
-                    const Text(
-                      'Connect your IPTV provider to start watching. Your '
-                      'playlist stays private on your device.',
+                    Text(
+                      pushed || (_withDebrid != null && !_debridOnly)
+                          ? 'Connect your IPTV provider to start watching. '
+                              'Your playlist stays private on your device.'
+                          : 'Stream via Real-Debrid, your IPTV provider, or '
+                              'both. Everything stays private on your device.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(
+                      style: const TextStyle(
                           color: Color(0xFF9AA0B0),
                           fontSize: 13.5,
                           height: 1.4),
@@ -270,6 +374,8 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                     // First run: choose the watching mode before the form.
                     if (!pushed && _withDebrid == null)
                       _modeChooser()
+                    else if (!pushed && _debridOnly)
+                      _debridOnlyPane()
                     else ...[
                       // Segmented source-type switch.
                       Container(
@@ -384,7 +490,20 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                       ),
                       const SizedBox(height: 12),
                     ],
-                    if (pushed || _withDebrid != null)
+                    if (!pushed && _debridOnly)
+                      SizedBox(
+                        height: 52,
+                        child: FilledButton(
+                          onPressed:
+                              _busy || !_rdConnected ? null : _saveDebridOnly,
+                          child: Text(_busy
+                              ? 'Setting up…'
+                              : (_rdConnected
+                                  ? 'Start watching'
+                                  : 'Connect Real-Debrid first')),
+                        ),
+                      )
+                    else if (pushed || _withDebrid != null)
                       SizedBox(
                         height: 52,
                         child: FilledButton(

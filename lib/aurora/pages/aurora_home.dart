@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/image_cache.dart';
 import '../../data/models/models.dart';
 import '../../data/repositories/library_repository.dart';
 import '../../data/sources/realdebrid_service.dart';
@@ -131,11 +132,14 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
               ),
             ),
             posterShelf('My List', v(auroraMyListProvider)),
+            // IPTV-derived: hidden (not skeletoned) until its data is ready —
+            // IPTV must never hold visual space on the debrid-first home.
             AuroraShelf<StreamItem>(
               title: 'Live Now',
               items: v(auroraLiveNowProvider),
               rowHeight: liveRow,
               skeletonWidth: liveW,
+              hideWhileLoading: true,
               itemBuilder: (context, it, i) => AuroraLiveCard(
                 item: it,
                 width: liveW,
@@ -147,9 +151,31 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
             wideShelf('Trending This Week', v(tmdbTrendingProvider)),
             wideShelf('Popular Now', v(tmdbPopularProvider)),
             wideShelf('Recently Watched', v(recentlyWatchedProvider)),
-            posterShelf(
-                'Movies for You', v(kindSampleProvider(StreamKind.movie))),
-            posterShelf('TV Shows', v(kindSampleProvider(StreamKind.series))),
+            // IPTV library samples: hidden while loading, like Live Now.
+            AuroraShelf<StreamItem>(
+              title: 'Movies for You',
+              items: v(kindSampleProvider(StreamKind.movie)),
+              rowHeight: posterRow,
+              skeletonWidth: posterW,
+              hideWhileLoading: true,
+              itemBuilder: (context, it, i) => AuroraPosterCard(
+                item: it,
+                width: posterW,
+                onTap: () => openAuroraItem(context, ref, it),
+              ),
+            ),
+            AuroraShelf<StreamItem>(
+              title: 'TV Shows',
+              items: v(kindSampleProvider(StreamKind.series)),
+              rowHeight: posterRow,
+              skeletonWidth: posterW,
+              hideWhileLoading: true,
+              itemBuilder: (context, it, i) => AuroraPosterCard(
+                item: it,
+                width: posterW,
+                onTap: () => openAuroraItem(context, ref, it),
+              ),
+            ),
             if (because != null && because.seed != null)
               posterShelf(
                   'Because you watched ${cleanTitle(because.seed!).title}',
@@ -218,9 +244,15 @@ class _BillboardState extends ConsumerState<_Billboard> {
     final next = ((_index + delta) % n + n) % n;
     if (next == _index) return;
     // Warm the next backdrop so the crossfade never shows a loading tile.
+    // Through LumenImageCache — the default manager caps at 200 objects, so
+    // warming through it downloaded every backdrop twice AND churned that
+    // tiny cache instead of sharing the disk copy AuroraImage reads.
     final after = widget.items[(next + 1) % n];
     if (after.logo != null && after.logo!.isNotEmpty) {
-      precacheImage(CachedNetworkImageProvider(after.logo!), context);
+      precacheImage(
+          CachedNetworkImageProvider(after.logo!,
+              cacheManager: LumenImageCache.instance),
+          context);
     }
     setState(() => _index = next);
   }
@@ -324,7 +356,9 @@ class _BillboardState extends ConsumerState<_Billboard> {
     if ((item.logo == null || item.logo!.isEmpty) &&
         bundle?.tmdb?.backdrop != null) {
       precacheImage(
-          CachedNetworkImageProvider(bundle!.tmdb!.backdrop!), context);
+          CachedNetworkImageProvider(bundle!.tmdb!.backdrop!,
+              cacheManager: LumenImageCache.instance),
+          context);
     }
     final synopsis = bundle?.overview;
     final omdb = bundle?.omdb;

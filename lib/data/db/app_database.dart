@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -36,7 +38,7 @@ class AppDatabase {
     final path = p.join(dir.path, 'lumen.db');
     final db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onConfigure: (db) async {
         // journal_mode returns a row ("wal"); on sqflite_darwin (iOS/macOS)
         // running it via execute() throws "not an error" — must use rawQuery.
@@ -50,10 +52,12 @@ class AppDatabase {
         await _createSchema(db, v);
         await _createV2(db);
         await _createV3(db);
+        await _createV4(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createV2(db);
         if (from < 3) await _createV3(db);
+        if (from < 4) await _createV4(db);
       },
     );
     return _instance = AppDatabase._(db, _fts);
@@ -163,10 +167,120 @@ class AppDatabase {
       )''');
   }
 
+  /// v4: playback memory + reliable Trakt sync.
+  /// - `stream_choice`: the exact debrid link last played per title/episode
+  ///   (keyed like episode_progress) so a replay starts instantly instead of
+  ///   re-scraping.
+  /// - `trakt_outbox`: watch events that couldn't reach Trakt (offline,
+  ///   expired token) queued for retry — the "if it exists locally it exists
+  ///   on Trakt" guarantee.
+  /// - `streams_staging`: scratch table for the re-sync so the multi-minute
+  ///   bulk insert happens outside the swap transaction and reads interleave.
+  static Future<void> _createV4(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS stream_choice (
+        choice_key TEXT PRIMARY KEY,
+        url TEXT NOT NULL,
+        label TEXT,
+        quality TEXT,
+        updated_at INTEGER NOT NULL
+      )''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS trakt_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        payload TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS streams_staging (
+        playlist_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        logo TEXT,
+        url TEXT NOT NULL,
+        group_title TEXT,
+        tvg_id TEXT,
+        num INTEGER,
+        rating REAL
+      )''');
+  }
+
+  // ---- Remembered stream choice (last-played link per title) ---------------
+
+  Future<({String url, String? label, String? quality, int updatedAt})?>
+      getStreamChoice(String key) async {
+    final rows = await db.query('stream_choice',
+        where: 'choice_key=?', whereArgs: [key], limit: 1);
+    if (rows.isEmpty) return null;
+    final r = rows.first;
+    return (
+      url: r['url'] as String,
+      label: r['label'] as String?,
+      quality: r['quality'] as String?,
+      updatedAt: (r['updated_at'] as int?) ?? 0,
+    );
+  }
+
+  Future<void> saveStreamChoice(String key, String url,
+      {String? label, String? quality}) async {
+    await db.insert(
+      'stream_choice',
+      {
+        'choice_key': key,
+        'url': url,
+        'label': label,
+        'quality': quality,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Forget a remembered link (it stopped working — the next play re-resolves).
+  Future<void> deleteStreamChoice(String key) =>
+      db.delete('stream_choice', where: 'choice_key=?', whereArgs: [key]);
+
+  // ---- Trakt outbox (queued writes) ----------------------------------------
+
+  Future<void> outboxAdd(String payload) async {
+    await db.insert('trakt_outbox', {
+      'payload': payload,
+      'attempts': 0,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<List<({int id, String payload, int attempts})>> outboxAll(
+      {int limit = 50}) async {
+    final rows =
+        await db.query('trakt_outbox', orderBy: 'id', limit: limit);
+    return [
+      for (final r in rows)
+        (
+          id: r['id'] as int,
+          payload: r['payload'] as String,
+          attempts: (r['attempts'] as int?) ?? 0,
+        ),
+    ];
+  }
+
+  Future<void> outboxDelete(int id) =>
+      db.delete('trakt_outbox', where: 'id=?', whereArgs: [id]);
+
+  Future<void> outboxBumpAttempts(int id) => db.rawUpdate(
+      'UPDATE trakt_outbox SET attempts=attempts+1 WHERE id=?', [id]);
+
   // ---- Episode progress ----------------------------------------------------
 
+  /// Watched threshold. Matches Trakt's scrobble convention (a stop at >=80%
+  /// records a watched play) so the local check and Trakt's never disagree —
+  /// a mismatched 90% local bar left an 85% session "in progress" here but
+  /// "watched" on Trakt for up to an hour.
+  static const watchedThreshold = 0.8;
+
   Future<void> saveEpisodeProgress(String key, int posMs, int durMs) async {
-    final watched = durMs > 0 && posMs / durMs >= 0.9 ? 1 : 0;
+    final watched = durMs > 0 && posMs / durMs >= watchedThreshold ? 1 : 0;
     await db.insert(
       'episode_progress',
       {
@@ -195,7 +309,12 @@ class AppDatabase {
         'ep_key': key,
         'position_ms': (frac * 100000).round(),
         'duration_ms': 100000,
-        'watched': frac >= 0.9 ? 1 : 0,
+        // Never watched=1: these are Trakt PAUSED checkpoints — items sit in
+        // /sync/playback precisely because Trakt did NOT count them watched.
+        // Flagging high fractions here marked cross-device "quit near the
+        // end" sessions as seen locally, and the flag was sticky (hydrate
+        // skips already-watched rows, so no fresher checkpoint could fix it).
+        'watched': 0,
         'updated_at':
             updatedAt > 0 ? updatedAt : DateTime.now().millisecondsSinceEpoch,
       },
@@ -398,20 +517,94 @@ class AppDatabase {
 
   // ---- Bulk ingest ---------------------------------------------------------
 
-  /// Replace all streams for a playlist. Inserts in batched transactions so a
-  /// 40k-row playlist lands without spiking memory or blocking on one giant
-  /// statement. [onProgress] reports rows written so the UI can show progress.
+  /// Replace all streams for a playlist.
+  ///
+  /// Two phases, because sqflite serializes every query through ONE connection:
+  /// a single giant transaction (the old approach) held that connection for the
+  /// whole multi-minute ingest, so every read — home rows, browsing, metadata
+  /// caches — queued behind it and the app felt frozen while a sync ran.
+  ///
+  /// 1. **Stage**: rows land in `streams_staging` in small batched
+  ///    transactions. Between batches the connection is released, so UI reads
+  ///    interleave freely; browsing keeps working off the old library.
+  /// 2. **Swap**: one SHORT transaction moves staging → streams entirely in
+  ///    SQL (no Dart marshalling), rebuilds FTS, and re-maps favorites +
+  ///    progress onto the new ids by their stable urls. Readers see the old
+  ///    library until the commit, then the new one — never a half state.
+  /// Serializes [replaceStreams] runs. Staging now spans many independent
+  /// commits, so two overlapping replaces (weekly auto-resync + a manual
+  /// re-sync, or two sources) would interleave their staging writes — worst
+  /// case one swap finds an empty staging table and wipes the library along
+  /// with the favorites/progress being remapped. One at a time, always.
+  static Future<void>? _replaceLock;
+
   Future<int> replaceStreams(
     int playlistId,
     Iterable<StreamItem> items, {
     void Function(int written)? onProgress,
     int batchSize = 800,
   }) async {
-    // One atomic transaction for the whole swap. Crucially, in WAL mode
-    // readers keep seeing the *old* snapshot until commit — so a background
-    // re-sync never leaves browsing with an empty/half-written library (which
-    // is what made channels/movies crawl or vanish during startup refresh).
+    while (_replaceLock != null) {
+      await _replaceLock;
+    }
+    final lock = Completer<void>();
+    _replaceLock = lock.future;
+    try {
+      return await _replaceStreamsLocked(playlistId, items,
+          onProgress: onProgress, batchSize: batchSize);
+    } finally {
+      _replaceLock = null;
+      lock.complete();
+    }
+  }
+
+  Future<int> _replaceStreamsLocked(
+    int playlistId,
+    Iterable<StreamItem> items, {
+    void Function(int written)? onProgress,
+    int batchSize = 800,
+  }) async {
+    // Phase 1: stage. Each batch is its own transaction — the gaps between
+    // them are where queued reads get to run. Scoped to THIS playlist so
+    // leftovers from a crashed run are cleared without touching anything else.
+    await db.delete('streams_staging',
+        where: 'playlist_id=?', whereArgs: [playlistId]);
     int written = 0;
+    final iter = items.iterator;
+    var done = false;
+    while (!done) {
+      final batch = db.batch();
+      int n = 0;
+      while (n < batchSize) {
+        if (!iter.moveNext()) {
+          done = true;
+          break;
+        }
+        final it = iter.current;
+        batch.rawInsert(
+          'INSERT INTO streams_staging(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating) '
+          'VALUES(?,?,?,?,?,?,?,?,?)',
+          [
+            playlistId,
+            it.kind.name,
+            it.name,
+            it.logo,
+            it.url,
+            it.groupTitle,
+            it.tvgId,
+            it.num,
+            it.rating,
+          ],
+        );
+        n++;
+      }
+      if (n == 0) break;
+      await batch.commit(noResult: true, continueOnError: true);
+      written += n;
+      onProgress?.call(written);
+    }
+
+    // Phase 2: the swap — pure in-SQL row moves, hundreds of ms not minutes.
     await db.transaction((txn) async {
       // Favorites and progress reference streams.id with ON DELETE CASCADE, and
       // ids are reassigned on every re-sync — so a naive delete+reinsert wipes
@@ -435,40 +628,11 @@ class AppDatabase {
       }
       await txn
           .delete('streams', where: 'playlist_id=?', whereArgs: [playlistId]);
-
-      final iter = items.iterator;
-      var done = false;
-      while (!done) {
-        final batch = txn.batch();
-        int n = 0;
-        while (n < batchSize) {
-          if (!iter.moveNext()) {
-            done = true;
-            break;
-          }
-          final it = iter.current;
-          batch.rawInsert(
-            'INSERT INTO streams(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating) '
-            'VALUES(?,?,?,?,?,?,?,?,?)',
-            [
-              playlistId,
-              it.kind.name,
-              it.name,
-              it.logo,
-              it.url,
-              it.groupTitle,
-              it.tvgId,
-              it.num,
-              it.rating,
-            ],
-          );
-          n++;
-        }
-        if (n == 0) break;
-        await batch.commit(noResult: true, continueOnError: true);
-        written += n;
-        onProgress?.call(written);
-      }
+      await txn.execute(
+          'INSERT INTO streams(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating) '
+          'SELECT playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating '
+          'FROM streams_staging WHERE playlist_id=? ORDER BY rowid',
+          [playlistId]);
 
       // Populate the FTS shadow in one pass over the freshly inserted rows.
       // A single INSERT..SELECT is far faster than per-row FTS writes.
@@ -503,6 +667,8 @@ class AppDatabase {
               p['url'],
             ]);
       }
+      await txn.delete('streams_staging',
+          where: 'playlist_id=?', whereArgs: [playlistId]);
     });
 
     return written;
@@ -756,6 +922,19 @@ class AppDatabase {
     });
   }
 
+  /// Clear the watched flag on a stream row (the season un-watch toggle must
+  /// also clear the series' poster check, which the Trakt reconciliation set).
+  /// Flag-only rows (0/0 pos/dur) are deleted outright; real progress stays.
+  Future<void> unmarkWatched(int streamId) async {
+    final deleted = await db.delete('progress',
+        where: 'stream_id=? AND position_ms=0 AND duration_ms=0',
+        whereArgs: [streamId]);
+    if (deleted == 0) {
+      await db.update('progress', {'watched': 0},
+          where: 'stream_id=?', whereArgs: [streamId]);
+    }
+  }
+
   /// Every movie + series row of one playlist, in a single query — feeds the
   /// in-memory TitleIndex so per-title discovery matching never hits SQL.
   Future<List<StreamItem>> vodItems(int playlistId) async {
@@ -777,7 +956,7 @@ class AppDatabase {
   }
 
   Future<void> saveProgress(int streamId, int posMs, int durMs) async {
-    final watched = durMs > 0 && posMs / durMs >= 0.9 ? 1 : 0;
+    final watched = durMs > 0 && posMs / durMs >= watchedThreshold ? 1 : 0;
     await db.insert(
       'progress',
       {
