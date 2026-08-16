@@ -24,10 +24,9 @@ class TraktService {
   // you register once at trakt.tv/oauth/applications) and every user — you and
   // your friends — connects with just a code, no per-user app registration.
   // Leave empty to fall back to in-app credential entry.
-  static const _embeddedClientId =
-      '351218759d9c05f412c54ba1edeb61144f8aa238270671d54d80a2e5f6aa626e';
+  static const _embeddedClientId = 'YGCLH5Z-Uy2kOy4BcKnOFccFwOlDcTnGWaNn3LS7M6w';
   static const _embeddedClientSecret =
-      '468da7a135dbf1bce84a072a543cfbfef27a9c6f07b2f995d424e66e8ae463db';
+      'A-8sJv32VFIUAACM6MfDlhoMZKHq1mFMoaU2765KX_8';
 
   static const _api = 'https://api.trakt.tv';
   final _dio = Dio(BaseOptions(
@@ -35,14 +34,20 @@ class TraktService {
     validateStatus: (s) => s != null && s < 500,
   ));
 
+  // User-entered credentials take precedence over the embedded ones, so a
+  // revoked/deleted embedded Trakt app (Trakt replies 401 "client not found")
+  // never hard-blocks connect — the user can paste their own app's id/secret
+  // and override it. Falls back to the embedded pair when nothing is saved.
   Future<String?> _clientId() async {
-    if (_embeddedClientId.isNotEmpty) return _embeddedClientId;
-    return _repo.getSetting('trakt_client_id');
+    final saved = await _repo.getSetting('trakt_client_id');
+    if (saved != null && saved.isNotEmpty) return saved;
+    return _embeddedClientId.isNotEmpty ? _embeddedClientId : null;
   }
 
   Future<String?> _clientSecret() async {
-    if (_embeddedClientSecret.isNotEmpty) return _embeddedClientSecret;
-    return _repo.getSetting('trakt_client_secret');
+    final saved = await _repo.getSetting('trakt_client_secret');
+    if (saved != null && saved.isNotEmpty) return saved;
+    return _embeddedClientSecret.isNotEmpty ? _embeddedClientSecret : null;
   }
 
   Future<String?> token() => _repo.getSetting('trakt_access_token');
