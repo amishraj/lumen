@@ -72,6 +72,21 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
     final because = ref.watch(tmdbBecauseYouWatchedProvider).valueOrNull;
     final watchlist = ref.watch(traktWatchlistProvider).valueOrNull;
 
+    // A genuinely empty home (source unsynced/empty, no debrid rows, nothing
+    // from Trakt): featured has resolved to nothing AND every headline row is
+    // empty too. Show a focusable call-to-action so the screen is never a dead
+    // blank — it gives focus somewhere to land and a route to setup. (During
+    // initial load `featured` is null, not empty, so this stays false and the
+    // skeletons show instead.)
+    bool empty(List<Object?>? l) => l == null || l.isEmpty;
+    final nothingLoaded = featured != null &&
+        featured.isEmpty &&
+        empty(v(continueWatchingProvider)) &&
+        empty(v(auroraMyListProvider)) &&
+        empty(v(tmdbTrendingProvider)) &&
+        empty(v(tmdbPopularProvider)) &&
+        empty(watchlist);
+
     Widget posterShelf(String title, List<StreamItem>? items) =>
         AuroraShelf<StreamItem>(
           title: title,
@@ -113,9 +128,12 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
         SliverToBoxAdapter(
           child: featured == null
               ? const _BillboardSkeleton()
-              : featured.isEmpty
-                  ? const SizedBox(height: 96)
-                  : _Billboard(items: featured, onFocusTop: _toTop),
+              : nothingLoaded
+                  ? _EmptyHome(
+                      onSetup: () => auroraSwitchTab(ref, AuroraTab.settings))
+                  : featured.isEmpty
+                      ? const SizedBox(height: 96)
+                      : _Billboard(items: featured, onFocusTop: _toTop),
         ),
         SliverList(
           delegate: SliverChildListDelegate.fixed([
@@ -188,6 +206,75 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
           ]),
         ),
       ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Empty home
+// ---------------------------------------------------------------------------
+
+/// Shown when the home has genuinely nothing to display. A focusable CTA — so
+/// the remote always has a target and the user can reach setup — that
+/// autofocuses (there's no billboard to take focus in this state).
+class _EmptyHome extends StatelessWidget {
+  const _EmptyHome({required this.onSetup});
+  final VoidCallback onSetup;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 128, 24, 48),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.movie_filter_rounded,
+                size: 56, color: Aurora.textFaint),
+            const SizedBox(height: 18),
+            const Text('Nothing here yet',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 23,
+                    fontWeight: FontWeight.w800)),
+            const SizedBox(height: 10),
+            const Text(
+              'Add a source, or connect Real-Debrid, Trakt and TMDB to fill '
+              'your home.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Aurora.textDim, fontSize: 14, height: 1.4),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: 280,
+              child: AuroraFocusable(
+                autofocus: true,
+                onActivate: onSetup,
+                builder: (context, focused) => Container(
+                  height: 54,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    gradient: Aurora.gradient,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.settings_rounded, size: 20, color: Colors.white),
+                      SizedBox(width: 10),
+                      Text('Open Settings',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ]),
+        ),
       ),
     );
   }

@@ -40,9 +40,39 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
   final ValueNotifier<bool> _navVisible = ValueNotifier(true);
 
   @override
+  void initState() {
+    super.initState();
+    // Aurora's focus model is RELATIVE — arrow keys only move when something is
+    // already focused. An empty/loading Home (no billboard Play button, no
+    // rows) leaves primaryFocus null and the remote completely dead. Watch for
+    // focus falling to null and seed it back onto the active top-nav tab, so
+    // the app is always drivable and the nav (Settings → Add source) is always
+    // reachable — no matter what has or hasn't loaded.
+    FocusManager.instance.addListener(_ensureFocus);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _ensureFocus());
+  }
+
+  @override
   void dispose() {
+    FocusManager.instance.removeListener(_ensureFocus);
     _navVisible.dispose();
     super.dispose();
+  }
+
+  bool _seeding = false;
+  void _ensureFocus() {
+    if (!mounted || _seeding) return;
+    if (FocusManager.instance.primaryFocus != null) return;
+    // A pushed screen (Add source, player, detail) owns focus while it's front.
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return;
+    _seeding = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _seeding = false;
+      if (!mounted || FocusManager.instance.primaryFocus != null) return;
+      final nav = auroraNavTarget;
+      if (nav != null && nav.canRequestFocus) nav.requestFocus();
+    });
   }
 
   void _select(AuroraTab tab) {
