@@ -254,6 +254,11 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   void initState() {
     super.initState();
     _active = this;
+    // Seek-preview thumbnails are OFF unless the user opted in — they spin up a
+    // second decoder and hurt playback on weak boxes.
+    ref.read(seekPreviewsProvider.future).then((v) {
+      if (mounted) _seekPreviews = v;
+    }).catchError((Object _) {});
     _subs.add(_player.stream.position.listen(_onPosition));
     _subs.add(_player.stream.completed.listen(_onCompleted));
     _subs.add(_player.stream.buffering.listen((b) {
@@ -771,6 +776,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   }
 
   bool _thumbsScheduled = false;
+  bool _seekPreviews = false;
   bool _prefetchedNext = false;
   int _lastSavedPosMs = -1;
 
@@ -798,7 +804,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       unawaited(_prefetchNextEpisode());
     }
 
-    if (!_thumbsScheduled) {
+    if (_seekPreviews && !_thumbsScheduled) {
       _thumbsScheduled = true;
       final url = _urlOverrides[_index] ?? _current.url;
       Future.delayed(const Duration(seconds: 12), () {

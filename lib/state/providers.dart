@@ -878,6 +878,18 @@ final favoritesByKindProvider =
 /// Refresh every provider that depends on the Trakt account. Must be called
 /// after connect / disconnect / a health-check retry: home data is
 /// session-cached now, so any provider missed here simply never updates.
+/// Scrub-preview thumbnails spin up a SECOND video decoder plus a second
+/// connection to the stream to sample frames — smooth on a phone, but on a
+/// low-power TV box it contends with the foreground decoder and stutters
+/// playback. OFF by default; opt in from Settings → Playback. Bump
+/// [seekPreviewsRevProvider] after toggling to re-read.
+final seekPreviewsRevProvider = StateProvider<int>((ref) => 0);
+final seekPreviewsProvider = FutureProvider<bool>((ref) async {
+  ref.watch(seekPreviewsRevProvider);
+  final repo = await ref.watch(repositoryProvider.future);
+  return (await repo.getSetting('seek_previews')) == '1';
+});
+
 void refreshTraktData(WidgetRef ref) {
   ref.invalidate(traktConnectedProvider);
   ref.invalidate(traktUsernameProvider);

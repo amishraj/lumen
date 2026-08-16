@@ -54,6 +54,35 @@ class AuroraPlayback {
     return LibraryRepository.preferEnglish(hits)?.url;
   }
 
+  /// Warm the debrid stream for [item] while the user is still reading its
+  /// detail page, so pressing Play hits the remembered-link fast path (zero
+  /// network) instead of paying an imdb lookup + Torrentio scrape then. Fire
+  /// and forget — a no-op when RD is off, a link is already remembered, or
+  /// resolution fails (Play just resolves normally in that case). Movies only;
+  /// series episodes resolve per-episode inside the player.
+  static Future<void> prefetch(WidgetRef ref, StreamItem item) async {
+    if (item.kind == StreamKind.series) return;
+    try {
+      final rdOn = await ref
+          .read(rdEnabledProvider.future)
+          .catchError((Object _) => false);
+      if (!rdOn) return;
+      final title = cleanTitle(item.name).title;
+      final repo = await ref.read(repositoryProvider.future);
+      final key = movieProgressKey(title);
+      final existing = await repo.db.getStreamChoice(key);
+      if (existing != null && existing.url.isNotEmpty) return; // already warm
+      final imdb = await imdbIdForTitle(ref, title);
+      if (imdb == null) return;
+      final svc = await ref.read(realDebridServiceProvider.future);
+      final best = await svc.bestStream(imdb).timeout(const Duration(seconds: 15));
+      if (best != null && best.url.isNotEmpty) {
+        await repo.db.saveStreamChoice(key, best.url,
+            label: best.label, quality: best.quality);
+      }
+    } catch (_) {/* best effort — Play resolves normally */}
+  }
+
   /// Resolve and open the player for a movie/one-off title.
   static Future<void> play(
     BuildContext context,

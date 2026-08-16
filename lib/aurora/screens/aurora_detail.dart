@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -36,6 +38,18 @@ class _AuroraDetailScreenState extends ConsumerState<AuroraDetailScreen> {
   bool _resolving = false;
 
   StreamItem get item => widget.item;
+
+  @override
+  void initState() {
+    super.initState();
+    // Resolve the debrid stream while the user reads the page — Play then
+    // starts from the remembered link with no wait. Best-effort, movies only.
+    // A short linger delay skips the scrape when someone just glances and backs
+    // out, so browsing doesn't fire a Torrentio call per opened title.
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) unawaited(AuroraPlayback.prefetch(ref, item));
+    });
+  }
 
   Future<void> _play(PlayPreference pref, {double? resumeFraction}) async {
     if (_resolving) return;

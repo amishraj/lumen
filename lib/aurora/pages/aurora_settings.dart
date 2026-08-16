@@ -168,6 +168,31 @@ class AuroraSettingsPage extends ConsumerWidget {
                   onTap: () => showRdConnectSheet(context, ref),
                 );
               }),
+              Consumer(builder: (context, ref, _) {
+                final on =
+                    ref.watch(seekPreviewsProvider).valueOrNull ?? false;
+                Future<void> toggle() async {
+                  final repo = await ref.read(repositoryProvider.future);
+                  await repo.setSetting('seek_previews', on ? null : '1');
+                  ref.read(seekPreviewsRevProvider.notifier).state++;
+                  ref.invalidate(seekPreviewsProvider);
+                }
+
+                return AuroraListRow(
+                  icon: Icons.view_carousel_outlined,
+                  iconColor: const Color(0xFF9AA0B0),
+                  title: 'Seek preview thumbnails',
+                  subtitle: on
+                      ? 'On — filmstrip previews while seeking (more CPU)'
+                      : 'Off — smoother playback, best for TV boxes',
+                  trailing: Switch(
+                    value: on,
+                    activeThumbColor: Aurora.accent,
+                    onChanged: (_) => toggle(),
+                  ),
+                  onTap: toggle,
+                );
+              }),
               const AuroraSectionHeader('About'),
               AuroraListRow(
                 icon: Icons.bolt_rounded,
