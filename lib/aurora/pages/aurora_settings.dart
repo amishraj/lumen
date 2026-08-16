@@ -11,6 +11,7 @@ import '../../state/service_status.dart';
 import '../../ui/screens/onboarding/add_source_screen.dart';
 import '../../ui/screens/settings/trakt_screen.dart';
 import '../../ui/widgets/rd_connect_sheet.dart';
+import '../../ui/widgets/tv_text_field.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_buttons.dart';
@@ -211,38 +212,88 @@ class AuroraSettingsPage extends ConsumerWidget {
   }) async {
     final ctl = TextEditingController(text: await read() ?? '');
     if (!context.mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
+    // A full-screen, top-anchored, SCROLLABLE entry — not a centered dialog.
+    // On a TV the leanback keyboard docks over the lower/centre of the screen
+    // and would hide a centred AlertDialog field; keeping the field high and
+    // inside a scrollable (with TvTextField's tile→field pattern) means the
+    // user can always see what they're typing.
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => _KeyEntryScreen(
+        title: title,
+        help: help,
+        controller: ctl,
+        obscure: obscure,
+        onSave: save,
+      ),
+    ));
+    ctl.dispose();
+  }
+}
+
+/// Keyboard-safe key/token entry for the 10-foot UI: title + help at the top,
+/// the field just below (well clear of the docked on-screen keyboard), inside a
+/// scrollable so it auto-scrolls into view if anything would cover it.
+class _KeyEntryScreen extends StatelessWidget {
+  const _KeyEntryScreen({
+    required this.title,
+    required this.help,
+    required this.controller,
+    required this.obscure,
+    required this.onSave,
+  });
+
+  final String title;
+  final String help;
+  final TextEditingController controller;
+  final bool obscure;
+  final Future<void> Function(String) onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Aurora.bg,
+      appBar: AppBar(
+        backgroundColor: Aurora.bg,
         title: Text(title),
-        content: SizedBox(
-          width: 420,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text(help,
-                style:
-                    const TextStyle(fontSize: 12.5, color: Aurora.textDim)),
-            const SizedBox(height: 14),
-            TextField(
-              controller: ctl,
-              obscureText: obscure,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: const InputDecoration(hintText: 'Paste key here'),
+      ),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: SingleChildScrollView(
+              // Big bottom pad + the field's own scrollPadding keep it above the
+              // keyboard even on short screens.
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 260),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(help,
+                      style: const TextStyle(
+                          fontSize: 13.5, color: Aurora.textDim, height: 1.4)),
+                  const SizedBox(height: 18),
+                  TvTextField(
+                    controller: controller,
+                    hint: 'Paste key here',
+                    icon: Icons.vpn_key_rounded,
+                    obscure: obscure,
+                    autofocus: true,
+                  ),
+                  const SizedBox(height: 22),
+                  SizedBox(
+                    height: 54,
+                    child: FilledButton(
+                      onPressed: () async {
+                        await onSave(controller.text);
+                        if (context.mounted) Navigator.pop(context);
+                      },
+                      child: const Text('Save'),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ]),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () async {
-              await save(ctl.text);
-              if (ctx.mounted) Navigator.pop(ctx);
-            },
-            child: const Text('Save'),
           ),
-        ],
+        ),
       ),
     );
   }

@@ -10,6 +10,7 @@ import '../../theme/lumen_theme.dart';
 import '../../widgets/focusable_item.dart';
 import '../../widgets/rd_connect_sheet.dart';
 import '../../widgets/tv_text_field.dart';
+import 'setup_accounts_screen.dart';
 
 /// Add an M3U playlist or Xtream Codes account, then run the first sync with
 /// live progress. This is the only "heavy" moment — everything after is instant.
@@ -486,6 +487,42 @@ class _AddSourceScreenState extends ConsumerState<AddSourceScreen>
                                       color: Color(0xFFC7CBD6), fontSize: 13)),
                             ),
                           ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    // Optional start-time step: connect Trakt / Real-Debrid and
+                    // add a TMDB key before ever reaching home. Onboarding only
+                    // (in Settings these live as their own rows).
+                    if (!pushed && (_debridOnly || _withDebrid != null)) ...[
+                      FocusableItem(
+                        borderRadius: 14,
+                        onActivate: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                              builder: (_) => const SetupAccountsScreen()),
+                        ),
+                        builder: (context, focused) => Container(
+                          height: 52,
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          decoration: BoxDecoration(
+                            color: LumenTheme.surface,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                                color: focused
+                                    ? LumenTheme.accent
+                                    : const Color(0xFF2A2E3A)),
+                          ),
+                          child: const Row(children: [
+                            Icon(Icons.link_rounded,
+                                size: 20, color: Color(0xFF9AA0B0)),
+                            SizedBox(width: 12),
+                            Expanded(
+                              child: Text('Connect Trakt & add keys (optional)',
+                                  style: TextStyle(fontSize: 14.5)),
+                            ),
+                            Icon(Icons.chevron_right,
+                                size: 18, color: Color(0xFF6B7080)),
+                          ]),
                         ),
                       ),
                       const SizedBox(height: 12),
