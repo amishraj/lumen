@@ -181,9 +181,19 @@ class LibraryRepository {
       db.setPinned(playlistId, kind, name, p);
 
   // Settings.
+
+  /// Notified after every settings write. The credential vault installs itself
+  /// here (see `installVaultAutoSave`) so its backup stays fresh no matter
+  /// which screen or service changed an account — previously the backup was
+  /// only refreshed on app start and after adding a source, so keys entered
+  /// in a session that ended without a relaunch were simply never backed up.
+  static void Function(LibraryRepository repo, String key)? onSettingChanged;
+
   Future<String?> getSetting(String key) => db.getSetting(key);
-  Future<void> setSetting(String key, String? value) =>
-      db.setSetting(key, value);
+  Future<void> setSetting(String key, String? value) async {
+    await db.setSetting(key, value);
+    onSettingChanged?.call(this, key);
+  }
 
   /// Session cache for [seriesEpisodes]: get_series_info is a portal
   /// round-trip and the series screen now merges up to four entries per open,

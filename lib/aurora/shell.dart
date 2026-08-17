@@ -18,6 +18,7 @@ import 'pages/aurora_my_stuff.dart';
 import 'pages/aurora_search.dart';
 import 'pages/aurora_settings.dart';
 import 'pages/aurora_sports.dart';
+import 'widgets/aurora_bottom_nav.dart';
 import '../data/models/models.dart';
 
 /// The Aurora root: an Apple TV-style translucent top bar over full-bleed
@@ -34,14 +35,29 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
   DateTime? _lastBack;
   bool _kickedOffSync = false;
 
-  /// Compact (phone) only: drives the auto-hiding top bar. True = shown.
-  /// The bar tucks away as you scroll down a page and slides back the moment
-  /// you scroll up, so it never sits on top of content mid-scroll.
-  final ValueNotifier<bool> _navVisible = ValueNotifier(true);
+  /// Compact (phone) only: true = the floating bottom bar is fully expanded
+  /// (active tab labelled). It contracts to bare icons while you scroll down
+  /// and springs back the instant you scroll up — it never hides, so the tabs
+  /// are always a thumb-reach away.
+  final ValueNotifier<bool> _navExpanded = ValueNotifier(true);
+
+  // Stable per-tab focus nodes — created once, never swapped, and owned by the
+  // shell rather than by a bar, because on compact the tabs are split across
+  // two surfaces (main tabs in the floating bottom bar, Search + Settings in
+  // the slim header). The selected tab's node is published as
+  // [auroraNavTarget] so pages can return focus to the nav, and the whole map
+  // as [auroraTabNodes] for programmatic tab switches.
+  final Map<AuroraTab, FocusNode> _nodes = {
+    for (final t in AuroraTab.values)
+      t: FocusNode(debugLabel: 'aurora-tab-${t.name}'),
+  };
 
   @override
   void initState() {
     super.initState();
+    auroraTabNodes
+      ..clear()
+      ..addAll(_nodes);
     // Aurora's focus model is RELATIVE — arrow keys only move when something is
     // already focused. An empty/loading Home (no billboard Play button, no
     // rows) leaves primaryFocus null and the remote completely dead. Watch for
@@ -55,7 +71,11 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
   @override
   void dispose() {
     FocusManager.instance.removeListener(_ensureFocus);
-    _navVisible.dispose();
+    _navExpanded.dispose();
+    for (final e in _nodes.entries) {
+      if (auroraTabNodes[e.key] == e.value) auroraTabNodes.remove(e.key);
+      e.value.dispose();
+    }
     super.dispose();
   }
 
@@ -76,18 +96,18 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
   }
 
   void _select(AuroraTab tab) {
-    _navVisible.value = true; // a tab switch always reveals the bar
+    _navExpanded.value = true; // a tab switch always restores the full bar
     ref.read(auroraTabProvider.notifier).state = tab.index;
   }
 
-  /// Reveal/hide the bar from a page's vertical scroll direction. Horizontal
-  /// shelf scrolling is ignored so swiping a rail never toggles the bar.
+  /// Expand/contract the floating bar from a page's vertical scroll direction.
+  /// Horizontal shelf scrolling is ignored so swiping a rail never toggles it.
   bool _onPageScroll(UserScrollNotification n) {
     if (n.metrics.axis != Axis.vertical) return false;
     if (n.direction == ScrollDirection.reverse) {
-      _navVisible.value = false; // scrolling down
+      _navExpanded.value = false; // scrolling down
     } else if (n.direction == ScrollDirection.forward) {
-      _navVisible.value = true; // scrolling up
+      _navExpanded.value = true; // scrolling up
     }
     return false;
   }
@@ -119,6 +139,10 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
     final tab = ref.watch(auroraTabProvider);
     final active = ref.watch(activePlaylistProvider);
     final compact = Aurora.isCompact(context);
+    // Publish the selected tab's node so pages can return focus to the nav
+    // (▲ from their top row). Done here, not in a bar, because on compact the
+    // tabs are split between the header and the floating bottom bar.
+    auroraNavTarget = _nodes[AuroraTab.values[tab]];
 
     // Startup sequence (all background, none gates the first paint — home
     // renders instantly off its persisted snapshots; the title index kicks
@@ -190,55 +214,119 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
             ),
           ),
           // ---- Top scrim so the translucent bar reads over any artwork ----
-          // Only on wide (10-foot) layouts. On compact the bar is solid and
-          // slides away, so a fixed scrim would just darken content oddly.
-          if (!compact)
-            const Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              height: 140,
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Color(0xE606070B), Color(0x0006070B)],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          // ---- Top navigation ----
+          // Compact gets a shorter one: the slim header floats over the hero
+          // rather than sitting on an opaque strip.
           Positioned(
             top: 0,
             left: 0,
             right: 0,
-            child: compact
-                ? ValueListenableBuilder<bool>(
-                    valueListenable: _navVisible,
-                    builder: (context, visible, _) => AnimatedSlide(
-                      duration: Aurora.normal,
-                      curve: Curves.easeOutCubic,
-                      offset: Offset(0, visible ? 0 : -1),
-                      child: DecoratedBox(
-                        decoration: const BoxDecoration(
-                          color: Aurora.bg,
-                          border: Border(
-                              bottom: BorderSide(color: Aurora.hairline)),
-                        ),
-                        child: SafeArea(
-                          bottom: false,
-                          child: _TopBar(selected: tab, onSelect: _select),
-                        ),
-                      ),
-                    ),
-                  )
-                : SafeArea(
-                    bottom: false,
-                    child: _TopBar(selected: tab, onSelect: _select),
+            height: compact ? MediaQuery.of(context).padding.top + 78 : 140,
+            child: const IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0xE606070B), Color(0x0006070B)],
                   ),
+                ),
+              ),
+            ),
+          ),
+          // ---- Navigation ----
+          // Wide (10-foot): one top tab bar, driven by the remote.
+          // Compact (phone): a slim header that carries only the wordmark and
+          // the Search / Settings icons, with the tabs themselves in a
+          // floating glass bar at the bottom — thumb-reachable, and it shrinks
+          // to bare icons as you scroll.
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              bottom: false,
+              child: compact
+                  ? _CompactHeader(
+                      selected: tab, onSelect: _select, nodes: _nodes)
+                  : _TopBar(selected: tab, onSelect: _select, nodes: _nodes),
+            ),
+          ),
+          if (compact)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: AuroraBottomNav(
+                selected: tab,
+                onSelect: _select,
+                nodes: _nodes,
+                expanded: _navExpanded,
+              ),
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// Phone header: wordmark, background-sync spinner, Search and Settings.
+/// Deliberately spare — every destination lives in the bottom bar now, so
+/// this strip only carries the two actions that aren't tabs you dwell in.
+class _CompactHeader extends ConsumerWidget {
+  const _CompactHeader({
+    required this.selected,
+    required this.onSelect,
+    required this.nodes,
+  });
+  final int selected;
+  final ValueChanged<AuroraTab> onSelect;
+  final Map<AuroraTab, FocusNode> nodes;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final margin = Aurora.margin(context);
+    final sync = ref.watch(syncControllerProvider);
+    return SizedBox(
+      height: 54,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: margin - 4),
+        child: Row(children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4),
+            child: ShaderMask(
+              shaderCallback: (r) => Aurora.gradient.createShader(r),
+              child: const Text('lumen',
+                  style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.8,
+                      color: Colors.white)),
+            ),
+          ),
+          const Spacer(),
+          if (sync.running) ...[
+            const SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Aurora.textDim),
+            ),
+            const SizedBox(width: 12),
+          ],
+          _HeaderIcon(
+            icon: Icons.search_rounded,
+            label: 'Search',
+            selected: selected == AuroraTab.search.index,
+            focusNode: nodes[AuroraTab.search],
+            onPick: () => onSelect(AuroraTab.search),
+          ),
+          const SizedBox(width: 2),
+          _HeaderIcon(
+            icon: Icons.settings_outlined,
+            label: 'Settings',
+            selected: selected == AuroraTab.settings.index,
+            focusNode: nodes[AuroraTab.settings],
+            onPick: () => onSelect(AuroraTab.settings),
           ),
         ]),
       ),
@@ -246,10 +334,58 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
   }
 }
 
+class _HeaderIcon extends StatelessWidget {
+  const _HeaderIcon({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onPick,
+    this.focusNode,
+  });
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onPick;
+  final FocusNode? focusNode;
+
+  @override
+  Widget build(BuildContext context) {
+    return AuroraFocusable(
+      ring: false,
+      scale: 1.0,
+      focusNode: focusNode,
+      onActivate: onPick,
+      centerOnFocus: false,
+      autoScroll: false,
+      builder: (context, focused) => AnimatedContainer(
+        duration: Aurora.fast,
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: focused
+              ? Colors.white
+              : (selected ? Aurora.glass : Colors.transparent),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon,
+            size: 21,
+            semanticLabel: label,
+            color: focused
+                ? Aurora.bg
+                : (selected ? Aurora.text : Aurora.textDim)),
+      ),
+    );
+  }
+}
+
 class _TopBar extends ConsumerStatefulWidget {
-  const _TopBar({required this.selected, required this.onSelect});
+  const _TopBar({
+    required this.selected,
+    required this.onSelect,
+    required this.nodes,
+  });
   final int selected;
   final ValueChanged<AuroraTab> onSelect;
+  final Map<AuroraTab, FocusNode> nodes;
 
   @override
   ConsumerState<_TopBar> createState() => _TopBarState();
@@ -266,30 +402,12 @@ class _TopBarState extends ConsumerState<_TopBar> {
     AuroraTabSpec(AuroraTab.myStuff, 'My Stuff'),
   ];
 
-  // Stable per-tab focus nodes — created once, never swapped. The selected
-  // tab's node is published as [auroraNavTarget] so pages can return focus
-  // here, and the full map as [auroraTabNodes] for programmatic tab switches.
-  final Map<AuroraTab, FocusNode> _nodes = {
-    for (final t in AuroraTab.values)
-      t: FocusNode(debugLabel: 'aurora-tab-${t.name}'),
-  };
+  Map<AuroraTab, FocusNode> get _nodes => widget.nodes;
   Timer? _debounce;
-
-  @override
-  void initState() {
-    super.initState();
-    auroraTabNodes
-      ..clear()
-      ..addAll(_nodes);
-  }
 
   @override
   void dispose() {
     _debounce?.cancel();
-    for (final e in _nodes.entries) {
-      if (auroraTabNodes[e.key] == e.value) auroraTabNodes.remove(e.key);
-      e.value.dispose();
-    }
     super.dispose();
   }
 
@@ -314,8 +432,6 @@ class _TopBarState extends ConsumerState<_TopBar> {
     final margin = Aurora.margin(context);
     final sync = ref.watch(syncControllerProvider);
     final wide = MediaQuery.of(context).size.width >= 760;
-    // Publish the selected tab's node so pages can return focus here (▲).
-    auroraNavTarget = _nodes[AuroraTab.values[widget.selected]];
 
     return Container(
       height: 64,

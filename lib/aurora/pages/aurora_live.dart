@@ -79,6 +79,20 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
             ? _kFavGroup
             : (cats != null && cats.isNotEmpty ? cats.first.name : null));
 
+    // A 292px category column plus a channel list does not fit a phone. On
+    // compact the two panes become one: categories collapse into a horizontal
+    // chip rail (plus a searchable sheet for the long tail) above a
+    // full-width channel list.
+    if (Aurora.isCompact(context)) {
+      return _CompactLive(
+        playlistId: pl!.id!,
+        cats: cats,
+        pinned: pinned,
+        favs: favs,
+        selected: selected,
+      );
+    }
+
     return AuroraUpNavScope(
       child: Padding(
       padding: EdgeInsets.fromLTRB(margin, 84, 0, 0),
@@ -172,6 +186,304 @@ class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
                     ),
         ),
       ]),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Compact (phone / portrait) Live
+// ---------------------------------------------------------------------------
+
+/// Phone Live TV: one column. A horizontal chip rail carries Favourites,
+/// pinned categories and the rest; "All categories" opens a searchable sheet
+/// for libraries with hundreds of groups. Below it, the same channel panes the
+/// wide layout uses, now full width.
+class _CompactLive extends ConsumerWidget {
+  const _CompactLive({
+    required this.playlistId,
+    required this.cats,
+    required this.pinned,
+    required this.favs,
+    required this.selected,
+  });
+
+  final int playlistId;
+  final List<Category>? cats;
+  final Set<String> pinned;
+  final List<StreamItem> favs;
+  final String? selected;
+
+  Future<void> _pickCategory(BuildContext context, WidgetRef ref) async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Aurora.bgRaised,
+      isScrollControlled: true,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => _CategorySheet(
+        cats: cats ?? const [],
+        pinned: pinned,
+        hasFavorites: favs.isNotEmpty,
+        selected: selected,
+      ),
+    );
+    if (picked == null) return;
+    ref.read(auroraGroupProvider(StreamKind.live).notifier).state = picked;
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final margin = Aurora.margin(context);
+    final list = cats ?? const <Category>[];
+    // Favourites first, then pinned, then everything else — the same priority
+    // the wide rail uses, flattened into a single scrollable strip.
+    final names = <String>[
+      if (favs.isNotEmpty) _kFavGroup,
+      for (final c in list) c.name,
+    ];
+
+    return Padding(
+      padding: EdgeInsets.only(top: Aurora.topPad(context)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(
+          padding: EdgeInsets.fromLTRB(margin, 6, margin - 6, 2),
+          child: Row(children: [
+            Expanded(
+              child: Text('Live TV',
+                  style: Aurora.display.copyWith(fontSize: 26)),
+            ),
+            AuroraFocusable(
+              radius: 20,
+              centerOnFocus: false,
+              onActivate: () => _pickCategory(context, ref),
+              builder: (context, focused) => Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: focused ? Colors.white : Aurora.glass,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Aurora.hairline),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.tune_rounded,
+                      size: 16,
+                      color: focused ? Aurora.bg : Aurora.textDim),
+                  const SizedBox(width: 6),
+                  Text('Categories',
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: focused ? Aurora.bg : Aurora.textDim)),
+                ]),
+              ),
+            ),
+          ]),
+        ),
+        if (cats == null)
+          const Expanded(
+            child: Center(
+                child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2))),
+          )
+        else ...[
+          SizedBox(
+            height: 46,
+            child: names.isEmpty
+                ? null
+                : ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    clipBehavior: Clip.none,
+                    padding: EdgeInsets.symmetric(horizontal: margin),
+                    itemCount: names.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (context, i) {
+                      final name = names[i];
+                      return _CompactCatChip(
+                        label: name,
+                        selected: name == selected,
+                        pinned: pinned.contains(name),
+                        onPick: () => ref
+                            .read(auroraGroupProvider(StreamKind.live).notifier)
+                            .state = name,
+                      );
+                    },
+                  ),
+          ),
+          Expanded(
+            child: selected == null
+                ? const Center(
+                    child: Text('No live categories.',
+                        style: TextStyle(color: Aurora.textFaint)))
+                : selected == _kFavGroup
+                    ? _FavoritesPane(items: favs, compact: true)
+                    : _ChannelPane(
+                        key: ValueKey('compact-$playlistId-$selected'),
+                        playlistId: playlistId,
+                        group: selected!,
+                        compact: true,
+                      ),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
+class _CompactCatChip extends StatelessWidget {
+  const _CompactCatChip({
+    required this.label,
+    required this.selected,
+    required this.pinned,
+    required this.onPick,
+  });
+  final String label;
+  final bool selected;
+  final bool pinned;
+  final VoidCallback onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    return AuroraFocusable(
+      ring: false,
+      scale: 1.0,
+      centerOnFocus: false,
+      onActivate: onPick,
+      builder: (context, focused) => Center(
+        child: AnimatedContainer(
+          duration: Aurora.fast,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: focused
+                ? Colors.white
+                : (selected ? Aurora.glassHi : Aurora.glass),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+                color: selected && !focused
+                    ? const Color(0x59FFFFFF)
+                    : Aurora.hairline),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (pinned) ...[
+              Icon(Icons.push_pin_rounded,
+                  size: 11, color: focused ? Aurora.bg : Aurora.accent),
+              const SizedBox(width: 4),
+            ],
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 190),
+              child: Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight:
+                          selected || focused ? FontWeight.w800 : FontWeight.w600,
+                      color: focused
+                          ? Aurora.bg
+                          : (selected ? Aurora.text : Aurora.textDim))),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// Searchable full category list — the long tail that won't fit a chip rail.
+class _CategorySheet extends StatefulWidget {
+  const _CategorySheet({
+    required this.cats,
+    required this.pinned,
+    required this.hasFavorites,
+    required this.selected,
+  });
+  final List<Category> cats;
+  final Set<String> pinned;
+  final bool hasFavorites;
+  final String? selected;
+
+  @override
+  State<_CategorySheet> createState() => _CategorySheetState();
+}
+
+class _CategorySheetState extends State<_CategorySheet> {
+  final _ctl = TextEditingController();
+  String _q = '';
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final shown = _q.isEmpty
+        ? widget.cats
+        : widget.cats
+            .where((c) => c.name.toLowerCase().contains(_q))
+            .toList();
+    final showFav = widget.hasFavorites && _q.isEmpty;
+    return SafeArea(
+      top: false,
+      child: SizedBox(
+        // Leaves the top of the screen visible so the sheet reads as a sheet.
+        height: MediaQuery.of(context).size.height * 0.78,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+              16, 0, 16, MediaQuery.of(context).viewInsets.bottom),
+          child: Column(children: [
+            AuroraSearchField(
+              controller: _ctl,
+              hint: 'Search categories',
+              onChanged: (v) => setState(() => _q = v.trim().toLowerCase()),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: shown.isEmpty && !showFav
+                  ? const Center(
+                      child: Text('No categories',
+                          style: TextStyle(color: Aurora.textFaint)))
+                  : ListView.builder(
+                      itemExtent: 52,
+                      itemCount: shown.length + (showFav ? 1 : 0),
+                      itemBuilder: (context, i) {
+                        final isFavRow = showFav && i == 0;
+                        final c =
+                            isFavRow ? null : shown[i - (showFav ? 1 : 0)];
+                        final name = isFavRow ? _kFavGroup : c!.name;
+                        final active = name == widget.selected;
+                        return ListTile(
+                          dense: true,
+                          selected: active,
+                          leading: widget.pinned.contains(name)
+                              ? const Icon(Icons.push_pin_rounded,
+                                  size: 15, color: Aurora.accent)
+                              : null,
+                          title: Text(name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: active
+                                      ? FontWeight.w800
+                                      : FontWeight.w500,
+                                  color:
+                                      active ? Aurora.text : Aurora.textDim)),
+                          trailing: Text(
+                              isFavRow ? '' : '${c!.count}',
+                              style: Aurora.caption),
+                          onTap: () => Navigator.of(context).pop(name),
+                        );
+                      },
+                    ),
+            ),
+          ]),
+        ),
       ),
     );
   }
@@ -294,8 +606,9 @@ class _CategoryRowState extends State<_CategoryRow> {
 
 /// Favorites pseudo-category — a plain (non-paged) channel list.
 class _FavoritesPane extends ConsumerWidget {
-  const _FavoritesPane({required this.items});
+  const _FavoritesPane({required this.items, this.compact = false});
   final List<StreamItem> items;
+  final bool compact;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -305,20 +618,35 @@ class _FavoritesPane extends ConsumerWidget {
               style: TextStyle(color: Aurora.textFaint)));
     }
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(18, 4, 48, 24),
+      padding: _listPadding(context, compact),
       itemExtent: 66,
       itemCount: items.length,
       itemBuilder: (context, i) =>
-          _ChannelRow(item: items[i], queue: items, index: i),
+          _ChannelRow(item: items[i], queue: items, index: i, compact: compact),
     );
   }
 }
 
+/// Gutter for a channel list: the wide layout sits beside the category rail
+/// (small left inset, generous right), the phone list runs edge to edge and
+/// has to clear the floating tab bar.
+EdgeInsets _listPadding(BuildContext context, bool compact) => compact
+    ? EdgeInsets.fromLTRB(
+        Aurora.margin(context) - 8, 4, Aurora.margin(context) - 8,
+        Aurora.bottomPad(context))
+    : const EdgeInsets.fromLTRB(18, 4, 48, 24);
+
 /// One paged category of channels + in-category search.
 class _ChannelPane extends ConsumerStatefulWidget {
-  const _ChannelPane({super.key, required this.playlistId, required this.group});
+  const _ChannelPane({
+    super.key,
+    required this.playlistId,
+    required this.group,
+    this.compact = false,
+  });
   final int playlistId;
   final String group;
+  final bool compact;
 
   @override
   ConsumerState<_ChannelPane> createState() => _ChannelPaneState();
@@ -376,9 +704,12 @@ class _ChannelPaneState extends ConsumerState<_ChannelPane> {
         _runSearch('');
       }
     });
+    final margin = Aurora.margin(context);
     return Column(children: [
       Padding(
-        padding: const EdgeInsets.fromLTRB(18, 0, 48, 8),
+        padding: widget.compact
+            ? EdgeInsets.fromLTRB(margin, 8, margin, 6)
+            : const EdgeInsets.fromLTRB(18, 0, 48, 8),
         child: AuroraSearchField(
           controller: _searchCtl,
           hint: 'Search in ${widget.group}',
@@ -405,7 +736,7 @@ class _ChannelPaneState extends ConsumerState<_ChannelPane> {
     }
     return ListView.builder(
       controller: _scroll,
-      padding: const EdgeInsets.fromLTRB(18, 4, 48, 24),
+      padding: _listPadding(context, widget.compact),
       itemExtent: 66,
       itemCount: state.items.length + (state.reachedEnd ? 0 : 1),
       itemBuilder: (context, i) {
@@ -416,7 +747,11 @@ class _ChannelPaneState extends ConsumerState<_ChannelPane> {
                   height: 18,
                   child: CircularProgressIndicator(strokeWidth: 2)));
         }
-        return _ChannelRow(item: state.items[i], queue: state.items, index: i);
+        return _ChannelRow(
+            item: state.items[i],
+            queue: state.items,
+            index: i,
+            compact: widget.compact);
       },
     );
   }
@@ -439,11 +774,14 @@ class _ChannelPaneState extends ConsumerState<_ChannelPane> {
                   style: TextStyle(color: Aurora.textFaint)));
         }
         return ListView.builder(
-          padding: const EdgeInsets.fromLTRB(18, 4, 48, 24),
+          padding: _listPadding(context, widget.compact),
           itemExtent: 66,
           itemCount: items.length,
-          itemBuilder: (context, i) =>
-              _ChannelRow(item: items[i], queue: items, index: i),
+          itemBuilder: (context, i) => _ChannelRow(
+              item: items[i],
+              queue: items,
+              index: i,
+              compact: widget.compact),
         );
       },
     );
@@ -452,11 +790,16 @@ class _ChannelPaneState extends ConsumerState<_ChannelPane> {
 
 /// A channel row: number · logo · name/EPG · favorite toggle.
 class _ChannelRow extends ConsumerWidget {
-  const _ChannelRow(
-      {required this.item, required this.queue, required this.index});
+  const _ChannelRow({
+    required this.item,
+    required this.queue,
+    required this.index,
+    this.compact = false,
+  });
   final StreamItem item;
   final List<StreamItem> queue;
   final int index;
+  final bool compact;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -483,23 +826,26 @@ class _ChannelRow extends ConsumerWidget {
           borderRadius: BorderRadius.circular(14),
         ),
         child: Row(children: [
-          SizedBox(
-            width: 44,
-            child: Text(
-              item.num == null ? '' : '${item.num}',
-              style: const TextStyle(
-                  color: Aurora.textFaint,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700),
+          // The channel-number gutter is the first thing to go on a phone —
+          // it's the least useful column and the most expensive in width.
+          if (!compact)
+            SizedBox(
+              width: 44,
+              child: Text(
+                item.num == null ? '' : '${item.num}',
+                style: const TextStyle(
+                    color: Aurora.textFaint,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
+              ),
             ),
-          ),
           AuroraLogoTile(
               url: item.logo,
-              width: 66,
-              height: 40,
+              width: compact ? 58 : 66,
+              height: compact ? 36 : 40,
               radius: 8,
               fallbackText: item.name),
-          const SizedBox(width: 14),
+          SizedBox(width: compact ? 12 : 14),
           Expanded(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,

@@ -15,6 +15,7 @@ class AuroraImage extends StatelessWidget {
     required this.height,
     this.radius = 12,
     this.fit = BoxFit.cover,
+    this.alignment = Alignment.center,
     this.fallbackText,
   });
 
@@ -23,6 +24,10 @@ class AuroraImage extends StatelessWidget {
   final double height;
   final double radius;
   final BoxFit fit;
+
+  /// Which part of the image survives the [fit] crop. Defaults to centre;
+  /// tall heroes anchor to the top so faces aren't trimmed away.
+  final Alignment alignment;
   final String? fallbackText;
 
   @override
@@ -31,7 +36,14 @@ class AuroraImage extends StatelessWidget {
         width: width, height: height, radius: radius, text: fallbackText);
     final loading = _Loading(width: width, height: height, radius: radius);
     if (url == null || url!.isEmpty) return fallback;
-    final dpr = MediaQuery.of(context).devicePixelRatio;
+    final media = MediaQuery.of(context);
+    final dpr = media.devicePixelRatio;
+    // `width` is often `double.infinity` (a fill-the-Stack banner). Rounding
+    // Infinity throws — which took the whole hero subtree down with it, and is
+    // exactly why the phone billboard rendered nothing in portrait while the
+    // landscape hero (which passes a real width) was fine. Fall back to the
+    // screen width for the decode cap in that case.
+    final decodeW = width.isFinite ? width : media.size.width;
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: CachedNetworkImage(
@@ -40,8 +52,9 @@ class AuroraImage extends StatelessWidget {
         width: width,
         height: height,
         fit: fit,
+        alignment: alignment,
         // Width-only cap: keeps aspect, BoxFit crops instead of stretching.
-        memCacheWidth: (width * dpr).round(),
+        memCacheWidth: (decodeW * dpr).round(),
         fadeInDuration: const Duration(milliseconds: 220),
         placeholder: (_, __) => loading,
         errorWidget: (_, __, ___) => fallback,
@@ -72,7 +85,9 @@ class AuroraLogoTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dpr = MediaQuery.of(context).devicePixelRatio;
+    final media = MediaQuery.of(context);
+    final dpr = media.devicePixelRatio;
+    final decodeW = width.isFinite ? width : media.size.width;
     return Container(
       width: width,
       height: height,
@@ -92,7 +107,7 @@ class AuroraLogoTile extends StatelessWidget {
               imageUrl: url!,
               cacheManager: LumenImageCache.instance,
               fit: BoxFit.contain,
-              memCacheWidth: (width * dpr).round(),
+              memCacheWidth: (decodeW * dpr).round(),
               fadeInDuration: const Duration(milliseconds: 200),
               placeholder: (_, __) => const SizedBox.expand(),
               errorWidget: (_, __, ___) => _glyph(fallbackText),

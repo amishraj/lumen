@@ -18,6 +18,7 @@ import '../aurora_navigation.dart';
 import '../aurora_playback.dart';
 import '../aurora_providers.dart';
 import '../aurora_theme.dart';
+import '../screens/aurora_continue.dart';
 import '../widgets/aurora_badges.dart';
 import '../widgets/aurora_buttons.dart';
 import '../widgets/aurora_cards.dart';
@@ -71,6 +72,9 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
             .toList();
     final because = ref.watch(tmdbBecauseYouWatchedProvider).valueOrNull;
     final watchlist = ref.watch(traktWatchlistProvider).valueOrNull;
+    final cwSplit = ref.watch(continueWatchingSplitProvider).valueOrNull;
+    final cwOwn = cwSplit?.own;
+    final cwExternal = cwSplit?.external;
 
     // A genuinely empty home (source unsynced/empty, no debrid rows, nothing
     // from Trakt): featured has resolved to nothing AND every headline row is
@@ -81,7 +85,8 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
     bool empty(List<Object?>? l) => l == null || l.isEmpty;
     final nothingLoaded = featured != null &&
         featured.isEmpty &&
-        empty(v(continueWatchingProvider)) &&
+        empty(cwOwn) &&
+        empty(cwExternal) &&
         empty(v(auroraMyListProvider)) &&
         empty(v(tmdbTrendingProvider)) &&
         empty(v(tmdbPopularProvider)) &&
@@ -137,9 +142,38 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
         ),
         SliverList(
           delegate: SliverChildListDelegate.fixed([
+            // Capped to the most recent slice: a Trakt account wired up to a
+            // streaming service can carry 100+ in-progress titles, which is
+            // neither browsable as a rail nor cheap to build. The header's ›
+            // opens the full list.
             AuroraShelf<StreamItem>(
               title: 'Continue Watching',
-              items: v(continueWatchingProvider),
+              items: cwOwn?.take(kContinueWatchingRailLimit).toList(),
+              totalCount: cwOwn?.length,
+              onMore: (cwOwn != null && cwOwn.isNotEmpty)
+                  ? () => openContinueWatching(context)
+                  : null,
+              rowHeight: wideRow,
+              skeletonWidth: wideW,
+              itemBuilder: (context, it, i) => AuroraWideCard(
+                item: it,
+                width: wideW,
+                onTap: () => openAuroraItem(context, ref, it),
+                onLongPress: () => dismissFromContinueWatching(ref, it),
+              ),
+            ),
+            // Only present when Trakt actually attributes resume points to an
+            // outside service — otherwise this shelf removes itself.
+            AuroraShelf<StreamItem>(
+              title: cwSplit?.externalLabel == null
+                  ? 'Continue elsewhere'
+                  : 'Continue on ${cwSplit!.externalLabel}',
+              items: cwExternal?.take(kContinueWatchingRailLimit).toList(),
+              totalCount: cwExternal?.length,
+              hideWhileLoading: true,
+              onMore: (cwExternal != null && cwExternal.isNotEmpty)
+                  ? () => openContinueWatching(context)
+                  : null,
               rowHeight: wideRow,
               skeletonWidth: wideW,
               itemBuilder: (context, it, i) => AuroraWideCard(
@@ -202,7 +236,7 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
               wideShelf(g.name, v(tmdbGenreRowProvider(g.id))),
             if (watchlist != null && watchlist.isNotEmpty)
               _TraktShelf(items: watchlist, width: posterW),
-            const SizedBox(height: 72),
+            SizedBox(height: Aurora.bottomPad(context)),
           ]),
         ),
       ],
@@ -374,11 +408,18 @@ class _BillboardState extends ConsumerState<_Billboard> {
     return _buildWide(context);
   }
 
-  /// Phone hero: a swipeable deck. One clean poster-backdrop per featured
-  /// item, Play + My List, and page dots — no arrow-key chrome, no Ken Burns.
+  /// Phone hero: a swipeable deck. One clean piece of art per featured item,
+  /// Play + My List, and page dots — no arrow-key chrome, no Ken Burns.
+  ///
+  /// In a **portrait** viewport the deck switches to the 2:3 poster and gets
+  /// noticeably taller: a 16:9 backdrop squeezed into a tall narrow frame is
+  /// either letterboxed or cropped down to a meaningless slice of the middle.
   Widget _buildCompact(BuildContext context) {
     final size = MediaQuery.of(context).size;
-    final h = (size.height * 0.5).clamp(340.0, 460.0);
+    final portrait = Aurora.isPortrait(context);
+    final h = portrait
+        ? (size.height * 0.64).clamp(430.0, 720.0)
+        : (size.height * 0.5).clamp(340.0, 460.0);
     return SizedBox(
       height: h,
       child: ClipRect(
@@ -390,6 +431,7 @@ class _BillboardState extends ConsumerState<_Billboard> {
             itemBuilder: (context, i) => _CompactHero(
               item: widget.items[i],
               rank: i,
+              portrait: portrait,
               onPlay: () => _playDirect(widget.items[i]),
             ),
           ),
@@ -671,13 +713,21 @@ class _BillboardSkeleton extends StatelessWidget {
 }
 
 /// One page of the phone hero deck. Self-contained so the PageView can build
-/// each featured item lazily (its own backdrop + synopsis bundle).
+/// each featured item lazily (its own artwork + synopsis bundle).
 class _CompactHero extends ConsumerWidget {
-  const _CompactHero(
-      {required this.item, required this.rank, required this.onPlay});
+  const _CompactHero({
+    required this.item,
+    required this.rank,
+    required this.onPlay,
+    this.portrait = false,
+  });
   final StreamItem item;
   final int rank;
   final VoidCallback onPlay;
+
+  /// Tall-and-narrow viewport: prefer the 2:3 poster and give the text block
+  /// a deeper gradient to sit on.
+  final bool portrait;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -686,7 +736,12 @@ class _CompactHero extends ConsumerWidget {
         .watch(detailBundleProvider(
             (title: item.name, isShow: item.kind == StreamKind.series)))
         .valueOrNull;
-    final art = bundle?.tmdb?.backdrop ?? item.logo;
+    // Portrait wants portrait art. Every candidate is tried in turn so the
+    // hero always has *something* to show — a featured pick from the debrid /
+    // Trakt path may carry only `item.logo`, and TMDB may only have a backdrop.
+    final art = portrait
+        ? (bundle?.tmdb?.poster ?? item.logo ?? bundle?.tmdb?.backdrop)
+        : (bundle?.tmdb?.backdrop ?? item.logo ?? bundle?.tmdb?.poster);
     final omdb = bundle?.omdb;
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
     final isFav = item.id != null && favs.contains(item.id);
@@ -698,27 +753,53 @@ class _CompactHero extends ConsumerWidget {
         width: double.infinity,
         height: double.infinity,
         radius: 0,
+        // Portrait art in a slightly-less-tall frame: anchor the crop to the
+        // top so the composition (faces, title treatment) survives instead of
+        // being trimmed from both ends.
+        alignment: portrait ? Alignment.topCenter : Alignment.center,
         fallbackText: title,
       ),
-      const DecoratedBox(
+      // A longer, softer ramp in portrait: the text block is taller, so the
+      // art has to be fully surrendered by the time the buttons start.
+      DecoratedBox(
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [
+            colors: const [
               Colors.transparent,
               Colors.transparent,
               Color(0xFF06070B),
               Color(0xFF06070B),
             ],
-            stops: [0.0, 0.35, 0.92, 1.0],
+            stops: portrait
+                ? const [0.0, 0.30, 0.86, 1.0]
+                : const [0.0, 0.35, 0.92, 1.0],
           ),
         ),
       ),
+      // Portrait only: a gentle top vignette so the status bar / header icons
+      // stay legible over bright poster art.
+      if (portrait)
+        const Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 150,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0x9906070B), Color(0x0006070B)],
+              ),
+            ),
+          ),
+        ),
       Positioned(
         left: margin,
         right: margin,
-        bottom: 40,
+        bottom: portrait ? 46 : 40,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -730,8 +811,8 @@ class _CompactHero extends ConsumerWidget {
             Text(title,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    fontSize: 26,
+                style: TextStyle(
+                    fontSize: portrait ? 30 : 26,
                     fontWeight: FontWeight.w800,
                     height: 1.05,
                     letterSpacing: -0.6,
@@ -770,45 +851,121 @@ class _CompactHero extends ConsumerWidget {
 // an abstract mark; tapping jumps to Movies filtered to that category.
 // ---------------------------------------------------------------------------
 
-/// One category tile: gradient, colour name, gradient id, and a mark.
+/// The abstract geometry painted behind a category tile. Each motif is drawn
+/// in white at low opacity, so one painter works over every palette.
+enum _Motif { rays, orbit, wave, grid, bloom, shafts }
+
+/// A category's full visual identity: a three-stop ramp (deep → mid → lit),
+/// a motif and a glyph. Three stops instead of two is most of why these read
+/// as artwork rather than as coloured rectangles — the extra stop gives the
+/// tile a light source.
 class _CatStyle {
-  final List<Color> gradient;
+  final Color deep;
+  final Color mid;
+  final Color lit;
+  final _Motif motif;
   final IconData mark;
-  const _CatStyle(this.gradient, this.mark);
+  const _CatStyle(this.deep, this.mid, this.lit, this.motif, this.mark);
 }
 
-const _catPalette = <_CatStyle>[
-  _CatStyle([Color(0xFFFF6A5B), Color(0xFF7A1F3D)], Icons.local_fire_department_rounded),
-  _CatStyle([Color(0xFF4CC2FF), Color(0xFF1B3A7A)], Icons.bolt_rounded),
-  _CatStyle([Color(0xFF8A7BFF), Color(0xFF3A2E7A)], Icons.auto_awesome_rounded),
-  _CatStyle([Color(0xFF34D399), Color(0xFF105948)], Icons.forest_rounded),
-  _CatStyle([Color(0xFFFFB35C), Color(0xFF7A431B)], Icons.wb_sunny_rounded),
-  _CatStyle([Color(0xFFFF7BC2), Color(0xFF7A1F5D)], Icons.favorite_rounded),
-  _CatStyle([Color(0xFF00D4C8), Color(0xFF0B4A57)], Icons.water_rounded),
-  _CatStyle([Color(0xFFB8C24C), Color(0xFF4A551B)], Icons.eco_rounded),
-  _CatStyle([Color(0xFF9AA0FF), Color(0xFF2E317A)], Icons.nights_stay_rounded),
-  _CatStyle([Color(0xFFFF8A5B), Color(0xFF7A2E1B)], Icons.explore_rounded),
+/// Fallback ramps for categories we don't recognise (IPTV group names are
+/// wildly inconsistent), picked by a stable hash so a given name always keeps
+/// the same look between launches.
+const _catFallbacks = <_CatStyle>[
+  _CatStyle(Color(0xFF2A0E1C), Color(0xFF7A1F3D), Color(0xFFFF6A5B),
+      _Motif.rays, Icons.movie_rounded),
+  _CatStyle(Color(0xFF07182F), Color(0xFF1B3A7A), Color(0xFF4CC2FF),
+      _Motif.orbit, Icons.bolt_rounded),
+  _CatStyle(Color(0xFF141033), Color(0xFF3A2E7A), Color(0xFF8A7BFF),
+      _Motif.bloom, Icons.auto_awesome_rounded),
+  _CatStyle(Color(0xFF04231C), Color(0xFF105948), Color(0xFF34D399),
+      _Motif.wave, Icons.forest_rounded),
+  _CatStyle(Color(0xFF2B1607), Color(0xFF7A431B), Color(0xFFFFB35C),
+      _Motif.shafts, Icons.wb_sunny_rounded),
+  _CatStyle(Color(0xFF2A0A20), Color(0xFF7A1F5D), Color(0xFFFF7BC2),
+      _Motif.bloom, Icons.favorite_rounded),
+  _CatStyle(Color(0xFF03222A), Color(0xFF0B4A57), Color(0xFF00D4C8),
+      _Motif.wave, Icons.water_rounded),
+  _CatStyle(Color(0xFF1B1F06), Color(0xFF4A551B), Color(0xFFB8C24C),
+      _Motif.grid, Icons.eco_rounded),
+  _CatStyle(Color(0xFF10122E), Color(0xFF2E317A), Color(0xFF9AA0FF),
+      _Motif.orbit, Icons.nights_stay_rounded),
+  _CatStyle(Color(0xFF2A1108), Color(0xFF7A2E1B), Color(0xFFFF8A5B),
+      _Motif.rays, Icons.explore_rounded),
 ];
 
-IconData _markFor(String name) {
+/// Genre identity. Named genres get a palette that *means* something (horror
+/// is cold and dark, comedy is warm and bright), which is what makes the rail
+/// scan as a set of posters rather than a swatch book.
+_CatStyle _styleFor(String name) {
   final n = name.toLowerCase();
-  if (n.contains('action')) return Icons.local_fire_department_rounded;
-  if (n.contains('comedy')) return Icons.sentiment_very_satisfied_rounded;
-  if (n.contains('drama')) return Icons.theater_comedy_rounded;
-  if (n.contains('horror')) return Icons.dark_mode_rounded;
-  if (n.contains('thriller') || n.contains('crime')) return Icons.gpp_maybe_rounded;
-  if (n.contains('sci') || n.contains('fantasy')) return Icons.rocket_launch_rounded;
-  if (n.contains('romance')) return Icons.favorite_rounded;
-  if (n.contains('animation') || n.contains('kids') || n.contains('family')) {
-    return Icons.child_care_rounded;
+  bool has(String s) => n.contains(s);
+  if (has('action')) {
+    return const _CatStyle(Color(0xFF2A0906), Color(0xFF8E2317),
+        Color(0xFFFF7A4D), _Motif.rays, Icons.local_fire_department_rounded);
   }
-  if (n.contains('doc')) return Icons.menu_book_rounded;
-  if (n.contains('adventure')) return Icons.explore_rounded;
-  if (n.contains('music')) return Icons.music_note_rounded;
-  if (n.contains('war')) return Icons.military_tech_rounded;
-  if (n.contains('west')) return Icons.landscape_rounded;
-  if (n.contains('myst')) return Icons.search_rounded;
-  return Icons.movie_rounded;
+  if (has('comedy')) {
+    return const _CatStyle(Color(0xFF2E1D02), Color(0xFF9A6B0C),
+        Color(0xFFFFD166), _Motif.bloom,
+        Icons.sentiment_very_satisfied_rounded);
+  }
+  if (has('drama')) {
+    return const _CatStyle(Color(0xFF1A1020), Color(0xFF54306B),
+        Color(0xFFB98BE0), _Motif.wave, Icons.theater_comedy_rounded);
+  }
+  if (has('horror')) {
+    return const _CatStyle(Color(0xFF070A0C), Color(0xFF23343A),
+        Color(0xFF6FD2C2), _Motif.shafts, Icons.dark_mode_rounded);
+  }
+  if (has('thriller') || has('crime')) {
+    return const _CatStyle(Color(0xFF0B0D18), Color(0xFF2C2F5C),
+        Color(0xFF7C86FF), _Motif.shafts, Icons.gpp_maybe_rounded);
+  }
+  if (has('sci') || has('fantasy')) {
+    return const _CatStyle(Color(0xFF050D26), Color(0xFF20439B),
+        Color(0xFF63D8FF), _Motif.orbit, Icons.rocket_launch_rounded);
+  }
+  if (has('romance')) {
+    return const _CatStyle(Color(0xFF2A0716), Color(0xFF8E1F55),
+        Color(0xFFFF8FC4), _Motif.bloom, Icons.favorite_rounded);
+  }
+  if (has('animation') || has('kids') || has('family')) {
+    return const _CatStyle(Color(0xFF04202A), Color(0xFF0E6E82),
+        Color(0xFF62E6D0), _Motif.bloom, Icons.child_care_rounded);
+  }
+  if (has('doc')) {
+    return const _CatStyle(Color(0xFF11190F), Color(0xFF3B5C2F),
+        Color(0xFF9FD87A), _Motif.grid, Icons.menu_book_rounded);
+  }
+  if (has('adventure')) {
+    return const _CatStyle(Color(0xFF06231F), Color(0xFF13705C),
+        Color(0xFF5DE0B0), _Motif.wave, Icons.explore_rounded);
+  }
+  if (has('music')) {
+    return const _CatStyle(Color(0xFF1D0724), Color(0xFF6C1F86),
+        Color(0xFFE07BFF), _Motif.wave, Icons.music_note_rounded);
+  }
+  if (has('war')) {
+    return const _CatStyle(Color(0xFF14150D), Color(0xFF4A4C2E),
+        Color(0xFFC7C583), _Motif.grid, Icons.military_tech_rounded);
+  }
+  if (has('west')) {
+    return const _CatStyle(Color(0xFF2A1405), Color(0xFF8A4A12),
+        Color(0xFFFFB765), _Motif.shafts, Icons.landscape_rounded);
+  }
+  if (has('myst')) {
+    return const _CatStyle(Color(0xFF0A0F1D), Color(0xFF283C6B),
+        Color(0xFF86B4FF), _Motif.orbit, Icons.search_rounded);
+  }
+  if (has('histor')) {
+    return const _CatStyle(Color(0xFF201709), Color(0xFF6B5220),
+        Color(0xFFD8B978), _Motif.grid, Icons.account_balance_rounded);
+  }
+  if (has('sport')) {
+    return const _CatStyle(Color(0xFF06210E), Color(0xFF176B32),
+        Color(0xFF63E58B), _Motif.rays, Icons.sports_basketball_rounded);
+  }
+  return _catFallbacks[name.hashCode.abs() % _catFallbacks.length];
 }
 
 class _CategoriesRail extends ConsumerWidget {
@@ -845,8 +1002,11 @@ class _CategoriesRail extends ConsumerWidget {
     }
     if (entries.isEmpty) return const SizedBox.shrink();
 
-    const cardW = 160.0;
-    const cardH = 208.0;
+    // Scales with the viewport: on a phone two-and-a-bit tiles should be
+    // visible so the rail obviously scrolls; on TV they stay poster-sized.
+    final w = MediaQuery.of(context).size.width;
+    final cardW = (w / 2.7).clamp(150.0, 186.0);
+    final cardH = cardW * 1.3;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -864,11 +1024,9 @@ class _CategoriesRail extends ConsumerWidget {
             separatorBuilder: (_, __) => const SizedBox(width: 14),
             itemBuilder: (context, i) {
               final (label, onTap) = entries[i];
-              final style = _catPalette[label.hashCode.abs() % _catPalette.length];
               return _CategoryTile(
                 label: label,
-                gradient: style.gradient,
-                mark: _markFor(label),
+                style: _styleFor(label),
                 width: cardW,
                 height: cardH,
                 onTap: onTap,
@@ -884,16 +1042,14 @@ class _CategoriesRail extends ConsumerWidget {
 class _CategoryTile extends StatelessWidget {
   const _CategoryTile({
     required this.label,
-    required this.gradient,
-    required this.mark,
+    required this.style,
     required this.width,
     required this.height,
     required this.onTap,
   });
 
   final String label;
-  final List<Color> gradient;
-  final IconData mark;
+  final _CatStyle style;
   final double width;
   final double height;
   final VoidCallback onTap;
@@ -910,76 +1066,197 @@ class _CategoryTile extends StatelessWidget {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(18),
           child: Stack(fit: StackFit.expand, children: [
+            // 1 — the base ramp: deep in the bottom-right, lit toward the
+            // top-left, so every tile has a consistent light direction.
             DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: gradient,
+                  colors: [style.mid, style.deep],
                 ),
               ),
             ),
-            // Abstract depiction — overlapping translucent shapes + a big mark.
-            Positioned(
-              right: -26,
-              top: -20,
-              child: _blob(96, const Color(0x26FFFFFF)),
+            // 2 — the light source itself, offset off-canvas so the falloff
+            // inside the card is a slice of a much larger glow.
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  center: const Alignment(-0.75, -0.95),
+                  radius: 1.35,
+                  colors: [
+                    style.lit.withValues(alpha: 0.85),
+                    style.lit.withValues(alpha: 0.16),
+                    Colors.transparent,
+                  ],
+                  stops: const [0.0, 0.45, 1.0],
+                ),
+              ),
             ),
-            Positioned(
-              left: -30,
-              bottom: 30,
-              child: _blob(120, const Color(0x1AFFFFFF)),
+            // 3 — the genre motif, drawn in white over the ramp.
+            Positioned.fill(
+              child: CustomPaint(
+                painter: _MotifPainter(style.motif),
+                isComplex: false,
+              ),
             ),
+            // 4 — an oversized glyph, deliberately cropped by the card edge
+            // so it reads as artwork rather than as an icon in a box.
             Positioned(
-              right: 12,
-              top: 14,
-              child: Icon(mark,
-                  size: 46, color: Colors.white.withValues(alpha: 0.28)),
+              right: -width * 0.16,
+              top: height * 0.10,
+              child: Icon(style.mark,
+                  size: width * 0.72,
+                  color: Colors.white.withValues(alpha: 0.13)),
             ),
-            // Legibility scrim + label.
+            // 5 — legibility scrim under the label.
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.bottomCenter,
                   end: Alignment.center,
-                  colors: [Color(0x99000000), Color(0x00000000)],
+                  colors: [Color(0xC2000000), Color(0x00000000)],
                 ),
               ),
             ),
             Positioned(
               left: 14,
-              right: 14,
-              bottom: 14,
-              child: Text(
-                label,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.3,
-                    height: 1.1),
+              right: 12,
+              bottom: 13,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.3,
+                        height: 1.1,
+                        shadows: [
+                          Shadow(color: Color(0x8C000000), blurRadius: 8)
+                        ]),
+                  ),
+                  const SizedBox(height: 3),
+                  Row(children: [
+                    Text('Browse',
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.2,
+                            color: Colors.white.withValues(alpha: 0.62))),
+                    const SizedBox(width: 2),
+                    Icon(Icons.chevron_right_rounded,
+                        size: 14, color: Colors.white.withValues(alpha: 0.62)),
+                  ]),
+                ],
               ),
             ),
-            if (focused)
-              Container(
+            // 6 — inner hairline gives the tile an edge against dark artwork;
+            // focus swaps it for Aurora's white ring.
+            IgnorePointer(
+              child: DecoratedBox(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.white, width: 2.4),
+                  border: Border.all(
+                      color: focused ? Colors.white : const Color(0x24FFFFFF),
+                      width: focused ? 2.4 : 1),
                 ),
               ),
+            ),
           ]),
         ),
       ),
     );
   }
+}
 
-  Widget _blob(double size, Color color) => Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-      );
+/// Draws a category's motif: white, low-alpha geometry that gives each tile a
+/// distinct texture without needing any artwork to download. Cheap by design —
+/// a handful of strokes per tile, no blurs, no shaders.
+class _MotifPainter extends CustomPainter {
+  const _MotifPainter(this.motif);
+  final _Motif motif;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width, h = size.height;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..color = Colors.white.withValues(alpha: 0.16)
+      ..strokeWidth = 1.2;
+    final fill = Paint()..color = Colors.white.withValues(alpha: 0.07);
+
+    switch (motif) {
+      case _Motif.rays:
+        // Concentric arcs blasting out of the bottom-left corner.
+        final o = Offset(w * 0.06, h * 1.02);
+        for (var i = 1; i <= 6; i++) {
+          canvas.drawCircle(o, w * 0.22 * i, stroke);
+        }
+      case _Motif.orbit:
+        // Tilted rings — planetary, for sci-fi / mystery.
+        canvas.save();
+        canvas.translate(w * 0.62, h * 0.42);
+        canvas.rotate(-0.42);
+        for (var i = 1; i <= 3; i++) {
+          canvas.drawOval(
+              Rect.fromCenter(
+                  center: Offset.zero, width: w * 0.5 * i, height: w * 0.19 * i),
+              stroke);
+        }
+        canvas.drawCircle(Offset.zero, w * 0.13, fill);
+        canvas.restore();
+      case _Motif.wave:
+        // Stacked sine bands rolling across the lower half.
+        for (var band = 0; band < 4; band++) {
+          final path = Path();
+          final baseY = h * (0.42 + band * 0.16);
+          path.moveTo(0, baseY);
+          for (var x = 0.0; x <= w; x += w / 12) {
+            path.quadraticBezierTo(
+              x + w / 24,
+              baseY + (band.isEven ? -h * 0.055 : h * 0.055),
+              x + w / 12,
+              baseY,
+            );
+          }
+          canvas.drawPath(path, stroke);
+        }
+      case _Motif.grid:
+        // Diagonal hairline weave — archival, for docs / history / war.
+        for (var i = -1; i < 10; i++) {
+          final x = w * 0.16 * i;
+          canvas.drawLine(Offset(x, 0), Offset(x + h * 0.55, h), stroke);
+        }
+      case _Motif.bloom:
+        // Overlapping soft discs — playful, for comedy / family / romance.
+        canvas.drawCircle(Offset(w * 0.78, h * 0.16), w * 0.34, fill);
+        canvas.drawCircle(Offset(w * 0.24, h * 0.34), w * 0.26, fill);
+        canvas.drawCircle(Offset(w * 0.62, h * 0.52), w * 0.20, fill);
+        canvas.drawCircle(Offset(w * 0.78, h * 0.16), w * 0.34, stroke);
+        canvas.drawCircle(Offset(w * 0.24, h * 0.34), w * 0.26, stroke);
+      case _Motif.shafts:
+        // Hard-edged light shafts raking across — tense, for horror/thriller.
+        for (var i = 0; i < 4; i++) {
+          final x = w * (0.1 + i * 0.26);
+          final path = Path()
+            ..moveTo(x, 0)
+            ..lineTo(x + w * 0.1, 0)
+            ..lineTo(x + w * 0.1 - h * 0.42, h)
+            ..lineTo(x - h * 0.42, h)
+            ..close();
+          canvas.drawPath(path, fill);
+        }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MotifPainter old) => old.motif != motif;
 }
 
 // ---------------------------------------------------------------------------

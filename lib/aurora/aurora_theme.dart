@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// Marketing/version string for the 1.1 line. Keep in sync with pubspec.yaml.
-const kLumenVersion = '1.5.4';
+const kLumenVersion = '1.6.0';
 
 /// Aurora — the Lumen 1.1 design language.
 ///
@@ -52,11 +52,33 @@ class Aurora {
   static const curve = Curves.easeOutCubic;
 
   // ---- Layout --------------------------------------------------------------
-  /// Phone-class layout: narrow enough that the 10-foot top bar becomes an
-  /// auto-hiding mobile app bar and the hero simplifies. Matches the top-bar
-  /// label/icon cutoff so "compact" reads the same everywhere.
+  /// Phone-class layout: narrow enough that the 10-foot top bar becomes a
+  /// slim header + floating bottom tab bar and the hero simplifies. Matches
+  /// the top-bar label/icon cutoff so "compact" reads the same everywhere.
   static bool isCompact(BuildContext context) =>
       MediaQuery.of(context).size.width < 760;
+
+  /// A phone held upright: taller than it is wide, and narrow. The hero and
+  /// the Live page both change shape here — a 16:9 banner and a two-column
+  /// split are both wrong in a portrait viewport.
+  static bool isPortrait(BuildContext context) {
+    final s = MediaQuery.of(context).size;
+    return s.height > s.width && s.width < 760;
+  }
+
+  /// Vertical space every page must leave clear at the top for the navigation
+  /// bar. Compact draws a slim header (brand + search + settings) over the
+  /// status bar; the 10-foot layout keeps the full tab bar.
+  static double topPad(BuildContext context) => isCompact(context)
+      ? MediaQuery.of(context).padding.top + 54
+      : 88;
+
+  /// Vertical space a scrolling page must leave clear at the bottom. On phones
+  /// the floating tab bar hovers there; on the 10-foot layout it's just the
+  /// usual end-of-page breathing room.
+  static double bottomPad(BuildContext context) => isCompact(context)
+      ? MediaQuery.of(context).padding.bottom + 96
+      : 72;
 
   /// Horizontal page gutter. Scales down on narrow (phone) layouts.
   static double margin(BuildContext context) =>

@@ -75,6 +75,7 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
     }
     final governs = ref.watch(auroraTmdbGovernsProvider).valueOrNull ?? false;
     final margin = Aurora.margin(context);
+    final compact = Aurora.isCompact(context);
     final isMovies = widget.kind == StreamKind.movie;
 
     return LayoutBuilder(builder: (context, box) {
@@ -90,40 +91,65 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
         slivers: [
           SliverToBoxAdapter(
             child: Padding(
-              padding: EdgeInsets.fromLTRB(margin, 92, margin, 6),
-              child: Row(children: [
-                Text(isMovies ? 'Movies' : 'TV Shows',
-                    style: Aurora.display.copyWith(fontSize: 30)),
-                const SizedBox(width: 12),
-                if (governs)
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Aurora.glass,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Aurora.hairline),
-                    ),
-                    child: const Text('TMDB',
-                        style: TextStyle(
-                            fontSize: 9.5,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 1.2,
-                            color: Color(0xFF01B4E4))),
+              padding: EdgeInsets.fromLTRB(margin, Aurora.topPad(context) + 12, margin, 6),
+              child: Builder(builder: (context) {
+                final heading = Row(mainAxisSize: MainAxisSize.min, children: [
+                  Flexible(
+                    child: Text(isMovies ? 'Movies' : 'TV Shows',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Aurora.display
+                            .copyWith(fontSize: compact ? 26 : 30)),
                   ),
-                const Spacer(),
+                  const SizedBox(width: 12),
+                  if (governs)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Aurora.glass,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Aurora.hairline),
+                      ),
+                      child: const Text('TMDB',
+                          style: TextStyle(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1.2,
+                              color: Color(0xFF01B4E4))),
+                    ),
+                ]);
                 // Filter the category / genre chips, mirroring classic's
                 // "Search categories".
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 300),
-                  child: AuroraSearchField(
-                    controller: _catSearch,
-                    hint: governs ? 'Search genres' : 'Search categories',
-                    onChanged: (v) =>
-                        setState(() => _catQuery = v.trim().toLowerCase()),
+                final field = AuroraSearchField(
+                  controller: _catSearch,
+                  hint: governs ? 'Search genres' : 'Search categories',
+                  onChanged: (v) =>
+                      setState(() => _catQuery = v.trim().toLowerCase()),
+                );
+                // A phone has no room for title and field side by side — the
+                // fixed-width field used to push the heading off the edge.
+                if (compact) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      heading,
+                      const SizedBox(height: 12),
+                      field,
+                    ],
+                  );
+                }
+                return Row(children: [
+                  // Flexible so the inner Row gets bounded constraints (its
+                  // own Flexible title needs them).
+                  Flexible(child: heading),
+                  const Spacer(),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 300),
+                    child: field,
                   ),
-                ),
-              ]),
+                ]);
+              }),
             ),
           ),
           SliverToBoxAdapter(
@@ -135,7 +161,7 @@ class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
             ),
           ),
           SliverPadding(
-            padding: EdgeInsets.fromLTRB(margin, 14, margin, 40),
+            padding: EdgeInsets.fromLTRB(margin, 14, margin, Aurora.bottomPad(context)),
             sliver: governs
                 ? _TmdbGrid(kind: widget.kind, cols: cols, gap: gap, cellH: cellH,
                     cellW: cellW)

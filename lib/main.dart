@@ -21,6 +21,9 @@ void main() {
   MediaKit.ensureInitialized();
   // Track keyboard/remote vs pointer so focus highlights only show for the former.
   InputMode.install();
+  // Keep the reinstall vault fresh whenever an account/API setting changes,
+  // wherever it changed from.
+  CredentialVault.instance.installAutoSave();
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,

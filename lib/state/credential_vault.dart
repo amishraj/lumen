@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -9,11 +10,25 @@ import '../data/repositories/library_repository.dart';
 import 'providers.dart';
 
 /// Small credential vault so a reinstall on the same device restores the
-/// user's setup. The file lives in the app documents dir, which Android Auto
-/// Backup snapshots to the user's Google account (encrypted with the device
-/// lock on Android 9+, never readable by other apps or us). Backup rules
-/// include ONLY this file — the multi-MB channel DB is excluded and simply
-/// re-syncs from the provider after restore.
+/// user's setup.
+///
+/// It is written to every location the platform gives us, because no single
+/// one survives everywhere:
+///
+/// 1. **App documents** — snapshotted by Android Auto Backup to the user's
+///    Google account (encrypted with the device lock on Android 9+, never
+///    readable by other apps or us) and by iOS/macOS device backups. Backup
+///    rules include ONLY this file; the multi-MB channel DB is excluded and
+///    simply re-syncs from the provider after restore.
+/// 2. **`Android/media/<package>/` on shared storage** (Android only) — the
+///    one directory an app owns that the system does *not* delete on
+///    uninstall, and which needs no storage permission. This is what makes
+///    "delete and reinstall the TV APK" keep your setup: Fire TV and other
+///    non-Google-certified Android TV devices have no Google backup transport
+///    at all, so path 1 does nothing there and every reinstall started from
+///    scratch.
+///
+/// On restore the newest copy wins, so whichever survived is the one used.
 ///
 /// Contents: sources (incl. Xtream credentials) + the account/API settings.
 /// Nothing here ever leaves the device except via the OS backup mechanism.
@@ -39,11 +54,39 @@ class CredentialVault {
     'home_rows',
     'sidebar_width',
     'ui_experience',
+    'seek_previews',
   ];
 
-  Future<File> _file() async {
+  Future<File> _primaryFile() async {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/$_fileName');
+  }
+
+  /// The uninstall-surviving copy: `/…/Android/media/<package>/lumen_vault.json`.
+  ///
+  /// path_provider hands back `/…/Android/data/<package>/files`, which IS wiped
+  /// on uninstall; the sibling `media` tree is not, and the owning package can
+  /// read and write it without requesting any storage permission. Derived by
+  /// string surgery rather than a new plugin dependency — and every failure
+  /// mode simply returns null, leaving the documents copy as the only one.
+  Future<File?> _externalFile() async {
+    if (!Platform.isAndroid) return null;
+    try {
+      final dir = await getExternalStorageDirectory();
+      if (dir == null) return null;
+      const marker = '/Android/data/';
+      final path = dir.path;
+      final i = path.indexOf(marker);
+      if (i < 0) return null;
+      final root = path.substring(0, i); // /storage/emulated/0
+      final pkg = path.substring(i + marker.length).split('/').first;
+      if (pkg.isEmpty) return null;
+      final mediaDir = Directory('$root/Android/media/$pkg');
+      if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
+      return File('${mediaDir.path}/$_fileName');
+    } catch (_) {
+      return null; // no shared storage on this device — documents copy stands
+    }
   }
 
   /// Snapshot the current sources + settings into the vault. Cheap (a few KB)
@@ -59,6 +102,8 @@ class CredentialVault {
       }
       final payload = jsonEncode({
         'v': 1,
+        // Stamped so restore can pick the freshest copy when both survive.
+        'at': DateTime.now().millisecondsSinceEpoch,
         'playlists': [
           for (final p in playlists)
             {
@@ -72,26 +117,31 @@ class CredentialVault {
         ],
         'settings': settings,
       });
-      final f = await _file();
-      await f.writeAsString(payload, flush: true);
+      for (final f in [await _primaryFile(), await _externalFile()]) {
+        if (f == null) continue;
+        try {
+          await f.writeAsString(payload, flush: true);
+        } catch (_) {/* one location failing must not lose the other */}
+      }
     } catch (_) {/* backup is best-effort — never disturb the app */}
   }
 
-  /// Fresh install with a restored backup: repopulate sources + settings.
-  /// Returns true when anything was restored (caller then re-syncs).
+  /// Fresh install with a surviving backup: repopulate sources + settings.
+  ///
+  /// Returns true when at least one **source** was restored — that's what the
+  /// boot path is asking, since it decides whether to leave onboarding. A
+  /// settings-only vault still applies (keys and tokens are back), but the
+  /// user is sent to onboarding to add a source, rather than to a splash
+  /// screen waiting for a playlist list that will never fill.
   Future<bool> restore(LibraryRepository repo) async {
+    final data = await _newestPayload();
+    if (data == null) return false;
+    var restoredPlaylist = false;
     try {
-      final f = await _file();
-      if (!await f.exists()) return false;
-      final data = jsonDecode(await f.readAsString());
-      if (data is! Map) return false;
-
-      var restored = false;
       final settings = data['settings'];
       if (settings is Map) {
         for (final e in settings.entries) {
           await repo.setSetting('${e.key}', '${e.value}');
-          restored = true;
         }
       }
       final lists = data['playlists'];
@@ -108,18 +158,58 @@ class CredentialVault {
             epgUrl: p['epg_url'] as String?,
             createdAt: DateTime.now().millisecondsSinceEpoch,
           ));
-          restored = true;
+          restoredPlaylist = true;
         }
       }
-      return restored;
+      return restoredPlaylist;
     } catch (_) {
-      return false;
+      return restoredPlaylist;
     }
+  }
+
+  Timer? _debounce;
+
+  /// Re-snapshot shortly after a vault-relevant setting changes, coalescing
+  /// bursts (connecting Trakt writes three keys back to back).
+  void _scheduleSave(LibraryRepository repo) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(seconds: 2), () => save(repo));
+  }
+
+  /// Keep the vault current automatically: any write to a key the vault
+  /// carries schedules a fresh snapshot. Installed once at startup.
+  void installAutoSave() {
+    LibraryRepository.onSettingChanged = (repo, key) {
+      if (!_settingsKeys.contains(key)) return;
+      _scheduleSave(repo);
+    };
+  }
+
+  /// The most recently written surviving copy, or null when there is none.
+  Future<Map?> _newestPayload() async {
+    Map? best;
+    var bestAt = -1;
+    for (final f in [await _primaryFile(), await _externalFile()]) {
+      if (f == null) continue;
+      try {
+        if (!await f.exists()) continue;
+        final decoded = jsonDecode(await f.readAsString());
+        if (decoded is! Map) continue;
+        // Vaults written before stamping carry no 'at'; treat them as oldest
+        // so any stamped copy wins, but still use one if it's all there is.
+        final at = (decoded['at'] as num?)?.toInt() ?? 0;
+        if (best == null || at > bestAt) {
+          best = decoded;
+          bestAt = at;
+        }
+      } catch (_) {/* corrupt or unreadable — try the next location */}
+    }
+    return best;
   }
 }
 
 /// Ran once when the app starts with an empty library: restores the vault if
-/// a backup put one on disk. true = something was restored.
+/// a backup put one on disk. true = a source was restored.
 final vaultRestoreProvider = FutureProvider<bool>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final existing = await repo.playlists();

@@ -9,6 +9,13 @@ import '../models/models.dart';
 import '../../state/providers.dart';
 import '../../ui/title_utils.dart';
 
+/// How many of Trakt's in-progress episodes get seeded into the local
+/// `episode_progress` table per pass. Streaming-service integrations (Netflix
+/// and friends) can push an account's in-progress list well past a hundred
+/// rows; only the most recent handful are ever surfaced, so only those are
+/// worth writing and re-grouping on every home build.
+const kResumeSeedLimit = 40;
+
 /// Minimal Trakt client using the OAuth **device flow** — ideal for a
 /// sideloaded app: the user enters a short code at trakt.tv/activate, no
 /// redirect URI needed. Credentials + tokens are persisted in app_settings.
@@ -448,16 +455,117 @@ class TraktService {
   /// scrobble so the cached playback snapshot reflects the session that just
   /// ended — without this, "continue watching" overlays could stay up to six
   /// hours behind what the user just watched.
-  Future<void> refreshPlaybackCache() async {
-    if (!await isConnected()) return;
+  ///
+  /// Returns true when the payload actually differs from what was cached, so
+  /// callers can skip invalidating providers on a no-op refresh.
+  Future<bool> refreshPlaybackCache() async {
+    if (!await isConnected()) return false;
     try {
       final res =
           await _authGet('$_api/sync/playback', queryParameters: {'limit': '1000'});
-      if (res.statusCode != 200) return;
+      if (res.statusCode != 200) return false;
       final data = res.data is String ? jsonDecode(res.data) : res.data;
+      final fresh = jsonEncode(data);
+      var same = false;
+      final old = await _repo.getSetting('trakt:cache:playback');
+      if (old != null && old.isNotEmpty) {
+        try {
+          same = jsonEncode((jsonDecode(old) as Map)['v']) == fresh;
+        } catch (_) {/* corrupt — treat as changed */}
+      }
       await _repo.setSetting('trakt:cache:playback',
           jsonEncode({'at': DateTime.now().millisecondsSinceEpoch, 'v': data}));
-    } catch (_) {/* best effort */}
+      return !same;
+    } catch (_) {
+      return false; // best effort
+    }
+  }
+
+  // ---- Per-title sync ------------------------------------------------------
+
+  /// When each title was last reconciled with Trakt, so opening and closing a
+  /// page repeatedly (or bouncing through a series' episodes) can't turn into
+  /// a request storm on a slow TV box.
+  static final Map<String, int> _titleSyncedAt = {};
+  static const _titleSyncCooldown = Duration(seconds: 25);
+
+  /// How stale the cached resume points must be before *opening* a title
+  /// re-pulls them.
+  static const _playbackMaxAge = Duration(minutes: 2);
+
+  Future<bool> _playbackCacheOlderThan(Duration d) async {
+    try {
+      final raw = await _repo.getSetting('trakt:cache:playback');
+      if (raw == null || raw.isEmpty) return true;
+      final at = ((jsonDecode(raw) as Map)['at'] as num?)?.toInt() ?? 0;
+      return DateTime.now().millisecondsSinceEpoch - at > d.inMilliseconds;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// Reconcile ONE title with Trakt, on the way into or out of its page.
+  ///
+  /// The app-open refresh is a whole-account pull on a schedule; this is the
+  /// targeted version — it costs one or two small requests and makes the title
+  /// you are actually looking at correct *now*. That matters most on TV boxes,
+  /// where the background pull can be minutes behind by the time you've
+  /// navigated somewhere.
+  ///
+  /// * `push` (leaving a title) first drains the write outbox, so anything
+  ///   just watched reaches Trakt before we read back.
+  /// * Resume points come from a single `/sync/playback` pull.
+  /// * For shows the per-show watched-progress cache is dropped so the next
+  ///   `watchedEpisodesFor` re-reads it — that's what keeps episode ticks
+  ///   honest after watching on another device.
+  ///
+  /// Returns true when something changed and the caller should refresh its
+  /// providers. Rate-limited per title; never throws.
+  Future<bool> syncTitle(
+    String title, {
+    required bool isShow,
+    int? year,
+    bool push = false,
+    bool force = false,
+  }) async {
+    if (!await isConnected()) return false;
+    final key = '${isShow ? 's' : 'm'}:${title.toLowerCase().trim()}';
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (!force) {
+      final last = _titleSyncedAt[key] ?? 0;
+      if (now - last < _titleSyncCooldown.inMilliseconds) return false;
+    }
+    _titleSyncedAt[key] = now;
+    try {
+      // Local watch events must land on Trakt BEFORE we read state back, or a
+      // just-finished episode reads as still-unwatched and the page flickers
+      // back to its old marks.
+      if (push) await flushOutbox();
+      // Opening a title only re-pulls resume points when the snapshot has
+      // actually gone stale — browsing through several titles in a minute
+      // shouldn't refetch a 100+ entry playback list each time. Leaving one
+      // always refetches: we just changed the state ourselves.
+      final changed = (push || await _playbackCacheOlderThan(_playbackMaxAge))
+          ? await refreshPlaybackCache()
+          : false;
+      var refreshedEpisodes = false;
+      if (isShow) {
+        final ids = await idsFor(title, year: year, isShow: true);
+        final showId = ids?['trakt'] ?? ids?['slug'];
+        if (showId != null) {
+          // Drop the 6h cache and re-read now — one request for one show.
+          await _repo.setSetting('trakt:cache:show_progress:$showId', null);
+          await watchedEpisodesFor(title, year: year);
+          refreshedEpisodes = true;
+        }
+      }
+      // A show always reports true: its episode marks were just re-read, and
+      // the provider that renders them has to be told to pick them up. The
+      // cooldown above is what keeps that from being expensive.
+      return changed || refreshedEpisodes;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _fetchUsername() async {
@@ -744,6 +852,7 @@ class TraktService {
           // on the SHOW title, so read that — reading e[type] here grabbed the
           // episode title ("Ozymandias"), which never matched the library and
           // silently dropped every show.
+          final source = _sourceOf(e);
           if ('${e['type']}' == 'episode' || e['show'] is Map) {
             final show = e['show'];
             final ep = e['episode'];
@@ -757,6 +866,7 @@ class TraktService {
               season: ep is Map ? (ep['season'] as num?)?.toInt() : null,
               episode: ep is Map ? (ep['number'] as num?)?.toInt() : null,
               pausedAt: pausedAt,
+              source: source,
             ));
           } else {
             final node = e['movie'];
@@ -768,6 +878,7 @@ class TraktService {
                     type: 'movie'),
                 progress: prog / 100.0,
                 pausedAt: pausedAt,
+                source: source,
               ));
             }
           }
@@ -779,6 +890,29 @@ class TraktService {
     }
   }
 
+  /// Which outside service produced a `/sync/playback` row, when Trakt says so.
+  ///
+  /// Trakt's documented playback payload carries no provider field — resume
+  /// points scrobbled by a player are anonymous. But rows imported by a
+  /// streaming-service connection (the Netflix integration, and whatever
+  /// follows it) are tagged, and Trakt has moved that tag around, so this
+  /// sniffs the plausible spellings rather than hard-coding one. A row that
+  /// declares nothing is treated as first-party — never guessed at.
+  static const _sourceKeys = ['source', 'provider', 'service', 'app', 'via'];
+
+  static String? _sourceOf(Map e) {
+    for (final k in _sourceKeys) {
+      final v = e[k];
+      if (v is String && v.trim().isNotEmpty) return v.trim();
+      // Some shapes nest it: {"source": {"name": "Netflix"}}.
+      if (v is Map) {
+        final n = v['name'] ?? v['title'] ?? v['slug'];
+        if (n is String && n.trim().isNotEmpty) return n.trim();
+      }
+    }
+    return null;
+  }
+
   /// Seed the local per-episode progress table from Trakt's cross-device resume
   /// points. A show the user is mid-way through on another device — or before a
   /// reinstall — then surfaces in Continue Watching through the exact same local
@@ -786,15 +920,26 @@ class TraktService {
   /// because relinking Trakt re-seeds it. Never overwrites a fresher local row
   /// (compared on Trakt's `paused_at`) or one already finished locally. Returns
   /// true when at least one row was written, so the caller can re-emit the row.
-  Future<bool> hydrateEpisodeProgress() async {
+  Future<bool> hydrateEpisodeProgress({int limit = kResumeSeedLimit}) async {
     if (!await isConnected()) return false;
     try {
       final resume = await playback();
+      // Newest checkpoints first, then capped. Trakt's streaming-service
+      // integrations can push an account's in-progress list into the hundreds;
+      // seeding every one of them writes hundreds of rows into
+      // `episode_progress` on every open, and Continue Watching then has to
+      // group all of them on every build. Only the recent tail is ever shown,
+      // so only the recent tail is worth storing.
+      final recent = [...resume]
+        ..sort((a, b) => b.pausedAt.compareTo(a.pausedAt));
       final existing = await _repo.db.episodeProgressAll();
       var changed = false;
-      for (final p in resume) {
+      var seeded = 0;
+      for (final p in recent) {
+        if (seeded >= limit) break;
         if (!p.isShow || p.season == null || p.episode == null) continue;
         if (p.progress <= 0.02 || p.progress >= 0.97) continue;
+        seeded++;
         final ek =
             episodeKey(cleanTitle(p.item.title).title, p.season!, p.episode!);
         final have = existing[ek];
@@ -1150,14 +1295,27 @@ class TraktPlayback {
   final int? season; // set for episode resume points
   final int? episode; // set for episode resume points
   final int pausedAt; // Trakt paused_at in ms since epoch (0 if unknown)
+
+  /// Where the entry came from, when Trakt says. Trakt's own scrobbles carry
+  /// no provider, but rows synced in by a streaming-service connection (the
+  /// Netflix integration and friends) identify themselves — see
+  /// [TraktService._sourceOf] for the keys we look at. null = "Trakt didn't
+  /// tell us", which we treat as first-party.
+  final String? source;
+
   const TraktPlayback({
     required this.item,
     required this.progress,
     this.season,
     this.episode,
     this.pausedAt = 0,
+    this.source,
   });
   bool get isShow => item.type == 'show';
+
+  /// True when this resume point was imported from an outside service rather
+  /// than scrobbled by a player.
+  bool get isExternal => source != null && source!.isNotEmpty;
 }
 
 /// One line of the Trakt connectivity sanity check.

@@ -35,7 +35,8 @@ class AuroraSettingsPage extends ConsumerWidget {
       builder: (scroll) => AuroraRowScope(
         child: ListView(
       controller: scroll,
-      padding: EdgeInsets.fromLTRB(margin, 92, margin, 64),
+      padding: EdgeInsets.fromLTRB(margin, Aurora.topPad(context) + 12, margin,
+          Aurora.bottomPad(context)),
       children: [
         Text('Settings', style: Aurora.display.copyWith(fontSize: 30)),
         ConstrainedBox(

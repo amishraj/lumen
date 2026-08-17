@@ -121,7 +121,7 @@ class AuroraSportsPage extends ConsumerWidget {
         child: CustomScrollView(controller: scroll, slivers: [
         SliverToBoxAdapter(
           child: Padding(
-            padding: EdgeInsets.fromLTRB(margin, 92, margin, 0),
+            padding: EdgeInsets.fromLTRB(margin, Aurora.topPad(context) + 12, margin, 0),
             child:
                 Text('Sports', style: Aurora.display.copyWith(fontSize: 30)),
           ),
@@ -193,7 +193,7 @@ class AuroraSportsPage extends ConsumerWidget {
               childCount: buckets.length,
             ),
           ),
-        const SliverToBoxAdapter(child: SizedBox(height: 72)),
+        SliverToBoxAdapter(child: SizedBox(height: Aurora.bottomPad(context))),
       ]),
       ),
     );

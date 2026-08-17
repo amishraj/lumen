@@ -445,11 +445,22 @@ final cwHiddenRevProvider = StateProvider<int>((ref) => 0);
 /// several languages/qualities collapses to ONE Continue Watching card — two
 /// url-keyed variants was what showed two dismiss ✕s — and dismissing hides
 /// every variant of that title.
-String cwDismissKey(StreamItem item) {
-  final norm = TitleIndex.normalize(item.name);
-  final base = norm.isEmpty ? item.name.toLowerCase() : norm;
-  return item.kind == StreamKind.series ? 'show:$base' : 'movie:$base';
+String cwDismissKey(StreamItem item) => cwKeyForTitle(item.name, item.kind);
+
+/// The same key from a bare title — so a Trakt entry ("Breaking Bad") and the
+/// library row it corresponds to ("EN - Breaking Bad (2008) FHD") land on one
+/// key without needing a StreamItem to exist first.
+String cwKeyForTitle(String name, StreamKind kind) {
+  final norm = TitleIndex.normalize(name);
+  final base = norm.isEmpty ? name.toLowerCase() : norm;
+  return kind == StreamKind.series ? 'show:$base' : 'movie:$base';
 }
+
+/// How many Continue Watching entries a home/My Stuff rail shows. Trakt's
+/// streaming-service integrations can take an account's in-progress list past
+/// a hundred titles; a rail that long is neither browsable nor cheap. The rest
+/// stay one tap away on the dedicated Continue Watching page.
+const kContinueWatchingRailLimit = 20;
 
 /// key → dismissed-at ms. Kept as a map (not a set) so replaying something
 /// after dismissing it resurfaces the row — newer activity wins.
@@ -605,9 +616,10 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
       // Movies: cross-device resume points the library carries but this device
       // hasn't touched — matched movie-only so a title shared with a show can't
       // cross-wire. Shows are handled above, not here.
+      final playback = await svc.playback();
       final extras = <StreamItem>[];
       final xKeys = <String>{};
-      for (final p in (await svc.playback()).take(20)) {
+      for (final p in playback.take(kContinueWatchingRailLimit)) {
         if (p.isShow) continue;
         final hit = index.match(p.item.title, kind: StreamKind.movie);
         if (hit == null) continue;
@@ -619,13 +631,91 @@ final continueWatchingProvider = FutureProvider<List<StreamItem>>((ref) async {
       }
       final enc = encodeStreamItems(extras);
       if (enc != raw) await repo.setSetting(extrasKey, enc);
+
+      // Record which entries Trakt attributes to an outside streaming service
+      // so the UI can shelve them separately. Written as a key set in the same
+      // key space as dismissal, so it matches whether an entry ended up as a
+      // library row or a synthetic one.
+      final extEnc = _encodeExternal(playback);
+      final extOld = await repo.getSetting(_cwExternalKey(plId));
+      if (extEnc != extOld) await repo.setSetting(_cwExternalKey(plId), extEnc);
+
       // Re-emit if movie extras changed OR we seeded new show progress (the
       // seeded rows are read from episode_progress on the next build). Both are
       // deterministic, so this settles after one pass — no flicker loop.
-      if (enc != raw || seeded) ref.invalidateSelf();
+      if (enc != raw || seeded || extEnc != extOld) ref.invalidateSelf();
     } catch (_) {/* offline / not connected — local list already shown */}
   }());
   return result;
+});
+
+String _cwExternalKey(int plId) => 'home:snap:$plId:cw_external';
+
+/// Canonical (sorted) encoding of the externally-sourced resume points, so the
+/// byte-compare that guards the write only fires on a real change.
+String _encodeExternal(List<TraktPlayback> playback) {
+  final keys = <String>{};
+  final labels = <String, int>{};
+  for (final p in playback) {
+    if (!p.isExternal) continue;
+    keys.add(cwKeyForTitle(
+        p.item.title, p.isShow ? StreamKind.series : StreamKind.movie));
+    final l = p.source!;
+    labels[l] = (labels[l] ?? 0) + 1;
+  }
+  if (keys.isEmpty) return '';
+  // The commonest source names the section ("Continue on Netflix").
+  final label = (labels.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value)))
+      .first
+      .key;
+  return jsonEncode({'label': label, 'keys': keys.toList()..sort()});
+}
+
+/// Continue Watching, split into what you watched *here* and what an outside
+/// service (Trakt's Netflix integration and friends) synced in.
+///
+/// Trakt's documented playback payload carries no provider field, so on most
+/// accounts `external` is empty and `own` is simply the whole list — the split
+/// lights up on its own if and when Trakt tags those rows. Either way the
+/// rails cap at [kContinueWatchingRailLimit]; the full list lives on the
+/// dedicated Continue Watching page.
+typedef ContinueWatchingSplit = ({
+  List<StreamItem> own,
+  List<StreamItem> external,
+  String? externalLabel,
+});
+
+final continueWatchingSplitProvider =
+    FutureProvider<ContinueWatchingSplit>((ref) async {
+  final all = await ref.watch(continueWatchingProvider.future);
+  final pl = ref.watch(activePlaylistProvider);
+  if (pl?.id == null || all.isEmpty) {
+    return (own: all, external: const <StreamItem>[], externalLabel: null);
+  }
+  final repo = await ref.watch(repositoryProvider.future);
+  final raw = await repo.getSetting(_cwExternalKey(pl!.id!));
+  if (raw == null || raw.isEmpty) {
+    return (own: all, external: const <StreamItem>[], externalLabel: null);
+  }
+  Set<String> keys;
+  String? label;
+  try {
+    final m = jsonDecode(raw) as Map<String, dynamic>;
+    label = m['label'] as String?;
+    keys = {for (final k in (m['keys'] as List? ?? const [])) '$k'};
+  } catch (_) {
+    return (own: all, external: const <StreamItem>[], externalLabel: null);
+  }
+  if (keys.isEmpty) {
+    return (own: all, external: const <StreamItem>[], externalLabel: null);
+  }
+  final own = <StreamItem>[];
+  final external = <StreamItem>[];
+  for (final it in all) {
+    (keys.contains(cwDismissKey(it)) ? external : own).add(it);
+  }
+  return (own: own, external: external, externalLabel: label);
 });
 
 /// Set of library item ids the user has watched — locally and (synced once an

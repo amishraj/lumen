@@ -48,6 +48,7 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
   @override
   Widget build(BuildContext context) {
     final margin = Aurora.margin(context);
+    final compact = Aurora.isCompact(context);
     final q = ref.watch(searchQueryProvider).trim();
     final grouped = ref.watch(groupedSearchProvider);
     final posterW = Aurora.posterWidth(context);
@@ -56,12 +57,18 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
     return AuroraRowScope(
       child: Column(children: [
       Padding(
-        padding: EdgeInsets.fromLTRB(margin, 88, margin, 4),
+        // Cleared from the nav bar by the shared inset — the old fixed 88px
+        // was taller than the phone header AND shorter than the wide tab bar,
+        // so the field ended up clipped on small viewports.
+        padding: EdgeInsets.fromLTRB(margin, Aurora.topPad(context) + 8,
+            margin, 4),
         child: Row(children: [
           Expanded(
             child: AuroraSearchField(
               controller: _ctl,
-              hint: 'Search movies, shows & channels',
+              hint: compact
+                  ? 'Search movies, shows, channels'
+                  : 'Search movies, shows & channels',
               onChanged: _onChanged,
             ),
           ),
@@ -88,7 +95,8 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
                         text: 'No results for "$q"');
                   }
                   return ListView(
-                    padding: const EdgeInsets.only(bottom: 48),
+                    padding:
+                        EdgeInsets.only(bottom: Aurora.bottomPad(context)),
                     children: [
                       AuroraShelf<StreamItem>(
                         title: 'Live TV',
