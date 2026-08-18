@@ -150,11 +150,16 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
 
   // ---- Mobile-only: brightness control + screen lock (Netflix-style) ------
   /// Touch phone/tablet layout: the only place the brightness rail and lock
-  /// live. TV boxes are Android too but never compact, so they're excluded.
+  /// live. TV boxes are Android too but never phone-sized, so they're excluded.
+  ///
+  /// Judged on the *short* side, not `Aurora.isCompact`: a phone rotated into
+  /// landscape — which is how the player is actually watched — is ~900dp wide
+  /// and would fail a width test, which is exactly why the rail used to vanish
+  /// outside portrait.
   bool _phoneUi(BuildContext context) =>
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS) &&
-      Aurora.isCompact(context);
+      MediaQuery.of(context).size.shortestSide < 760;
 
   /// Notifier, not setState: a drag fires dozens of updates a second and only
   /// the rail may rebuild — never the whole player Stack.
@@ -2056,11 +2061,14 @@ class _FocusableTrackState extends State<_FocusableTrack> {
 }
 
 /// Netflix-style vertical brightness control for phones: a slim glass rail on
-/// the overlay's left. Drag anywhere on it (or tap a spot) to set the level;
-/// the icon tracks low/high. Pointer-only by design — it never takes D-pad
-/// focus, so TV traversal is untouched. Listens to a notifier so a drag only
-/// ever rebuilds this rail, not the player.
-class _BrightnessRail extends StatelessWidget {
+/// the overlay's left. Tap a spot to jump there, or drag anywhere on it — the
+/// drag is relative (delta-based, never snapping the level to wherever the
+/// finger landed) and the rail zooms while held so small movements read
+/// accurately. A thumb plus a live percentage pill track the value in real
+/// time, and each 5% step ticks a haptic. Pointer-only by design — it never
+/// takes D-pad focus, so TV traversal is untouched. Listens to a notifier so a
+/// drag only ever rebuilds this rail, not the player.
+class _BrightnessRail extends StatefulWidget {
   const _BrightnessRail({
     required this.brightness,
     required this.onChanged,
@@ -2071,62 +2079,266 @@ class _BrightnessRail extends StatelessWidget {
   final ValueChanged<double> onChanged;
   final VoidCallback onActivity;
 
-  static const _trackH = 168.0;
+  @override
+  State<_BrightnessRail> createState() => _BrightnessRailState();
+}
 
-  void _fromLocal(Offset local) {
-    onActivity();
-    onChanged(1 - (local.dy / _trackH).clamp(0.0, 1.0));
+class _BrightnessRailState extends State<_BrightnessRail> {
+  static const _iconH = 20.0;
+  static const _iconGap = 12.0;
+  static const _slop = 10.0; // forgiving tap area above/below the track
+  static const _hitW = 46.0; // finger target around the 6–11px track
+  static const _pillW = 54.0;
+
+  bool _dragging = false;
+  bool _readout = false; // percentage pill: on while dragging, lingers after
+  double _dragStart = 1.0; // level the drag began at
+  double _dragDy = 0; // accumulated finger travel
+  double _gain = 180; // pixels of travel for a full 0→1 sweep
+  int _lastTick = -1; // last 5% step that fired a haptic
+  Timer? _readoutTimer;
+
+  @override
+  void dispose() {
+    _readoutTimer?.cancel();
+    super.dispose();
+  }
+
+  /// Keep the value visible for a beat after the finger leaves, then fade.
+  void _fadeReadout() {
+    _readoutTimer?.cancel();
+    _readoutTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) setState(() => _readout = false);
+    });
+  }
+
+  void _set(double v) {
+    final nv = v.clamp(0.0, 1.0);
+    final tick = (nv * 20).round();
+    if (tick != _lastTick) {
+      _lastTick = tick;
+      HapticFeedback.selectionClick();
+    }
+    widget.onChanged(nv);
+  }
+
+  /// Tap: jump straight to the tapped level. [dy] is local to the hit box, so
+  /// the leading slop comes off before mapping onto the track.
+  void _tapAt(double dy, double trackH) {
+    widget.onActivity();
+    _readoutTimer?.cancel();
+    setState(() => _readout = true);
+    _lastTick = -1;
+    _set(1 - (dy - _slop) / trackH);
+    _fadeReadout();
+  }
+
+  void _dragBegin() {
+    widget.onActivity();
+    _readoutTimer?.cancel();
+    setState(() {
+      _dragging = true;
+      _readout = true;
+      _dragStart = widget.brightness.value.clamp(0.0, 1.0);
+      _dragDy = 0;
+      _lastTick = (_dragStart * 20).round();
+    });
+  }
+
+  void _dragUpdate(double dy) {
+    widget.onActivity();
+    _dragDy += dy;
+    // Relative to where the drag began: up brightens, down dims, and the level
+    // never teleports to the finger.
+    _set(_dragStart - _dragDy / _gain);
+  }
+
+  void _dragEnd() {
+    setState(() => _dragging = false);
+    _fadeReadout();
   }
 
   @override
   Widget build(BuildContext context) {
+    // Landscape phones are only ~400dp tall — size the rail off the viewport so
+    // it never outgrows the screen it floats on.
+    final avail = MediaQuery.of(context).size.height;
+    final restH = (avail * 0.38).clamp(76.0, 148.0);
+    final dragH = (avail * 0.56).clamp(restH, 208.0);
+    _gain = dragH; // one full track of travel == 0→100%
+
     return ExcludeFocus(
       child: ValueListenableBuilder<double>(
-        valueListenable: brightness,
-        builder: (context, value, _) =>
-            Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(
-            value >= 0.66
-                ? Icons.brightness_high_rounded
-                : value >= 0.33
-                    ? Icons.brightness_medium_rounded
-                    : Icons.brightness_low_rounded,
-            size: 19,
-            color: Colors.white,
-          ),
-          const SizedBox(height: 10),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTapDown: (d) => _fromLocal(d.localPosition),
-            onVerticalDragUpdate: (d) => _fromLocal(d.localPosition),
-            child: Container(
-              width: 34,
-              height: _trackH,
-              alignment: Alignment.center,
-              child: Container(
-                width: 6,
-                height: _trackH,
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  color: const Color(0x40FFFFFF),
-                  borderRadius: BorderRadius.circular(3),
+        valueListenable: widget.brightness,
+        builder: (context, raw, _) {
+          final value = raw.clamp(0.0, 1.0);
+          return TweenAnimationBuilder<double>(
+            tween: Tween<double>(begin: 0, end: _dragging ? 1 : 0),
+            duration: const Duration(milliseconds: 170),
+            curve: Curves.easeOutCubic,
+            builder: (context, t, _) {
+              final h = restH + (dragH - restH) * t; // the zoom
+              final w = 6.0 + 5.0 * t;
+              final thumb = 12.0 + 6.0 * t;
+              final boxH = dragH + _slop * 2 + _iconH + _iconGap;
+              final colH = h + _slop * 2 + _iconH + _iconGap;
+              // Where the thumb sits inside the fixed-height box, so the pill
+              // can ride alongside it.
+              final thumbY = (boxH - colH) / 2 +
+                  _iconH +
+                  _iconGap +
+                  _slop +
+                  (1 - value) * h;
+
+              return SizedBox(
+                height: boxH,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Column(mainAxisSize: MainAxisSize.min, children: [
+                      _icon(value, t),
+                      const SizedBox(height: _iconGap),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTapDown: (d) => _tapAt(d.localPosition.dy, h),
+                        onVerticalDragStart: (_) => _dragBegin(),
+                        onVerticalDragUpdate: (d) => _dragUpdate(d.delta.dy),
+                        onVerticalDragEnd: (_) => _dragEnd(),
+                        onVerticalDragCancel: _dragEnd,
+                        child: SizedBox(
+                          width: _hitW,
+                          height: h + _slop * 2,
+                          child: Center(
+                            child: _track(value, h, w, thumb, t),
+                          ),
+                        ),
+                      ),
+                    ]),
+                    // Readout only — never steals a tap from the video's
+                    // tap-to-toggle-controls underneath it.
+                    IgnorePointer(
+                      child: SizedBox(
+                        width: _pillW,
+                        height: boxH,
+                        child: Stack(clipBehavior: Clip.none, children: [
+                          Positioned(
+                            left: 8,
+                            top: thumbY - 13,
+                            child: _pill(value),
+                          ),
+                        ]),
+                      ),
+                    ),
+                  ],
                 ),
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: FractionallySizedBox(
-                    heightFactor: value.clamp(0.0, 1.0),
-                    child: const DecoratedBox(
-                      decoration: BoxDecoration(color: Colors.white),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _icon(double value, double t) => AnimatedScale(
+        scale: 1 + 0.14 * t,
+        duration: const Duration(milliseconds: 170),
+        curve: Curves.easeOutCubic,
+        child: Icon(
+          value >= 0.66
+              ? Icons.brightness_high_rounded
+              : value >= 0.33
+                  ? Icons.brightness_medium_rounded
+                  : Icons.brightness_low_rounded,
+          size: _iconH,
+          color: Colors.white,
+          shadows: const [Shadow(color: Colors.black54, blurRadius: 8)],
+        ),
+      );
+
+  /// Track + fill + thumb. The thumb is wider than the rail, so it lives in an
+  /// unclipped Stack above the (clipped) track.
+  Widget _track(double value, double h, double w, double thumb, double t) {
+    return SizedBox(
+      width: thumb + 6,
+      height: h,
+      child: Stack(clipBehavior: Clip.none, alignment: Alignment.center,
+          children: [
+            Container(
+              width: w,
+              height: h,
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                color: const Color(0x38FFFFFF),
+                borderRadius: BorderRadius.circular(w / 2),
+                border: Border.all(color: Aurora.hairline, width: 0.5),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black45, blurRadius: 10),
+                ],
+              ),
+              child: Align(
+                alignment: Alignment.bottomCenter,
+                child: FractionallySizedBox(
+                  heightFactor: value,
+                  child: const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.bottomCenter,
+                        end: Alignment.topCenter,
+                        colors: [Color(0xFFE8EDF7), Colors.white],
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-        ]),
-      ),
+            // The indicator that was missing: a knob pinned to the level, so
+            // the drag reads as movement and not just a growing bar.
+            Positioned(
+              bottom: value * h - thumb / 2,
+              child: Container(
+                width: thumb,
+                height: thumb,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    const BoxShadow(color: Colors.black54, blurRadius: 8),
+                    BoxShadow(
+                      color: Colors.white.withValues(alpha: 0.45 * t),
+                      blurRadius: 14,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ]),
     );
   }
+
+  Widget _pill(double value) => AnimatedOpacity(
+        opacity: _readout ? 1 : 0,
+        duration: const Duration(milliseconds: 160),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xE60C0E15),
+            borderRadius: BorderRadius.circular(13),
+            border: Border.all(color: Aurora.hairline),
+            boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 12)],
+          ),
+          child: Text(
+            '${(value * 100).round()}%',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              height: 1.35,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
+      );
 }
 
 /// YouTube-style ±30s indicator: a rounded glass badge that flashes on the
