@@ -33,7 +33,6 @@ dependencies:
   flutter_cache_manager: ^3.4.1
 
   # Misc UI
-  shimmer: ^3.0.0
 
   # Open the Trakt activation page in the browser (Kodi-style device auth)
   url_launcher: ^6.3.1

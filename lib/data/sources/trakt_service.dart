@@ -7,7 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../repositories/library_repository.dart';
 import '../models/models.dart';
 import '../../state/providers.dart';
-import '../../ui/title_utils.dart';
+import '../../shared/title_utils.dart';
 
 /// How many of Trakt's in-progress episodes get seeded into the local
 /// `episode_progress` table per pass. Streaming-service integrations (Netflix

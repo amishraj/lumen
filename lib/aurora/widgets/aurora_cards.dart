@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/models.dart';
 import '../../state/providers.dart';
-import '../../ui/title_utils.dart';
+import '../../shared/title_utils.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 import 'aurora_badges.dart';

@@ -5,10 +5,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../../data/sources/trakt_service.dart';
-import '../../../state/providers.dart';
-import '../../theme/lumen_theme.dart';
-import '../../widgets/tv_text_field.dart';
+import '../../data/sources/trakt_service.dart';
+import '../../state/providers.dart';
+import '../lumen_theme.dart';
+import '../widgets/tv_text_field.dart';
 
 /// Connect a Trakt account via the OAuth device flow.
 class TraktScreen extends ConsumerStatefulWidget {

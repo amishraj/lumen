@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../theme/lumen_theme.dart';
+import '../lumen_theme.dart';
 import 'focusable_item.dart';
 
 /// A TV/remote-friendly text field. In its resting state it's a *navigable

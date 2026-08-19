@@ -7,7 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/sources/realdebrid_service.dart';
 import '../../state/service_status.dart';
-import '../theme/lumen_theme.dart';
+import '../lumen_theme.dart';
 
 /// Trakt-style "enter a code" connect flow for Real-Debrid. Shows a short
 /// code, opens real-debrid.com/device in the browser, and polls until the

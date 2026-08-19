@@ -7,7 +7,7 @@ import '../../data/models/models.dart';
 import '../../data/sources/realdebrid_service.dart';
 import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
-import '../../ui/title_utils.dart';
+import '../../shared/title_utils.dart';
 import '../aurora_navigation.dart';
 import '../aurora_playback.dart';
 import '../aurora_providers.dart';

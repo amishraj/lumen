@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/sources/realdebrid_service.dart';
-import '../../ui/title_utils.dart';
+import '../../shared/title_utils.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 

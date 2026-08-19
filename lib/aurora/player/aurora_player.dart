@@ -17,7 +17,7 @@ import '../../state/live_quality.dart';
 import '../../state/playback_engine.dart';
 import '../../state/providers.dart';
 import '../../state/scrub_thumbs.dart';
-import '../../ui/title_utils.dart';
+import '../../shared/title_utils.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_badges.dart';

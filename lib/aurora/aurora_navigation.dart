@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/models/models.dart';
 import '../data/sources/trakt_service.dart';
 import '../state/providers.dart';
-import '../ui/title_utils.dart';
+import '../shared/title_utils.dart';
 import 'player/aurora_player.dart';
 import 'screens/aurora_detail.dart';
 import 'screens/aurora_series.dart';

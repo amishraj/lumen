@@ -1,4 +1,4 @@
-import '../ui/title_utils.dart';
+import '../shared/title_utils.dart';
 import 'models/models.dart';
 
 /// In-memory title → library-item index over the active source's movies and

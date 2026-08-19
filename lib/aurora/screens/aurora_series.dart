@@ -10,7 +10,7 @@ import '../../data/sources/tmdb_service.dart';
 import '../../data/sources/trakt_service.dart';
 import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
-import '../../ui/title_utils.dart';
+import '../../shared/title_utils.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 import '../player/aurora_player.dart';

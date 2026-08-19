@@ -5,13 +5,12 @@ import '../../data/models/models.dart';
 import '../../data/sources/omdb_service.dart';
 import '../../data/sources/realdebrid_service.dart';
 import '../../data/sources/tmdb_service.dart';
-import '../../state/experience.dart';
 import '../../state/providers.dart';
 import '../../state/service_status.dart';
-import '../../ui/screens/onboarding/add_source_screen.dart';
-import '../../ui/screens/settings/trakt_screen.dart';
-import '../../ui/widgets/rd_connect_sheet.dart';
-import '../../ui/widgets/tv_text_field.dart';
+import '../../shared/screens/add_source_screen.dart';
+import '../../shared/screens/trakt_screen.dart';
+import '../../shared/widgets/rd_connect_sheet.dart';
+import '../../shared/widgets/tv_text_field.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_buttons.dart';
@@ -44,18 +43,6 @@ class AuroraSettingsPage extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const AuroraSectionHeader('Experience'),
-              AuroraListRow(
-                icon: Icons.swap_horiz_rounded,
-                iconColor: Aurora.accent,
-                title: 'Switch to the classic experience',
-                subtitle:
-                    'Go back to the 1.0 interface. Your sources, list and progress '
-                    'carry over — switch back here any time.',
-                onTap: () async {
-                  await setUiExperience(ref, kExperienceClassic);
-                },
-              ),
               const AuroraSectionHeader('Sources'),
               playlists.when(
                 loading: () => const Padding(

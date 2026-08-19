@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lumen/ui/title_utils.dart';
+import 'package:lumen/shared/title_utils.dart';
 
 void main() {
   group('cleanTitle', () {

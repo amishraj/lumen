@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
-import '../ui/input_mode.dart' show InputMode;
+import '../shared/input_mode.dart' show InputMode;
 import 'aurora_providers.dart' show auroraNavTarget;
 
 /// Route Up out of a page's top row: smooth-scroll the focused element's

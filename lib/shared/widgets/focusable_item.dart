@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../input_mode.dart' show InputMode;
-import '../theme/lumen_theme.dart';
+import '../lumen_theme.dart';
 
 /// Wraps any tappable surface to make it remote/keyboard friendly:
 /// - reachable with arrow keys (MaterialApp maps them to directional focus)

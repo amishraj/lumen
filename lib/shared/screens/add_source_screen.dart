@@ -3,13 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../data/models/models.dart';
-import '../../../state/credential_vault.dart';
-import '../../../state/providers.dart';
-import '../../theme/lumen_theme.dart';
-import '../../widgets/focusable_item.dart';
-import '../../widgets/rd_connect_sheet.dart';
-import '../../widgets/tv_text_field.dart';
+import '../../data/models/models.dart';
+import '../../state/credential_vault.dart';
+import '../../state/providers.dart';
+import '../lumen_theme.dart';
+import '../widgets/focusable_item.dart';
+import '../widgets/rd_connect_sheet.dart';
+import '../widgets/tv_text_field.dart';
 import 'setup_accounts_screen.dart';
 
 /// Add an M3U playlist or Xtream Codes account, then run the first sync with

@@ -4,16 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart' hide Playlist;
 
 import 'aurora/aurora_theme.dart';
-import 'aurora/gate/experience_gate.dart';
 import 'aurora/shell.dart';
 import 'data/models/models.dart';
+import 'shared/input_mode.dart';
+import 'shared/screens/add_source_screen.dart';
 import 'state/credential_vault.dart';
-import 'state/experience.dart';
 import 'state/providers.dart';
-import 'ui/input_mode.dart';
-import 'ui/screens/home/home_screen.dart';
-import 'ui/screens/onboarding/add_source_screen.dart';
-import 'ui/theme/lumen_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,25 +27,15 @@ void main() {
   runApp(const ProviderScope(child: LumenApp()));
 }
 
-/// 1.1 ships two complete experiences in one binary:
-/// - **Aurora** — the redesigned UI (new home, browse, detail, player)
-/// - **Classic** — the 1.0 interface, untouched
-///
-/// A persisted setting decides which shell boots; a one-time gate asks on
-/// first run and both settings screens can switch (no reinstall — which also
-/// sidesteps Android's no-downgrade rule for going back).
 /// Root navigator key so app-wide shortcuts (Backspace = Back) can pop the
 /// current route from above the [Navigator].
 final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
-class LumenApp extends ConsumerWidget {
+class LumenApp extends StatelessWidget {
   const LumenApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final experience = ref.watch(uiExperienceProvider).valueOrNull;
-    final classic = experience == kExperienceClassic;
-
+  Widget build(BuildContext context) {
     // Backspace / browser-back act as system Back everywhere. Bound *above*
     // MaterialApp so a focused text field (which consumes Backspace for
     // deletion, via the inner DefaultTextEditingShortcuts) always wins first —
@@ -65,7 +51,7 @@ class LumenApp extends ConsumerWidget {
       navigatorKey: rootNavigatorKey,
       title: 'Lumen',
       debugShowCheckedModeBanner: false,
-      theme: classic ? LumenTheme.dark() : Aurora.theme(),
+      theme: Aurora.theme(),
       // TV/remote: make Up/Down always move focus spatially, even inside text
       // fields (which would otherwise eat the arrows for cursor movement).
       builder: (context, child) => Listener(
@@ -93,8 +79,7 @@ class LumenApp extends ConsumerWidget {
   }
 }
 
-/// Boot router: onboarding when no source exists, then the experience gate
-/// (once), then whichever shell the user chose.
+/// Boot router: onboarding when no source exists, then the Aurora shell.
 class LumenRoot extends ConsumerWidget {
   const LumenRoot({super.key});
 
@@ -125,7 +110,6 @@ class LumenRoot extends ConsumerWidget {
               if (restored) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   ref.invalidate(playlistsProvider);
-                  ref.invalidate(uiExperienceProvider);
                 });
                 return const _Splash();
               }
@@ -153,17 +137,7 @@ class LumenRoot extends ConsumerWidget {
           return const _Splash();
         }
 
-        final experience = ref.watch(uiExperienceProvider);
-        return experience.when(
-          loading: () => const _Splash(),
-          // If the setting can't load, fail safe into the classic shell.
-          error: (_, __) => const HomeScreen(),
-          data: (exp) => switch (exp) {
-            kExperienceAurora => const AuroraShell(),
-            kExperienceClassic => const HomeScreen(),
-            _ => const ExperienceGateScreen(),
-          },
-        );
+        return const AuroraShell();
       },
     );
   }

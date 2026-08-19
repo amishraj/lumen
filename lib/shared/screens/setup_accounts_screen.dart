@@ -1,15 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../data/sources/realdebrid_service.dart';
-import '../../../data/sources/tmdb_service.dart';
-import '../../../data/sources/trakt_service.dart';
-import '../../../state/providers.dart';
-import '../../theme/lumen_theme.dart';
-import '../../widgets/focusable_item.dart';
-import '../../widgets/rd_connect_sheet.dart';
-import '../../widgets/tv_text_field.dart';
-import '../settings/trakt_screen.dart';
+import '../../data/sources/realdebrid_service.dart';
+import '../../data/sources/tmdb_service.dart';
+import '../../data/sources/trakt_service.dart';
+import '../../state/providers.dart';
+import '../lumen_theme.dart';
+import '../widgets/focusable_item.dart';
+import '../widgets/rd_connect_sheet.dart';
+import '../widgets/tv_text_field.dart';
+import 'trakt_screen.dart';
 
 /// Optional start-time step: connect Trakt and Real-Debrid, and paste a TMDB
 /// key — so a brand-new user can light up cross-device progress and rich
