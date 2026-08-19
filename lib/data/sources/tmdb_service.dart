@@ -20,7 +20,11 @@ class TmdbService {
   TmdbService(this._repo);
   final LibraryRepository _repo;
 
-  static const _api = 'https://api.themoviedb.org/3';
+  /// Direct TMDB, or the Worker's key-injecting proxy when signed in to a
+  /// Lumen account (keys stop shipping in the APK; responses edge-cache).
+  /// _auth() decides per call and sets [_proxyBase] before [_api] is read.
+  String? _proxyBase;
+  String get _api => _proxyBase ?? 'https://api.themoviedb.org/3';
   static const _img = 'https://image.tmdb.org/t/p';
 
   final _dio = Dio(BaseOptions(
@@ -31,7 +35,13 @@ class TmdbService {
 
   Future<String?> key() async => _repo.getSetting('tmdb_key');
 
-  Future<bool> get enabled async => (await key())?.isNotEmpty ?? false;
+  Future<bool> get enabled async {
+    if ((await key())?.isNotEmpty ?? false) return true;
+    // Signed in to a Lumen account → the Worker holds the key.
+    final t = await _repo.getSetting('lumen_token');
+    final b = await _repo.getSetting('lumen_api_base');
+    return (t?.isNotEmpty ?? false) && (b?.isNotEmpty ?? false);
+  }
 
   Future<void> saveKey(String k) => _repo.setSetting('tmdb_key', k.trim());
 
@@ -61,6 +71,16 @@ class TmdbService {
   /// TMDB accepts either a v3 key (as the `api_key` query param) or a v4 read
   /// token (as a Bearer header). v4 tokens are long JWTs starting with `eyJ`.
   Future<(Map<String, dynamic>, Options)> _auth() async {
+    final token = await _repo.getSetting('lumen_token');
+    final base = await _repo.getSetting('lumen_api_base');
+    if (token != null && token.isNotEmpty && base != null && base.isNotEmpty) {
+      _proxyBase = '${base.replaceAll(RegExp(r'/+$'), '')}/v1/tmdb';
+      return (
+        <String, dynamic>{},
+        Options(headers: {'Authorization': 'Bearer $token'})
+      );
+    }
+    _proxyBase = null;
     final k = (await key()) ?? '';
     if (k.startsWith('eyJ')) {
       return (

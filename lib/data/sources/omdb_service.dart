@@ -28,7 +28,24 @@ class OmdbService {
     return _repo.getSetting('omdb_key');
   }
 
-  Future<bool> get enabled async => (await key())?.isNotEmpty ?? false;
+  Future<bool> get enabled async {
+    if ((await key())?.isNotEmpty ?? false) return true;
+    final t = await _repo.getSetting('lumen_token');
+    final b = await _repo.getSetting('lumen_api_base');
+    return (t?.isNotEmpty ?? false) && (b?.isNotEmpty ?? false);
+  }
+
+  /// (url, apikey-or-dummy, headers): the Worker proxy when signed in — it
+  /// injects the real key server-side — else direct with the local key.
+  Future<(String, String?, Map<String, String>)> _endpoint() async {
+    final t = await _repo.getSetting('lumen_token');
+    final b = await _repo.getSetting('lumen_api_base');
+    if ((t?.isNotEmpty ?? false) && (b?.isNotEmpty ?? false)) {
+      final base = b!.replaceAll(RegExp(r'/+$'), '');
+      return ('$base/v1/omdb', null, {'authorization': 'Bearer $t'});
+    }
+    return ('https://www.omdbapi.com/', await key(), const <String, String>{});
+  }
 
   Future<void> saveKey(String k) => _repo.setSetting('omdb_key', k.trim());
 
@@ -56,8 +73,8 @@ class OmdbService {
   }
 
   Future<OmdbInfo?> lookup(String rawTitle) async {
-    final k = await key();
-    if (k == null || k.isEmpty) return null;
+    final (url, k, headers) = await _endpoint();
+    if (url.contains('omdbapi.com') && (k == null || k.isEmpty)) return null;
 
     final (title, year) = _clean(rawTitle);
     if (title.isEmpty) return null;
@@ -70,12 +87,14 @@ class OmdbService {
     }
 
     try {
-      final res = await _dio.get('https://www.omdbapi.com/', queryParameters: {
-        'apikey': k,
-        't': title,
-        if (year != null) 'y': '$year',
-        'plot': 'short',
-      });
+      final res = await _dio.get(url,
+          options: Options(headers: headers),
+          queryParameters: {
+            if (k != null) 'apikey': k,
+            't': title,
+            if (year != null) 'y': '$year',
+            'plot': 'short',
+          });
       final d = res.data is String ? jsonDecode(res.data) : res.data;
       if (d is Map && d['Response'] == 'True') {
         await _repo.setSetting(cacheKey, jsonEncode(d));

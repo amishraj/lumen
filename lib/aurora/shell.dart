@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/sources/trakt_service.dart';
 import '../state/providers.dart';
+import '../state/sync_providers.dart';
 import '../state/service_status.dart';
 import 'aurora_focus.dart';
 import 'aurora_providers.dart';
@@ -31,9 +32,11 @@ class AuroraShell extends ConsumerStatefulWidget {
   ConsumerState<AuroraShell> createState() => _AuroraShellState();
 }
 
-class _AuroraShellState extends ConsumerState<AuroraShell> {
+class _AuroraShellState extends ConsumerState<AuroraShell>
+    with WidgetsBindingObserver {
   DateTime? _lastBack;
   bool _kickedOffSync = false;
+  DateTime _lastResumeSync = DateTime.fromMillisecondsSinceEpoch(0);
 
   /// Compact (phone) only: true = the floating bottom bar is fully expanded
   /// (active tab labelled). It contracts to bare icons while you scroll down
@@ -66,10 +69,36 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
     // reachable — no matter what has or hasn't loaded.
     FocusManager.instance.addListener(_ensureFocus);
     WidgetsBinding.instance.addPostFrameCallback((_) => _ensureFocus());
+    // App resume is THE cross-device moment ("picked up the other device") —
+    // there was no lifecycle observer anywhere before this, so a device
+    // living in background for a day never re-synced anything.
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // 60s floor so quick app-switches don't spam the Worker.
+      if (DateTime.now().difference(_lastResumeSync).inSeconds >= 60) {
+        _lastResumeSync = DateTime.now();
+        unawaited(runSync(ref));
+      }
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // Push-only on the way out: whatever the outbox holds should reach the
+      // server before the OS freezes us.
+      unawaited(() async {
+        try {
+          final sync = await ref.read(syncServiceProvider.future);
+          await sync.pushPull();
+        } catch (_) {}
+      }());
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     FocusManager.instance.removeListener(_ensureFocus);
     _navExpanded.dispose();
     for (final e in _nodes.entries) {
@@ -155,6 +184,11 @@ class _AuroraShellState extends ConsumerState<AuroraShell> {
     if (active != null && !_kickedOffSync) {
       _kickedOffSync = true;
       Future.delayed(const Duration(seconds: 2), () async {
+        if (!mounted) return;
+        // Account sync FIRST (one edge round trip): pulled prog rows must be
+        // in place before hydrateEpisodeProgress evaluates its freshness
+        // guard, or it re-seeds rows a peer already superseded.
+        await runSync(ref);
         if (!mounted) return;
         try {
           final svc = await ref.read(traktServiceProvider.future);

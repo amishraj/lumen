@@ -10,6 +10,9 @@ import 'package:sqflite/sqflite.dart';
 import '../../shared/title_keys.dart' as tk;
 import '../models/models.dart';
 import '../sync/merge.dart';
+import '../sync/sync_clock.dart';
+import '../sync/synced_settings.dart';
+import 'sync_origin.dart';
 
 /// Single SQLite database. This is the source of truth — the UI never holds the
 /// full channel set in memory; it queries indexed, paginated windows from here.
@@ -630,6 +633,80 @@ class AppDatabase {
         [key, kind, tkey]);
   }
 
+  /// Remote-apply entry points (lib/data/sync/apply.dart) — the projections
+  /// must refresh after a pulled write exactly as after a local one.
+  Future<void> projectProgressKeyRemote(String key) => _projectProgressKey(key);
+  Future<void> projectFavoriteKeyRemote(
+          String key, StreamKind kind, int? addedAt) =>
+      _projectFavoriteKey(key, kind, addedAt);
+
+  /// Dismiss one Continue Watching entry: updates the local cw_hidden blob
+  /// AND journals a per-key `cwh` doc — the blob itself must never sync
+  /// (blob-level LWW would silently drop other devices' dismissals).
+  Future<void> dismissCw(String key, int at,
+      {SyncOrigin origin = SyncOrigin.local}) async {
+    await db.transaction((txn) async {
+      Map<String, dynamic> map;
+      final rows = await txn.query('app_settings',
+          where: "key='cw_hidden'", limit: 1);
+      try {
+        final raw = rows.isEmpty ? null : rows.first['value'] as String?;
+        map = raw == null || raw.isEmpty
+            ? {}
+            : jsonDecode(raw) as Map<String, dynamic>;
+      } catch (_) {
+        map = {};
+      }
+      map[key] = at;
+      await txn.insert('app_settings',
+          {'key': 'cw_hidden', 'value': jsonEncode(map)},
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await _journal(txn, origin, 'cwh', key, {'at': at}, updatedAt: at);
+    });
+    _notifyOutbox();
+  }
+
+  // ---- Sync journal --------------------------------------------------------
+
+  /// Fired (post-commit, debounced by the listener) whenever a local write
+  /// lands in `sync_outbox`. The sync engine installs itself here — same
+  /// pattern as CredentialVault's onSettingChanged.
+  static void Function()? onOutboxChanged;
+
+  /// Journal one op into the outbox, inside the caller's transaction. The
+  /// PRIMARY KEY (ns,k) deliberately COALESCES — progress checkpoints fire
+  /// every 5 seconds, and an append-only outbox would accrue ~720 rows per
+  /// film; last-local-write-wins per key IS the LWW semantics anyway.
+  Future<void> _journal(DatabaseExecutor txn, SyncOrigin origin, String ns,
+      String k, Map<String, Object?>? v,
+      {bool deleted = false, int? updatedAt}) async {
+    if (!origin.journals) return;
+    if (ns == 'set' && !isSyncedSettingKey(k)) return; // before any encoding
+    await txn.insert(
+      'sync_outbox',
+      {
+        'ns': ns,
+        'k': k,
+        'v': v == null ? null : jsonEncode(v),
+        'deleted': deleted ? 1 : 0,
+        'updated_at': updatedAt ?? SyncClock.now(),
+        'attempts': 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    _outboxDirty = true;
+  }
+
+  bool _outboxDirty = false;
+
+  /// Call after the enclosing write completes to notify the sync engine.
+  void _notifyOutbox() {
+    if (_outboxDirty) {
+      _outboxDirty = false;
+      onOutboxChanged?.call();
+    }
+  }
+
   // ---- Remembered stream choice (last-played link per title) ---------------
 
   Future<({String url, String? label, String? quality, int updatedAt})?>
@@ -703,25 +780,36 @@ class AppDatabase {
   /// "watched" on Trakt for up to an hour.
   static const watchedThreshold = 0.8;
 
-  Future<void> saveEpisodeProgress(String key, int posMs, int durMs) async {
+  Future<void> saveEpisodeProgress(String key, int posMs, int durMs,
+      {SyncOrigin origin = SyncOrigin.local}) async {
     final watched = durMs > 0 && posMs / durMs >= watchedThreshold ? 1 : 0;
-    await db.insert(
-      'episode_progress',
-      {
-        'ep_key': key,
-        'position_ms': posMs,
-        'duration_ms': durMs,
-        'watched': watched,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-        // A real checkpoint overrides a tombstone (the user is watching it
-        // again) and clears any synthetic Trakt seed.
-        'deleted': 0,
-        'synthetic': 0,
-        'origin': 'local',
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    final at = SyncClock.now();
+    await db.transaction((txn) async {
+      await txn.insert(
+        'episode_progress',
+        {
+          'ep_key': key,
+          'position_ms': posMs,
+          'duration_ms': durMs,
+          'watched': watched,
+          'updated_at': at,
+          // A real checkpoint overrides a tombstone (the user is watching it
+          // again) and clears any synthetic Trakt seed.
+          'deleted': 0,
+          'synthetic': 0,
+          'origin': origin.name,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      // The stamp is CHECKPOINT time (not send time): a device offline for
+      // two hours pushes an old stamp and correctly loses to a newer
+      // completion elsewhere.
+      await _journal(txn, origin, 'prog', key,
+          {'p': posMs, 'd': durMs, 'w': watched},
+          updatedAt: at);
+    });
     await _projectProgressKey(key);
+    _notifyOutbox();
   }
 
   /// Seed an episode's progress from a known fraction (a Trakt cross-device
@@ -778,11 +866,10 @@ class AppDatabase {
   /// "absent means unwatched" cannot survive sync, where a peer that never
   /// saw the delete would re-push its stale row and resurrect it. One
   /// transaction for the whole season.
-  Future<void> setEpisodesWatched(
-      Iterable<String> keys, bool watched) async {
+  Future<void> setEpisodesWatched(Iterable<String> keys, bool watched,
+      {SyncOrigin origin = SyncOrigin.local}) async {
     final list = keys.toList();
     if (list.isEmpty) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
     await db.transaction((txn) async {
       final batch = txn.batch();
       for (final key in list) {
@@ -793,19 +880,25 @@ class AppDatabase {
             'position_ms': 0,
             'duration_ms': 0,
             'watched': watched ? 1 : 0,
-            'updated_at': now,
+            'updated_at': SyncClock.now(),
             'deleted': watched ? 0 : 1,
             'synthetic': 0,
-            'origin': 'local',
+            'origin': origin.name,
           },
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
       await batch.commit(noResult: true, continueOnError: true);
+      for (final key in list) {
+        await _journal(txn, origin, 'prog', key,
+            watched ? {'p': 0, 'd': 0, 'w': 1} : null,
+            deleted: !watched);
+      }
     });
     for (final key in list) {
       await _projectProgressKey(key);
     }
+    _notifyOutbox();
   }
 
   /// ep_key → (completed fraction 0..1, watched, last-touched ms) for every
@@ -835,13 +928,23 @@ class AppDatabase {
     return rows.isEmpty ? null : rows.first['value'] as String?;
   }
 
-  Future<void> setSetting(String key, String? value) async {
+  Future<void> setSetting(String key, String? value,
+      {SyncOrigin origin = SyncOrigin.local}) async {
+    // The allowlist check inside _journal keeps cache/snapshot writes cheap —
+    // only the ~15 kSyncedSettings keys ever reach the outbox.
     if (value == null) {
-      await db.delete('app_settings', where: 'key=?', whereArgs: [key]);
+      await db.transaction((txn) async {
+        await txn.delete('app_settings', where: 'key=?', whereArgs: [key]);
+        await _journal(txn, origin, 'set', key, null, deleted: true);
+      });
     } else {
-      await db.insert('app_settings', {'key': key, 'value': value},
-          conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.transaction((txn) async {
+        await txn.insert('app_settings', {'key': key, 'value': value},
+            conflictAlgorithm: ConflictAlgorithm.replace);
+        await _journal(txn, origin, 'set', key, {'s': value});
+      });
     }
+    _notifyOutbox();
   }
 
   /// Drop every setting whose key starts with [prefix] — used to invalidate a
@@ -868,20 +971,28 @@ class AppDatabase {
   }
 
   Future<void> setPinned(
-      Playlist playlist, StreamKind kind, String name, bool pinned) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    await db.insert(
-      'pinned_v2',
-      {
-        'source_key': playlistSourceKey(playlist),
-        'kind': kind.name,
-        'name': name,
-        'position': now ~/ 1000,
-        'deleted': pinned ? 0 : 1,
-        'updated_at': now,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+      Playlist playlist, StreamKind kind, String name, bool pinned,
+      {SyncOrigin origin = SyncOrigin.local}) async {
+    final now = SyncClock.now();
+    final sourceKey = playlistSourceKey(playlist);
+    await db.transaction((txn) async {
+      await txn.insert(
+        'pinned_v2',
+        {
+          'source_key': sourceKey,
+          'kind': kind.name,
+          'name': name,
+          'position': now ~/ 1000,
+          'deleted': pinned ? 0 : 1,
+          'updated_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      await _journal(txn, origin, 'pin', '$sourceKey|${kind.name}|$name',
+          pinned ? {'position': now ~/ 1000} : null,
+          deleted: !pinned, updatedAt: now);
+    });
+    _notifyOutbox();
     // Legacy dual-write (drop with the v4 tables).
     final plId = playlist.id;
     if (plId == null) return;
@@ -962,18 +1073,36 @@ class AppDatabase {
 
   // ---- Playlists -----------------------------------------------------------
 
-  Future<int> insertPlaylist(Playlist pl) => db.insert(
-      'playlists',
-      pl.toRow()
-        ..remove('id')
-        ..['source_key'] = playlistSourceKey(pl));
+  Future<int> insertPlaylist(Playlist pl,
+      {SyncOrigin origin = SyncOrigin.local}) async {
+    final sourceKey = playlistSourceKey(pl);
+    late int id;
+    await db.transaction((txn) async {
+      id = await txn.insert(
+          'playlists',
+          pl.toRow()
+            ..remove('id')
+            ..['source_key'] = sourceKey);
+      await _journal(txn, origin, 'src', sourceKey, {
+        'name': pl.name,
+        'kind': pl.kind.name,
+        'url': pl.url,
+        'username': pl.username,
+        'password': pl.password,
+        'epg_url': pl.epgUrl,
+      });
+    });
+    _notifyOutbox();
+    return id;
+  }
 
   Future<List<Playlist>> playlists() async {
     final rows = await db.query('playlists', orderBy: 'created_at DESC');
     return rows.map(Playlist.fromRow).toList();
   }
 
-  Future<void> deletePlaylist(int id) async {
+  Future<void> deletePlaylist(int id,
+      {SyncOrigin origin = SyncOrigin.local}) async {
     // Retire the source's pins in the portable table (tombstones, so the
     // delete can sync); the legacy CASCADE handles the id-keyed leftovers.
     final pl = await db.query('playlists',
@@ -989,6 +1118,12 @@ class AppDatabase {
           whereArgs: [playlistSourceKey(Playlist.fromRow(pl.first))]);
       await db.delete('pinned_categories',
           where: 'playlist_id=?', whereArgs: [id]);
+    }
+    if (pl.isNotEmpty) {
+      await _journal(db, origin, 'src',
+          playlistSourceKey(Playlist.fromRow(pl.first)), null,
+          deleted: true);
+      _notifyOutbox();
     }
     await db.delete('playlists', where: 'id=?', whereArgs: [id]);
     if (ftsAvailable) {
@@ -1312,21 +1447,28 @@ class AppDatabase {
   /// durable, syncable truth) and refreshes the id-keyed `favorites`
   /// projection for every library row matching the key — so favoriting
   /// "EN - Dune" also stars "Dune 4K", matching the search dedupe.
-  Future<void> toggleFavorite(StreamItem item, bool fav) async {
+  Future<void> toggleFavorite(StreamItem item, bool fav,
+      {SyncOrigin origin = SyncOrigin.local}) async {
     final key = favKeyForItem(item);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    await db.insert(
-      'favorites_v2',
-      {
-        'fav_key': key,
-        'kind': item.kind.name,
-        'added_at': now,
-        'deleted': fav ? 0 : 1,
-        'updated_at': now,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    final now = SyncClock.now();
+    await db.transaction((txn) async {
+      await txn.insert(
+        'favorites_v2',
+        {
+          'fav_key': key,
+          'kind': item.kind.name,
+          'added_at': now,
+          'deleted': fav ? 0 : 1,
+          'updated_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      await _journal(txn, origin, 'fav', key,
+          fav ? {'kind': item.kind.name, 'at': now} : null,
+          deleted: !fav, updatedAt: now);
+    });
     await _projectFavoriteKey(key, item.kind, fav ? now : null);
+    _notifyOutbox();
   }
 
   /// Refresh the `favorites` projection rows for one fav_key. [addedAt] null
@@ -1427,16 +1569,16 @@ class AppDatabase {
 
   /// Mark a title watched by its portable key (`movie:<tk>` / `show:<tk>`),
   /// e.g. reflecting Trakt's watched history. Flag-only row (0/0 pos/dur).
-  Future<void> markWatched(String key, {String origin = 'local'}) =>
+  Future<void> markWatched(String key,
+          {SyncOrigin origin = SyncOrigin.local}) =>
       markWatchedMany([key], origin: origin);
 
   /// Batched [markWatched] — the Trakt watched-history reconciliation marks
   /// hundreds of titles at once; one transaction instead of N round-trips.
   Future<void> markWatchedMany(Iterable<String> keys,
-      {String origin = 'local'}) async {
+      {SyncOrigin origin = SyncOrigin.local}) async {
     final list = keys.toList();
     if (list.isEmpty) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
     await db.transaction((txn) async {
       final batch = txn.batch();
       for (final key in list) {
@@ -1447,44 +1589,58 @@ class AppDatabase {
             'position_ms': 0,
             'duration_ms': 0,
             'watched': 1,
-            'updated_at': now,
+            'updated_at': SyncClock.now(),
             'deleted': 0,
             'synthetic': 0,
-            'origin': origin,
+            'origin': origin.name,
           },
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
       await batch.commit(noResult: true, continueOnError: true);
+      for (final key in list) {
+        await _journal(txn, origin, 'prog', key, {'p': 0, 'd': 0, 'w': 1});
+      }
     });
     for (final key in list) {
       await _projectProgressKey(key);
     }
+    _notifyOutbox();
   }
 
   /// Clear the watched flag on a title (the season un-watch toggle must also
   /// clear the series' poster check, which the Trakt reconciliation set).
   /// Flag-only rows become tombstones; real progress keeps its position with
   /// the flag cleared.
-  Future<void> unmarkWatched(String key) async {
+  Future<void> unmarkWatched(String key,
+      {SyncOrigin origin = SyncOrigin.local}) async {
     final rows = await db.query('episode_progress',
         where: 'ep_key=?', whereArgs: [key], limit: 1);
-    final now = DateTime.now().millisecondsSinceEpoch;
     if (rows.isEmpty) return;
-    final flagOnly = (rows.first['position_ms'] as int? ?? 0) == 0 &&
-        (rows.first['duration_ms'] as int? ?? 0) == 0;
-    if (flagOnly) {
-      await db.update(
-          'episode_progress',
-          {'watched': 0, 'deleted': 1, 'updated_at': now, 'origin': 'local'},
-          where: 'ep_key=?',
-          whereArgs: [key]);
-    } else {
-      await db.update('episode_progress',
-          {'watched': 0, 'updated_at': now, 'origin': 'local'},
-          where: 'ep_key=?', whereArgs: [key]);
-    }
+    final at = SyncClock.now();
+    final pos = rows.first['position_ms'] as int? ?? 0;
+    final dur = rows.first['duration_ms'] as int? ?? 0;
+    final flagOnly = pos == 0 && dur == 0;
+    await db.transaction((txn) async {
+      if (flagOnly) {
+        await txn.update(
+            'episode_progress',
+            {'watched': 0, 'deleted': 1, 'updated_at': at,
+              'origin': origin.name},
+            where: 'ep_key=?',
+            whereArgs: [key]);
+        await _journal(txn, origin, 'prog', key, null,
+            deleted: true, updatedAt: at);
+      } else {
+        await txn.update('episode_progress',
+            {'watched': 0, 'updated_at': at, 'origin': origin.name},
+            where: 'ep_key=?', whereArgs: [key]);
+        await _journal(txn, origin, 'prog', key, {'p': pos, 'd': dur, 'w': 0},
+            updatedAt: at);
+      }
+    });
     await _projectProgressKey(key);
+    _notifyOutbox();
   }
 
   /// Every movie + series row of one playlist, in a single query — feeds the

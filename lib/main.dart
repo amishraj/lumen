@@ -7,7 +7,7 @@ import 'aurora/aurora_theme.dart';
 import 'aurora/shell.dart';
 import 'data/models/models.dart';
 import 'shared/input_mode.dart';
-import 'shared/screens/add_source_screen.dart';
+import 'shared/screens/onboarding_flow.dart';
 import 'state/credential_vault.dart';
 import 'state/providers.dart';
 
@@ -105,7 +105,7 @@ class LumenRoot extends ConsumerWidget {
           final restore = ref.watch(vaultRestoreProvider);
           return restore.when(
             loading: () => const _Splash(),
-            error: (_, __) => const AddSourceScreen(),
+            error: (_, __) => const OnboardingFlow(),
             data: (restored) {
               if (restored) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -113,7 +113,7 @@ class LumenRoot extends ConsumerWidget {
                 });
                 return const _Splash();
               }
-              return const AddSourceScreen();
+              return const OnboardingFlow();
             },
           );
         }

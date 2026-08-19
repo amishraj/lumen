@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' hide Category;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/db/app_database.dart';
+import '../data/db/sync_origin.dart';
 import '../data/models/models.dart';
 import '../data/repositories/library_repository.dart';
 import '../data/sources/realdebrid_service.dart';
@@ -484,9 +485,9 @@ Future<Map<String, int>> loadCwHidden(LibraryRepository repo) async {
 Future<void> dismissFromContinueWatching(
     WidgetRef ref, StreamItem item) async {
   final repo = await ref.read(repositoryProvider.future);
-  final map = await loadCwHidden(repo);
-  map[cwDismissKey(item)] = DateTime.now().millisecondsSinceEpoch;
-  await repo.setSetting('cw_hidden', jsonEncode(map));
+  // Journaled per-key (ns=cwh) so dismissals sync; the blob is local-only.
+  await repo.db.dismissCw(
+      cwDismissKey(item), DateTime.now().millisecondsSinceEpoch);
   ref.read(cwHiddenRevProvider.notifier).state++;
   ref.invalidate(continueWatchingProvider);
 }
@@ -762,7 +763,7 @@ final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
         }
         // Trakt-derived: never enters the sync outbox (Trakt already reaches
         // every device on the account).
-        await repo.markWatchedMany(toMark, origin: 'trakt');
+        await repo.markWatchedMany(toMark, origin: SyncOrigin.trakt);
         await repo.setSetting('trakt_watched_sync_at', '$nowMs');
         if (toMark.isNotEmpty) {
           ref.invalidateSelf(); // re-read with the freshly-marked ids

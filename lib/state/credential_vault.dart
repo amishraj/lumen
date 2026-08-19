@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../data/db/sync_origin.dart';
 import '../data/models/models.dart';
 import '../data/repositories/library_repository.dart';
 import 'providers.dart';
@@ -51,6 +52,14 @@ class CredentialVault {
     'rd_enabled',
     'tmdb_key',
     'omdb_key',
+    // Lumen account session — the reinstall superpower: the media-mirror
+    // copy survives uninstall on Fire TV, so a TV logs in once, ever.
+    // Device-local by design (NOT in kSyncedSettings — the token must never
+    // round-trip through its own sync).
+    'lumen_api_base',
+    'lumen_token',
+    'lumen_device_id',
+    'lumen_email',
     'home_rows',
     'sidebar_width',
     'seek_previews',
@@ -140,14 +149,17 @@ class CredentialVault {
       final settings = data['settings'];
       if (settings is Map) {
         for (final e in settings.entries) {
-          await repo.setSetting('${e.key}', '${e.value}');
+          // system origin: a restore must not re-push a whole vault as fresh
+          // local writes at boot.
+          await repo.setSetting('${e.key}', '${e.value}',
+              origin: SyncOrigin.system);
         }
       }
       final lists = data['playlists'];
       if (lists is List) {
         for (final p in lists) {
           if (p is! Map || p['url'] == null) continue;
-          await repo.addPlaylist(Playlist(
+          await repo.addPlaylist(origin: SyncOrigin.system, Playlist(
             name: '${p['name'] ?? 'My playlist'}',
             kind:
                 '${p['kind']}' == 'xtream' ? SourceKind.xtream : SourceKind.m3u,

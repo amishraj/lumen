@@ -80,14 +80,40 @@ class TraktService {
     await _clearCaches();
   }
 
+  /// The Worker's Trakt OAuth proxy, when signed in to a Lumen account. Only
+  /// the three endpoints that need the APP SECRET route through it (device
+  /// code, device token, refresh) — scrobbles and /sync stay direct on the
+  /// user's token. Returns null when signed out (embedded/user creds path).
+  Future<String?> _oauthProxyBase() async {
+    final t = await _repo.getSetting('lumen_token');
+    final b = await _repo.getSetting('lumen_api_base');
+    if ((t?.isNotEmpty ?? false) && (b?.isNotEmpty ?? false)) {
+      return b!.replaceAll(RegExp(r'/+$'), '');
+    }
+    return null;
+  }
+
+  Future<Options> _oauthProxyOptions() async => Options(headers: {
+        'authorization':
+            'Bearer ${await _repo.getSetting('lumen_token')}',
+        'content-type': 'application/json',
+      });
+
   /// Step 1 of the device flow — get a code for the user to enter.
   Future<TraktDeviceCode> requestDeviceCode() async {
-    final clientId = await _clientId();
-    if (clientId == null || clientId.isEmpty) {
-      throw Exception('Add your Trakt client id & secret first.');
+    final proxy = await _oauthProxyBase();
+    final Response res;
+    if (proxy != null) {
+      res = await _dio.post('$proxy/v1/trakt/oauth/device/code',
+          data: '{}', options: await _oauthProxyOptions());
+    } else {
+      final clientId = await _clientId();
+      if (clientId == null || clientId.isEmpty) {
+        throw Exception('Add your Trakt client id & secret first.');
+      }
+      res = await _dio.post('$_api/oauth/device/code',
+          data: jsonEncode({'client_id': clientId}));
     }
-    final res = await _dio.post('$_api/oauth/device/code',
-        data: jsonEncode({'client_id': clientId}));
     if (res.statusCode != 200) {
       throw Exception('Trakt rejected the client id (${res.statusCode}).');
     }
@@ -104,14 +130,22 @@ class TraktService {
   /// Step 2 — poll once for the token. Returns true when authorised, false
   /// while still pending, throws on hard failure (expired/denied).
   Future<bool> pollToken(String deviceCode) async {
-    final clientId = await _clientId();
-    final clientSecret = await _clientSecret();
-    final res = await _dio.post('$_api/oauth/device/token',
-        data: jsonEncode({
-          'code': deviceCode,
-          'client_id': clientId,
-          'client_secret': clientSecret,
-        }));
+    final proxy = await _oauthProxyBase();
+    final Response res;
+    if (proxy != null) {
+      res = await _dio.post('$proxy/v1/trakt/oauth/device/token',
+          data: jsonEncode({'code': deviceCode}),
+          options: await _oauthProxyOptions());
+    } else {
+      final clientId = await _clientId();
+      final clientSecret = await _clientSecret();
+      res = await _dio.post('$_api/oauth/device/token',
+          data: jsonEncode({
+            'code': deviceCode,
+            'client_id': clientId,
+            'client_secret': clientSecret,
+          }));
+    }
     switch (res.statusCode) {
       case 200:
         final d = res.data is String ? jsonDecode(res.data) : res.data;
@@ -149,25 +183,35 @@ class TraktService {
   /// disappeared". Returns true if a new token was obtained.
   Future<bool> _refreshToken() async {
     final refresh = await _repo.getSetting('trakt_refresh_token');
-    final clientId = await _clientId();
-    final clientSecret = await _clientSecret();
-    if (refresh == null ||
-        refresh.isEmpty ||
-        clientId == null ||
-        clientSecret == null) {
-      return false;
+    if (refresh == null || refresh.isEmpty) return false;
+    final proxy = await _oauthProxyBase();
+    final String? clientId;
+    final String? clientSecret;
+    if (proxy == null) {
+      clientId = await _clientId();
+      clientSecret = await _clientSecret();
+      if (clientId == null || clientSecret == null) return false;
+    } else {
+      clientId = clientSecret = null;
     }
     try {
-      final res = await _dio.post('$_api/oauth/token',
-          data: jsonEncode({
-            'refresh_token': refresh,
-            'client_id': clientId,
-            'client_secret': clientSecret,
-            // Trakt requires redirect_uri on the refresh exchange too; the app
-            // is registered with the device-flow OOB uri, so match it here.
-            'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
-            'grant_type': 'refresh_token',
-          }));
+      final Response res;
+      if (proxy != null) {
+        res = await _dio.post('$proxy/v1/trakt/oauth/token',
+            data: jsonEncode({'refresh_token': refresh}),
+            options: await _oauthProxyOptions());
+      } else {
+        res = await _dio.post('$_api/oauth/token',
+            data: jsonEncode({
+              'refresh_token': refresh,
+              'client_id': clientId,
+              'client_secret': clientSecret,
+              // Trakt requires redirect_uri on the refresh exchange too; the
+              // app is registered with the device-flow OOB uri, so match it.
+              'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
+              'grant_type': 'refresh_token',
+            }));
+      }
       if (res.statusCode == 200) {
         final d = res.data is String ? jsonDecode(res.data) : res.data;
         await _repo.setSetting('trakt_access_token', d['access_token']);

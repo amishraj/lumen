@@ -6,6 +6,7 @@ import '../../data/sources/omdb_service.dart';
 import '../../data/sources/realdebrid_service.dart';
 import '../../data/sources/tmdb_service.dart';
 import '../../state/providers.dart';
+import '../../state/sync_providers.dart';
 import '../../state/service_status.dart';
 import '../../shared/screens/add_source_screen.dart';
 import '../../shared/screens/trakt_screen.dart';
@@ -13,6 +14,7 @@ import '../../shared/widgets/rd_connect_sheet.dart';
 import '../../shared/widgets/tv_text_field.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
+import '../screens/aurora_account.dart';
 import '../widgets/aurora_buttons.dart';
 import '../widgets/aurora_shelf.dart';
 import '../widgets/aurora_up_to_nav.dart';
@@ -43,6 +45,8 @@ class AuroraSettingsPage extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const AuroraSectionHeader('Account'),
+              _AccountRow(),
               const AuroraSectionHeader('Sources'),
               playlists.when(
                 loading: () => const Padding(
@@ -394,6 +398,26 @@ class _SourceRow extends ConsumerWidget {
           ref.read(activePlaylistProvider.notifier).state = pl;
         }
       },
+    );
+  }
+}
+
+
+/// Settings row for the Lumen account — sign in to sync, or account status.
+class _AccountRow extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final signedIn = ref.watch(lumenSignedInProvider).valueOrNull ?? false;
+    final email = ref.watch(lumenEmailProvider).valueOrNull;
+    return AuroraListRow(
+      icon: signedIn ? Icons.verified_user_rounded : Icons.person_rounded,
+      iconColor: signedIn ? Aurora.accent : null,
+      title: signedIn ? (email ?? 'Signed in') : 'Sign in to sync',
+      subtitle: signedIn
+          ? 'Progress, favorites, sources and keys sync everywhere.'
+          : 'One account, every device — progress, sources and keys follow you.',
+      onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const AuroraAccountScreen())),
     );
   }
 }

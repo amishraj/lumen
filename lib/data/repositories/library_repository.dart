@@ -6,6 +6,7 @@ import 'package:dio/io.dart';
 import 'package:flutter/foundation.dart' hide Category;
 
 import '../db/app_database.dart';
+import '../db/sync_origin.dart';
 import '../models/models.dart';
 import '../sources/m3u_parser.dart';
 import '../sources/xtream_client.dart';
@@ -23,12 +24,15 @@ class LibraryRepository {
 
   Future<List<Playlist>> playlists() => db.playlists();
 
-  Future<Playlist> addPlaylist(Playlist pl) async {
-    final id = await db.insertPlaylist(pl);
+  Future<Playlist> addPlaylist(Playlist pl,
+      {SyncOrigin origin = SyncOrigin.local}) async {
+    final id = await db.insertPlaylist(pl, origin: origin);
     return pl.copyWith(id: id);
   }
 
-  Future<void> removePlaylist(int id) => db.deletePlaylist(id);
+  Future<void> removePlaylist(int id,
+          {SyncOrigin origin = SyncOrigin.local}) =>
+      db.deletePlaylist(id, origin: origin);
 
   /// Full sync. Emits coarse progress so the UI can show a live status.
   Stream<SyncProgress> sync(Playlist pl) async* {
@@ -138,7 +142,8 @@ class LibraryRepository {
   Future<List<StreamItem>> favoritesByKind(int playlistId, StreamKind kind) =>
       db.favoritesByKind(playlistId, kind);
   Future<void> markWatched(String key) => db.markWatched(key);
-  Future<void> markWatchedMany(Iterable<String> keys, {String origin = 'local'}) =>
+  Future<void> markWatchedMany(Iterable<String> keys,
+          {SyncOrigin origin = SyncOrigin.local}) =>
       db.markWatchedMany(keys, origin: origin);
   Future<void> unmarkWatched(String key) => db.unmarkWatched(key);
   Future<Set<int>> watchedIds(int playlistId) => db.watchedIds(playlistId);
@@ -194,8 +199,9 @@ class LibraryRepository {
   static void Function(LibraryRepository repo, String key)? onSettingChanged;
 
   Future<String?> getSetting(String key) => db.getSetting(key);
-  Future<void> setSetting(String key, String? value) async {
-    await db.setSetting(key, value);
+  Future<void> setSetting(String key, String? value,
+      {SyncOrigin origin = SyncOrigin.local}) async {
+    await db.setSetting(key, value, origin: origin);
     onSettingChanged?.call(this, key);
   }
 

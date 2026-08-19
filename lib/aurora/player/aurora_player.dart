@@ -16,6 +16,7 @@ import '../../data/sources/trakt_service.dart';
 import '../../state/live_quality.dart';
 import '../../state/playback_engine.dart';
 import '../../state/providers.dart';
+import '../../state/sync_providers.dart';
 import '../../state/scrub_thumbs.dart';
 import '../../shared/title_utils.dart';
 import '../aurora_focus.dart';
@@ -908,6 +909,14 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   void _checkpoint() {
     if (_isLive || _lastDurMs <= 0) return;
     _saveLocalProgress(_lastPosMs, _lastDurMs);
+    // Push at close, not per-checkpoint (a 2h film would be 1,440 requests;
+    // the outbox coalesces per key, so close-time carries the final spot).
+    unawaited(() async {
+      try {
+        final sync = await ref.read(syncServiceProvider.future);
+        await sync.pushPull();
+      } catch (_) {}
+    }());
     // Stop scrobble, then re-pull Trakt's resume points so the cached playback
     // snapshot (which feeds the Continue Watching overlay) reflects this
     // session the moment the player closes — not after the 6h cache TTL.
