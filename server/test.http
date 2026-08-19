@@ -1,0 +1,64 @@
+# REST-client smoke tests against `wrangler dev` (http://localhost:8787).
+# Fill in @adminSecret and run top to bottom.
+@base = http://localhost:8787
+@adminSecret = changeme
+
+### Health
+GET {{base}}/v1/health
+
+### Mint an account
+POST {{base}}/v1/admin/users
+X-Admin-Secret: {{adminSecret}}
+content-type: application/json
+
+{"email":"me@example.com","password":"test1234","label":"Me"}
+
+### Login  → copy .token into @token below
+POST {{base}}/v1/auth/login
+content-type: application/json
+
+{"email":"me@example.com","password":"test1234","device":"macbook","platform":"macos"}
+
+@token = PASTE_TOKEN
+
+### Push two ops + pull
+POST {{base}}/v1/sync
+Authorization: Bearer {{token}}
+content-type: application/json
+
+{"cursor":0,"epoch":0,"ops":[
+  {"ns":"prog","k":"movie:dune","v":{"p":300000,"d":9000000,"w":0},"deleted":false,"updated_at":1755600000000},
+  {"ns":"fav","k":"movie:dune","v":{"at":1755600000000},"deleted":false,"updated_at":1755600000000}
+]}
+
+### Retry the same push — results ok:true, but cursor must NOT advance
+POST {{base}}/v1/sync
+Authorization: Bearer {{token}}
+content-type: application/json
+
+{"cursor":2,"epoch":0,"ops":[
+  {"ns":"prog","k":"movie:dune","v":{"p":300000,"d":9000000,"w":0},"deleted":false,"updated_at":1755600000000}
+]}
+
+### Stale write — expect ok:false with current doc inlined
+POST {{base}}/v1/sync
+Authorization: Bearer {{token}}
+content-type: application/json
+
+{"cursor":2,"epoch":0,"ops":[
+  {"ns":"prog","k":"movie:dune","v":{"p":1,"d":9000000,"w":0},"deleted":false,"updated_at":1000000000000}
+]}
+
+### TV pairing: start (unauthed), approve (authed), poll
+POST {{base}}/v1/auth/pair/start
+content-type: application/json
+
+{"device":"Fire TV","platform":"tv"}
+
+### Devices
+GET {{base}}/v1/auth/me
+Authorization: Bearer {{token}}
+
+### Catalog home (needs TMDB_KEY secret in dev: wrangler dev --var TMDB_KEY:...)
+GET {{base}}/v1/catalog/home
+Authorization: Bearer {{token}}

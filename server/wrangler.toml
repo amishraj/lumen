@@ -1,0 +1,22 @@
+# Lumen backend — auth + sync + catalog on Cloudflare Workers + D1.
+#
+# One-time setup (see server/README.md):
+#   wrangler d1 create lumen            → paste database_id below
+#   wrangler d1 execute lumen --remote --file=schema.sql
+#   wrangler secret put ADMIN_SECRET    → random string, mints accounts
+#   wrangler secret put TMDB_KEY        → api.themoviedb.org v3 key
+#   wrangler secret put OMDB_KEY        → optional, IMDb/RT ratings
+#   wrangler secret put TRAKT_CLIENT_ID     → trakt.tv app (rotate the old one!)
+#   wrangler secret put TRAKT_CLIENT_SECRET
+#   wrangler deploy
+name = "lumen-api"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lumen"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+[triggers]
+crons = ["0 4 * * *"]   # nightly changes-log compaction + tombstone GC
