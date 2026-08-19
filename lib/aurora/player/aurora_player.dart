@@ -830,23 +830,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     }
     if ((pos.inMilliseconds - _lastSavedPosMs).abs() >= 5000) {
       _lastSavedPosMs = pos.inMilliseconds;
-      final repo = ref.read(repositoryProvider).valueOrNull;
-      if (_current.id != null) {
-        unawaited(repo?.db.saveProgress(
-            _current.id!, pos.inMilliseconds, dur.inMilliseconds));
-      } else {
-        // No stream row: per-episode key for shows, title key for debrid-only
-        // movies — which previously saved NOTHING locally, so they never
-        // appeared in Continue Watching and resume depended on live Trakt.
-        final ek = _episodeKey() ??
-            (_current.kind != StreamKind.series
-                ? movieProgressKey(cleanTitle(_current.name).title)
-                : null);
-        if (ek != null) {
-          unawaited(repo?.db.saveEpisodeProgress(
-              ek, pos.inMilliseconds, dur.inMilliseconds));
-        }
-      }
+      _saveLocalProgress(pos.inMilliseconds, dur.inMilliseconds);
     }
 
     // Keep Trakt's progress near-live: re-send a start scrobble every ~5 min
@@ -900,20 +884,30 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
         progressPct: _progressPct);
   }
 
+  /// One write path for local progress. VOD is keyed by the portable title
+  /// key — never by stream id, which is destroyed on every re-sync and whose
+  /// `progress` rows are now a rebuilt projection. Live keeps a direct
+  /// id-keyed recency write (no title identity, never syncs).
+  void _saveLocalProgress(int posMs, int durMs) {
+    final repo = ref.read(repositoryProvider).valueOrNull;
+    if (repo == null) return;
+    if (_isLive) {
+      final id = _current.id;
+      if (id != null) unawaited(repo.db.saveLiveProgress(id, posMs, durMs));
+      return;
+    }
+    final ek = _episodeKey() ??
+        (_current.kind != StreamKind.series
+            ? movieProgressKey(_current.name)
+            : null);
+    if (ek != null) {
+      unawaited(repo.db.saveEpisodeProgress(ek, posMs, durMs));
+    }
+  }
+
   void _checkpoint() {
     if (_isLive || _lastDurMs <= 0) return;
-    final repo = ref.read(repositoryProvider).valueOrNull;
-    if (_current.id != null) {
-      unawaited(repo?.db.saveProgress(_current.id!, _lastPosMs, _lastDurMs));
-    } else {
-      final ek = _episodeKey() ??
-          (_current.kind != StreamKind.series
-              ? movieProgressKey(cleanTitle(_current.name).title)
-              : null);
-      if (ek != null) {
-        unawaited(repo?.db.saveEpisodeProgress(ek, _lastPosMs, _lastDurMs));
-      }
-    }
+    _saveLocalProgress(_lastPosMs, _lastDurMs);
     // Stop scrobble, then re-pull Trakt's resume points so the cached playback
     // snapshot (which feeds the Continue Watching overlay) reflects this
     // session the moment the player closes — not after the 6h cache TTL.

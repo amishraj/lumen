@@ -52,7 +52,7 @@ final pinnedCategoriesProvider =
   final pl = ref.watch(activePlaylistProvider);
   final kind = ref.watch(selectedKindProvider);
   if (pl?.id == null) return {};
-  return (await repo.pinnedCategories(pl!.id!, kind)).toSet();
+  return (await repo.pinnedCategories(pl!, kind)).toSet();
 });
 
 /// Sentinel category that surfaces the user's favorites of the selected kind
@@ -449,11 +449,15 @@ String cwDismissKey(StreamItem item) => cwKeyForTitle(item.name, item.kind);
 
 /// The same key from a bare title — so a Trakt entry ("Breaking Bad") and the
 /// library row it corresponds to ("EN - Breaking Bad (2008) FHD") land on one
-/// key without needing a StreamItem to exist first.
+/// key without needing a StreamItem to exist first. Since v5 this is the
+/// canonical watch-state alphabet ([showProgressKey]/[movieProgressKey]), so
+/// dismissals live in the same key space as progress and favorites.
 String cwKeyForTitle(String name, StreamKind kind) {
-  final norm = TitleIndex.normalize(name);
-  final base = norm.isEmpty ? name.toLowerCase() : norm;
-  return kind == StreamKind.series ? 'show:$base' : 'movie:$base';
+  final key = kind == StreamKind.series
+      ? showProgressKey(name)
+      : movieProgressKey(name);
+  // titleKey('') fallback: never let two unparseable names collide on ':'.
+  return key.endsWith(':') ? '$key${name.toLowerCase()}' : key;
 }
 
 /// How many Continue Watching entries a home/My Stuff rail shows. Trakt's
@@ -741,16 +745,24 @@ final watchedIdsProvider = FutureProvider<Set<int>>((ref) async {
         final svc = await ref.read(traktServiceProvider.future);
         final idx = await ref.read(titleIndexProvider.future);
         if (idx == null) return;
-        final toMark = <int>{};
+        // Portable keys, derived from the LIBRARY row's name (not Trakt's)
+        // so the key matches what the ingest wrote to streams.title_key.
+        final toMark = <String>{};
         for (final w in (await svc.watchedMovies()).take(1000)) {
           final hit = idx.match(w.title, kind: StreamKind.movie);
-          if (hit?.id != null && !local.contains(hit!.id)) toMark.add(hit.id!);
+          if (hit?.id != null && !local.contains(hit!.id)) {
+            toMark.add(movieProgressKey(hit.name));
+          }
         }
         for (final w in (await svc.watchedShows()).take(1000)) {
           final hit = idx.match(w.title, kind: StreamKind.series);
-          if (hit?.id != null && !local.contains(hit!.id)) toMark.add(hit.id!);
+          if (hit?.id != null && !local.contains(hit!.id)) {
+            toMark.add(showProgressKey(hit.name));
+          }
         }
-        await repo.markWatchedMany(toMark);
+        // Trakt-derived: never enters the sync outbox (Trakt already reaches
+        // every device on the account).
+        await repo.markWatchedMany(toMark, origin: 'trakt');
         await repo.setSetting('trakt_watched_sync_at', '$nowMs');
         if (toMark.isNotEmpty) {
           ref.invalidateSelf(); // re-read with the freshly-marked ids
@@ -863,7 +875,39 @@ final traktWatchedEpisodesProvider =
 final favoritesListProvider = FutureProvider<List<StreamItem>>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   ref.watch(favoriteIdsProvider); // refresh when favorites change
-  return repo.favorites();
+  ref.watch(favoriteKeysProvider);
+  final library = await repo.favorites();
+  // Favorited titles with NO library row (debrid-only) still deserve a card —
+  // synthesize one from the key, exactly like Continue Watching does. The
+  // library rows already cover every key the projection matched.
+  final covered = <String>{
+    for (final it in library) cwKeyForTitle(it.name, it.kind)
+  };
+  final keyRows = await repo.db.db.query('favorites_v2',
+      where: "deleted=0 AND kind IN ('movie','series')",
+      orderBy: 'added_at DESC');
+  final pl = ref.watch(activePlaylistProvider);
+  final plId = pl?.id ?? 0;
+  String titleCase(String v) => v
+      .split(' ')
+      .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
+      .join(' ');
+  final extras = <StreamItem>[
+    for (final r in keyRows)
+      if (!covered.contains(r['fav_key'] as String) &&
+          ((r['fav_key'] as String).startsWith('movie:') ||
+              (r['fav_key'] as String).startsWith('show:')))
+        StreamItem(
+          playlistId: plId,
+          kind: (r['fav_key'] as String).startsWith('show:')
+              ? StreamKind.series
+              : StreamKind.movie,
+          name: titleCase((r['fav_key'] as String)
+              .substring((r['fav_key'] as String).indexOf(':') + 1)),
+          url: '',
+        ),
+  ];
+  return [...library, ...extras];
 });
 
 /// Event-style live channels for the Sports tab.
@@ -937,22 +981,37 @@ class FavoriteIdsNotifier extends AsyncNotifier<Set<int>> {
     return repo.favoriteIds();
   }
 
-  /// Flip a single id in-place so the UI reacts instantly, then persist.
-  /// Reverts the optimistic change if the write fails.
-  Future<void> toggle(int id, bool fav) async {
+  /// Flip an item in-place so the UI reacts instantly, then persist by the
+  /// portable key. Reverts the optimistic change if the write fails. Items
+  /// without a library row (debrid-only) skip the id-set flip — their star
+  /// state comes from [favoriteKeysProvider].
+  Future<void> toggle(StreamItem item, bool fav) async {
     final previous = state.valueOrNull ?? const <int>{};
-    final next = Set<int>.of(previous);
-    fav ? next.add(id) : next.remove(id);
-    state = AsyncData(next);
+    final id = item.id;
+    if (id != null) {
+      final next = Set<int>.of(previous);
+      fav ? next.add(id) : next.remove(id);
+      state = AsyncData(next);
+    }
     try {
       final repo = await ref.read(repositoryProvider.future);
-      await repo.toggleFavorite(id, fav);
+      await repo.toggleFavorite(item, fav);
+      // The projection may have starred sibling variants — re-read.
+      ref.invalidateSelf();
+      ref.invalidate(favoriteKeysProvider);
     } catch (_) {
-      state = AsyncData(previous);
+      if (id != null) state = AsyncData(previous);
       rethrow;
     }
   }
 }
+
+/// Favorited portable keys (movie:/show:/live:*) — the star state for items
+/// with no library row, where the id set can't represent them.
+final favoriteKeysProvider = FutureProvider<Set<String>>((ref) async {
+  final repo = await ref.watch(repositoryProvider.future);
+  return repo.favoriteKeys();
+});
 
 /// Favorites of one kind for the active source — backs the categorized
 /// "My List" rows on Home. Re-runs whenever favorites change.
@@ -994,11 +1053,12 @@ void refreshTraktData(WidgetRef ref) {
 /// providers, and (for movies/shows) mirrors the change onto the Trakt
 /// watchlist so "My List" and Trakt stay the same list.
 Future<void> setFavorite(WidgetRef ref, StreamItem item, bool fav) async {
-  if (item.id == null) return;
   // Optimistic + persisted: flips favoriteIds this frame so buttons/hearts react
   // instantly; the write is awaited inside toggle(). Then re-query the DB-backed
   // favorite rails now that the row exists, so they reflect the change too.
-  await ref.read(favoriteIdsProvider.notifier).toggle(item.id!, fav);
+  // Debrid-only titles (id == null) are favoritable too since v5 — their state
+  // rides favorites_v2 by portable key.
+  await ref.read(favoriteIdsProvider.notifier).toggle(item, fav);
   ref.invalidate(favoritesListProvider);
   ref.invalidate(favoritesByKindProvider(item.kind));
   if (item.kind == StreamKind.movie || item.kind == StreamKind.series) {

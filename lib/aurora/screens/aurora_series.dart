@@ -10,6 +10,7 @@ import '../../data/sources/tmdb_service.dart';
 import '../../data/sources/trakt_service.dart';
 import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
+import '../../shared/title_keys.dart';
 import '../../shared/title_utils.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
@@ -272,14 +273,16 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
       // the round-trip); clearing the LAST watched episodes removes it — the
       // old code left a stale check that nothing could ever clear.
       await _loadProgress();
-      if (widget.series.id != null) {
-        final anyLocalWatched = _prog.entries.any((e) =>
-            e.value.watched &&
-            e.key.startsWith('${_showTitle.trim().toLowerCase()}|'));
+      {
+        // Portable show-level key — works for library-backed AND debrid-only
+        // shows (the id-keyed variant silently skipped the latter).
+        final epPrefix = '${titleKey(_showTitle)}|';
+        final anyLocalWatched = _prog.entries
+            .any((e) => e.value.watched && e.key.startsWith(epPrefix));
         if (target) {
-          unawaited(repo.db.markWatched(widget.series.id!));
+          unawaited(repo.db.markWatched(showProgressKey(_showTitle)));
         } else if (!anyLocalWatched) {
-          unawaited(repo.db.unmarkWatched(widget.series.id!));
+          unawaited(repo.db.unmarkWatched(showProgressKey(_showTitle)));
         }
       }
       // The Trakt write is chained: its own snapshot invalidation happens

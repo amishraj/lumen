@@ -1,10 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../../shared/title_keys.dart' as tk;
 import '../models/models.dart';
+import '../sync/merge.dart';
 
 /// Single SQLite database. This is the source of truth — the UI never holds the
 /// full channel set in memory; it queries indexed, paginated windows from here.
@@ -32,13 +37,19 @@ class AppDatabase {
     }
   }
 
-  static Future<AppDatabase> open() async {
+  /// Tests only: clear the singleton so each test opens a fresh database.
+  @visibleForTesting
+  static void resetForTest() => _instance = null;
+
+  /// [overridePath] is for tests (sqflite_common_ffi + a temp file); the app
+  /// always resolves the platform support directory.
+  static Future<AppDatabase> open({String? overridePath}) async {
     if (_instance != null) return _instance!;
-    final dir = await getApplicationSupportDirectory();
-    final path = p.join(dir.path, 'lumen.db');
+    final path = overridePath ??
+        p.join((await getApplicationSupportDirectory()).path, 'lumen.db');
     final db = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       // Forward-compat: a future schema version must not brick this binary.
       // With onDowngrade unset, sqflite treats opening a NEWER db as an error,
       // so rolling back an APK after a schema bump would make the app
@@ -58,13 +69,30 @@ class AppDatabase {
         await _createV2(db);
         await _createV3(db);
         await _createV4(db);
+        await _createV5(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createV2(db);
         if (from < 3) await _createV3(db);
         if (from < 4) await _createV4(db);
+        if (from < 5) await _createV5(db);
       },
     );
+    // The v5 backfill runs OUTSIDE onUpgrade, gated on a marker: if it
+    // crashes midway the DDL is already in place (re-entrant) and the
+    // merge-based fold is idempotent, so the next open simply retries.
+    final done = Sqflite.firstIntValue(await db.rawQuery(
+        "SELECT COUNT(*) FROM sync_state WHERE key='v5_migrated_at'"));
+    if ((done ?? 0) == 0) {
+      await _backfillV5(db);
+      await db.insert(
+          'sync_state',
+          {
+            'key': 'v5_migrated_at',
+            'value': '${DateTime.now().millisecondsSinceEpoch}'
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    }
     return _instance = AppDatabase._(db, _fts);
   }
 
@@ -211,6 +239,397 @@ class AppDatabase {
       )''');
   }
 
+  /// Re-entrant ALTER: adding a column that already exists (a crashed v5
+  /// upgrade being retried) throws — swallow it and move on.
+  static Future<void> _addCol(
+      Database db, String table, String col, String decl) async {
+    try {
+      await db.execute('ALTER TABLE $table ADD COLUMN $col $decl');
+    } catch (_) {/* already present */}
+  }
+
+  /// v5: portable watch state.
+  ///
+  /// - `episode_progress` becomes the SINGLE source of truth for all watch
+  ///   state, keyed on the canonical title key ([tk.titleKey]). Three
+  ///   namespaces, mutually exclusive:
+  ///     `movie:<tk>`     a film (library-backed OR debrid-only — same key)
+  ///     `show:<tk>`      a show-level watched marker (Trakt reconciliation)
+  ///     `<tk>|s{n}e{n}`  one episode (episode keys always contain `|`)
+  /// - `progress` and `favorites` are demoted to id-keyed PROJECTIONS,
+  ///   rebuilt from the key space. Nothing writes them independently, so the
+  ///   re-sync swap wiping them via ON DELETE CASCADE is harmless — which is
+  ///   what let the url capture/re-map dance inside the swap be deleted. A
+  ///   downgraded binary still reads them as real data (dual-purpose).
+  /// - `deleted=1` is a TOMBSTONE. The old contract was "row absent means
+  ///   unwatched"; that cannot survive sync — a peer that never saw the
+  ///   delete would re-push its stale row and resurrect it. Reads filter
+  ///   `deleted=0`.
+  /// - `synthetic=1` marks Trakt-seeded fraction rows (fake 100000ms
+  ///   duration). They are never pushed to the sync server (Trakt already
+  ///   reaches every device) and Continue Watching exempts them from the
+  ///   60-second floor, which would otherwise drop every seeded resume
+  ///   point under 60%.
+  static Future<void> _createV5(Database db) async {
+    // Widen watch state.
+    await _addCol(db, 'episode_progress', 'synthetic',
+        'INTEGER NOT NULL DEFAULT 0');
+    await _addCol(
+        db, 'episode_progress', 'deleted', 'INTEGER NOT NULL DEFAULT 0');
+    await _addCol(
+        db, 'episode_progress', 'origin', "TEXT NOT NULL DEFAULT 'local'");
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_ep_updated '
+        'ON episode_progress(updated_at)');
+
+    // Retro-tag Trakt-seeded rows. saveEpisodeProgressFraction is the only
+    // writer of duration_ms==100000 with watched==0; a real 100-second clip
+    // is a false positive whose only cost is not being pushed to sync.
+    await db.execute("UPDATE episode_progress SET synthetic=1, origin='trakt' "
+        'WHERE duration_ms=100000 AND watched=0');
+
+    // The join bridge: the portable key, materialised on the library row at
+    // ingest (SQLite can't run cleanTitle, and computing it at read time
+    // would put six regex passes on the frame path).
+    await _addCol(db, 'streams', 'title_key', 'TEXT');
+    await _addCol(db, 'streams_staging', 'title_key', 'TEXT');
+    await _addCol(db, 'playlists', 'source_key', 'TEXT');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_streams_tkey ON streams(title_key)');
+
+    // The projection needs the synthetic bit too (Continue Watching's floor).
+    await _addCol(db, 'progress', 'synthetic', 'INTEGER NOT NULL DEFAULT 0');
+
+    // Portable favorites + pins.
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS favorites_v2 (
+        fav_key TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        added_at INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      )''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pinned_v2 (
+        source_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (source_key, kind, name)
+      )''');
+
+    // One-release safety net: the only real undo if titleKey has a bad regex.
+    await db.execute('CREATE TABLE IF NOT EXISTS progress_v4_backup '
+        'AS SELECT * FROM progress');
+    await db.execute('CREATE TABLE IF NOT EXISTS favorites_v4_backup '
+        'AS SELECT * FROM favorites');
+
+    // Sync plumbing (consumed by the Phase-3 engine; created here so the
+    // backfill marker has somewhere to live).
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_outbox (
+        ns TEXT NOT NULL,
+        k TEXT NOT NULL,
+        v TEXT,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (ns, k)
+      )''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_state (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )''');
+  }
+
+  /// The v5 data fold. Merge decisions run in Dart through [mergeWatch] — the
+  /// same function the sync engine uses — because the platform SQLite on old
+  /// TV boxes (3.8–3.19, the same ones lacking FTS5) has no upsert.
+  static Future<void> _backfillV5(Database db) async {
+    const chunk = 2000;
+
+    // 1. streams.title_key — movies/series only; live has no title identity.
+    while (true) {
+      final rows = await db.query('streams',
+          columns: ['id', 'name'],
+          where: "kind IN ('movie','series') AND title_key IS NULL",
+          orderBy: 'id',
+          limit: chunk);
+      if (rows.isEmpty) break;
+      final batch = db.batch();
+      for (final r in rows) {
+        final k = tk.titleKey(r['name'] as String);
+        batch.rawUpdate('UPDATE streams SET title_key=? WHERE id=?',
+            [k.isEmpty ? '' : k, r['id']]);
+      }
+      await batch.commit(noResult: true, continueOnError: true);
+      if (rows.length < chunk) break;
+    }
+
+    // 2. playlists.source_key.
+    for (final r in await db.query('playlists')) {
+      await db.rawUpdate('UPDATE playlists SET source_key=? WHERE id=?',
+          [playlistSourceKey(Playlist.fromRow(r)), r['id']]);
+    }
+
+    // 3. Re-key existing episode_progress rows into the canonical alphabet
+    //    (the old keys kept punctuation; titleKey is idempotent so unchanged
+    //    keys fold onto themselves), then fold id-keyed `progress` in:
+    //    movies -> movie:<tk>, series flag rows -> show:<tk>.
+    final out = <String, WatchRow>{};
+    void fold(WatchRow row) => out[row.key] = mergeWatch(out[row.key], row);
+
+    for (final r in await db.query('episode_progress')) {
+      final old = WatchRow.fromDb(r);
+      final bar = old.key.lastIndexOf('|');
+      final String newKey;
+      if (old.key.startsWith('movie:')) {
+        newKey = tk.movieKey(old.key.substring(6));
+      } else if (old.key.startsWith('show:')) {
+        newKey = tk.showKey(old.key.substring(5));
+      } else if (bar > 0) {
+        newKey = '${tk.titleKey(old.key.substring(0, bar))}'
+            '${old.key.substring(bar)}';
+      } else {
+        newKey = old.key;
+      }
+      fold(WatchRow(
+        key: newKey,
+        positionMs: old.positionMs,
+        durationMs: old.durationMs,
+        watched: old.watched,
+        updatedAt: old.updatedAt,
+        deleted: old.deleted,
+        synthetic: old.synthetic,
+        origin: old.origin,
+      ));
+    }
+    final legacy = await db.rawQuery(
+        'SELECT s.kind AS kind, s.title_key AS tk2, p.position_ms, '
+        'p.duration_ms, p.watched, p.updated_at FROM progress p '
+        'JOIN streams s ON s.id=p.stream_id '
+        "WHERE s.title_key IS NOT NULL AND s.title_key<>''");
+    for (final r in legacy) {
+      final key = r['kind'] == 'series'
+          ? 'show:${r['tk2']}'
+          : 'movie:${r['tk2']}';
+      fold(WatchRow(
+        key: key,
+        positionMs: (r['position_ms'] as int?) ?? 0,
+        durationMs: (r['duration_ms'] as int?) ?? 0,
+        watched: (r['watched'] as int? ?? 0) == 1,
+        updatedAt: (r['updated_at'] as int?) ?? 0,
+      ));
+    }
+    await db.transaction((txn) async {
+      await txn.delete('episode_progress');
+      final b = txn.batch();
+      for (final row in out.values) {
+        b.insert('episode_progress', row.toDb(),
+            conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      await b.commit(noResult: true, continueOnError: true);
+    });
+
+    // 4. favorites -> favorites_v2. Oldest added_at wins a collision ("I
+    //    favorited this in 2024" is the truer fact).
+    final favs = await db.rawQuery(
+        'SELECT s.kind, s.name, s.url, s.tvg_id, s.title_key AS tk2, '
+        'f.added_at FROM favorites f JOIN streams s ON s.id=f.stream_id');
+    final favOut = <String, ({String kind, int addedAt})>{};
+    for (final r in favs) {
+      final kind = r['kind'] as String;
+      final String key;
+      if (kind == 'live') {
+        key = tk.liveFavKeyFor(
+            tvgId: r['tvg_id'] as String?, url: r['url'] as String);
+      } else if ((r['tk2'] as String?)?.isNotEmpty == true) {
+        key = kind == 'series' ? 'show:${r['tk2']}' : 'movie:${r['tk2']}';
+      } else {
+        continue;
+      }
+      final added = (r['added_at'] as int?) ?? 0;
+      final have = favOut[key];
+      if (have == null || added < have.addedAt) {
+        favOut[key] = (kind: kind, addedAt: added);
+      }
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final e in favOut.entries) {
+      await db.insert(
+          'favorites_v2',
+          {
+            'fav_key': e.key,
+            'kind': e.value.kind,
+            'added_at': e.value.addedAt,
+            'deleted': 0,
+            'updated_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+
+    // 5. pinned_categories -> pinned_v2, keyed by the portable source key.
+    await db.execute(
+        'INSERT OR IGNORE INTO pinned_v2'
+        '(source_key,kind,name,position,deleted,updated_at) '
+        'SELECT pl.source_key, pc.kind, pc.name, pc.position, 0, ? '
+        'FROM pinned_categories pc JOIN playlists pl ON pl.id=pc.playlist_id '
+        'WHERE pl.source_key IS NOT NULL',
+        [now]);
+
+    // 6. Re-key the cw_hidden dismissals blob. The old alphabet was
+    //    alnum-only (TitleIndex.normalize) — spaces are unrecoverable, so map
+    //    keys back through the library (alnum(title_key) == old key body) and
+    //    drop the rest: a lost dismissal just resurfaces a card.
+    final rawHidden = await db.query('app_settings',
+        where: "key='cw_hidden'", limit: 1);
+    if (rawHidden.isNotEmpty) {
+      try {
+        final blob = rawHidden.first['value'] as String?;
+        if (blob != null && blob.isNotEmpty) {
+          final Map<String, Object?> old0 =
+              (jsonDecode(blob) as Map).cast<String, Object?>();
+          final alnum = RegExp('[^a-z0-9]');
+          final byAlnum = <String, String>{};
+          for (final r in await db.query('streams',
+              columns: ['title_key'],
+              where: "title_key IS NOT NULL AND title_key<>''",
+              distinct: true)) {
+            final tk2 = r['title_key'] as String;
+            byAlnum[tk2.replaceAll(alnum, '')] = tk2;
+          }
+          final rekeyed = <String, Object?>{};
+          old0.forEach((k, v) {
+            final isShow = k.startsWith('show:');
+            final isMovie = k.startsWith('movie:');
+            if (!isShow && !isMovie) return;
+            final body = isShow ? k.substring(5) : k.substring(6);
+            final mapped =
+                byAlnum[body.replaceAll(alnum, '')] ?? tk.titleKey(body);
+            if (mapped.isEmpty) return;
+            rekeyed['${isShow ? 'show' : 'movie'}:$mapped'] = v;
+          });
+          await db.insert(
+              'app_settings',
+              {'key': 'cw_hidden', 'value': jsonEncode(rekeyed)},
+              conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+      } catch (_) {/* corrupt blob — dismissals reset, cards resurface */}
+    }
+
+    // 6b. Re-key the remembered debrid links (same key space as watch state).
+    for (final r in await db.query('stream_choice')) {
+      final old = r['choice_key'] as String;
+      final bar = old.lastIndexOf('|');
+      final String newKey;
+      if (old.startsWith('movie:')) {
+        newKey = tk.movieKey(old.substring(6));
+      } else if (bar > 0) {
+        newKey = '${tk.titleKey(old.substring(0, bar))}${old.substring(bar)}';
+      } else {
+        continue;
+      }
+      if (newKey != old) {
+        await db.rawUpdate(
+            'UPDATE OR IGNORE stream_choice SET choice_key=? WHERE choice_key=?',
+            [newKey, old]);
+      }
+    }
+
+    // 7. Build the projections.
+    await _rebuildProjections(db);
+  }
+
+  /// Rebuild the id-keyed projections (`progress`, `favorites`) from the
+  /// portable key space. Called after the v5 fold and inside every library
+  /// swap — which is why the swap no longer needs the url capture/re-map.
+  /// Live rows in `progress` are direct writes (live never syncs and has no
+  /// title identity), so only the VOD slice is dropped and rebuilt.
+  static Future<void> _rebuildProjections(DatabaseExecutor db) async {
+    await db.execute('DELETE FROM progress WHERE stream_id IN '
+        "(SELECT id FROM streams WHERE kind IN ('movie','series'))");
+    await db.execute(
+        'INSERT OR REPLACE INTO progress'
+        '(stream_id,position_ms,duration_ms,watched,synthetic,updated_at) '
+        'SELECT s.id, w.position_ms, w.duration_ms, w.watched, w.synthetic, '
+        'w.updated_at FROM streams s JOIN episode_progress w ON w.ep_key='
+        "(CASE s.kind WHEN 'series' THEN 'show:' ELSE 'movie:' END)"
+        '||s.title_key '
+        "WHERE s.kind IN ('movie','series') AND s.title_key IS NOT NULL "
+        "AND s.title_key<>'' AND w.deleted=0");
+    // Episode rows deliberately do NOT project onto the series poster row:
+    // an in-progress episode must never clear a show-level watched mark (the
+    // Trakt reconciliation would re-add it hourly — an oscillation), and in
+    // the pre-v5 world episode activity never touched the id-keyed row
+    // either. Show cards in Continue Watching come from the episode keys
+    // directly (providers.dart synthesis), not from this projection.
+
+    await db.execute('DELETE FROM favorites WHERE stream_id IN '
+        "(SELECT id FROM streams WHERE kind IN ('movie','series'))");
+    await db.execute(
+        'INSERT OR IGNORE INTO favorites(stream_id, added_at) '
+        'SELECT s.id, f.added_at FROM favorites_v2 f JOIN streams s '
+        "ON f.fav_key=(CASE s.kind WHEN 'series' THEN 'show:' ELSE 'movie:' "
+        "END)||s.title_key "
+        "WHERE f.deleted=0 AND s.kind IN ('movie','series') "
+        "AND s.title_key IS NOT NULL AND s.title_key<>''");
+
+    // Live favorites: the key shapes need Dart (regex on the url), but the
+    // set is tiny — dozens, not thousands.
+    final liveFavs = await db.query('favorites_v2',
+        where: "kind='live' AND deleted=0");
+    await db.execute('DELETE FROM favorites WHERE stream_id IN '
+        "(SELECT id FROM streams WHERE kind='live')");
+    for (final f in liveFavs) {
+      final key = f['fav_key'] as String;
+      final added = f['added_at'];
+      if (key.startsWith('live:tvg:')) {
+        await db.execute(
+            'INSERT OR IGNORE INTO favorites(stream_id, added_at) '
+            "SELECT id, ? FROM streams WHERE kind='live' AND tvg_id=?",
+            [added, key.substring(9)]);
+      } else if (key.startsWith('live:xt:')) {
+        await db.execute(
+            'INSERT OR IGNORE INTO favorites(stream_id, added_at) '
+            "SELECT id, ? FROM streams WHERE kind='live' AND url LIKE ?",
+            [added, '%/${key.substring(8)}.%']);
+      } else if (key.startsWith('live:url:')) {
+        await db.execute(
+            'INSERT OR IGNORE INTO favorites(stream_id, added_at) '
+            "SELECT id, ? FROM streams WHERE kind='live' AND url=?",
+            [added, key.substring(9)]);
+      }
+    }
+  }
+
+  /// Refresh the `progress` projection rows for ONE portable key after a
+  /// write — a targeted indexed statement instead of a full rebuild.
+  Future<void> _projectProgressKey(String key) async {
+    // Episode keys never project (see _rebuildProjections for why).
+    if (key.contains('|')) return;
+    final isShow = key.startsWith('show:');
+    final tkey = isShow ? key.substring(5) : key.substring(6);
+    final kind = isShow ? 'series' : 'movie';
+    final rows = await db.query('episode_progress',
+        where: 'ep_key=? AND deleted=0', whereArgs: [key], limit: 1);
+    if (rows.isEmpty) {
+      await db.execute(
+          'DELETE FROM progress WHERE stream_id IN '
+          '(SELECT id FROM streams WHERE kind=? AND title_key=?)',
+          [kind, tkey]);
+      return;
+    }
+    await db.execute(
+        'INSERT OR REPLACE INTO progress'
+        '(stream_id,position_ms,duration_ms,watched,synthetic,updated_at) '
+        'SELECT s.id, w.position_ms, w.duration_ms, w.watched, w.synthetic, '
+        'w.updated_at FROM streams s JOIN episode_progress w ON w.ep_key=? '
+        'WHERE s.kind=? AND s.title_key=?',
+        [key, kind, tkey]);
+  }
+
   // ---- Remembered stream choice (last-played link per title) ---------------
 
   Future<({String url, String? label, String? quality, int updatedAt})?>
@@ -294,9 +713,15 @@ class AppDatabase {
         'duration_ms': durMs,
         'watched': watched,
         'updated_at': DateTime.now().millisecondsSinceEpoch,
+        // A real checkpoint overrides a tombstone (the user is watching it
+        // again) and clears any synthetic Trakt seed.
+        'deleted': 0,
+        'synthetic': 0,
+        'origin': 'local',
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    await _projectProgressKey(key);
   }
 
   /// Seed an episode's progress from a known fraction (a Trakt cross-device
@@ -308,6 +733,20 @@ class AppDatabase {
   Future<void> saveEpisodeProgressFraction(String key, double fraction,
       {int updatedAt = 0}) async {
     final frac = fraction.clamp(0.0, 1.0);
+    final at =
+        updatedAt > 0 ? updatedAt : DateTime.now().millisecondsSinceEpoch;
+    // Respect a fresher tombstone: an explicit local un-watch must not be
+    // resurrected by a Trakt resume point that predates it.
+    final have = await db.query('episode_progress',
+        columns: ['deleted', 'updated_at'],
+        where: 'ep_key=?',
+        whereArgs: [key],
+        limit: 1);
+    if (have.isNotEmpty &&
+        (have.first['deleted'] as int? ?? 0) == 1 &&
+        ((have.first['updated_at'] as int?) ?? 0) >= at) {
+      return;
+    }
     await db.insert(
       'episode_progress',
       {
@@ -320,16 +759,24 @@ class AppDatabase {
         // end" sessions as seen locally, and the flag was sticky (hydrate
         // skips already-watched rows, so no fresher checkpoint could fix it).
         'watched': 0,
-        'updated_at':
-            updatedAt > 0 ? updatedAt : DateTime.now().millisecondsSinceEpoch,
+        'updated_at': at,
+        'deleted': 0,
+        // Trakt-derived: never pushed to the sync server (Trakt already
+        // reaches every device), and exempt from Continue Watching's
+        // 60-second floor (the 100000ms denominator is fake).
+        'synthetic': 1,
+        'origin': 'trakt',
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    await _projectProgressKey(key);
   }
 
   /// Explicitly set the watched flag for a batch of episode keys (the "mark
   /// season watched" toggle). Watched rows are stored flag-only (0/0 pos/dur);
-  /// un-watching removes the row so the episode reverts to untouched. One
+  /// un-watching writes a TOMBSTONE (deleted=1) rather than removing the row —
+  /// "absent means unwatched" cannot survive sync, where a peer that never
+  /// saw the delete would re-push its stale row and resurrect it. One
   /// transaction for the whole season.
   Future<void> setEpisodesWatched(
       Iterable<String> keys, bool watched) async {
@@ -339,25 +786,26 @@ class AppDatabase {
     await db.transaction((txn) async {
       final batch = txn.batch();
       for (final key in list) {
-        if (watched) {
-          batch.insert(
-            'episode_progress',
-            {
-              'ep_key': key,
-              'position_ms': 0,
-              'duration_ms': 0,
-              'watched': 1,
-              'updated_at': now,
-            },
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
-        } else {
-          batch.delete('episode_progress',
-              where: 'ep_key=?', whereArgs: [key]);
-        }
+        batch.insert(
+          'episode_progress',
+          {
+            'ep_key': key,
+            'position_ms': 0,
+            'duration_ms': 0,
+            'watched': watched ? 1 : 0,
+            'updated_at': now,
+            'deleted': watched ? 0 : 1,
+            'synthetic': 0,
+            'origin': 'local',
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
       }
       await batch.commit(noResult: true, continueOnError: true);
     });
+    for (final key in list) {
+      await _projectProgressKey(key);
+    }
   }
 
   /// ep_key → (completed fraction 0..1, watched, last-touched ms) for every
@@ -365,7 +813,7 @@ class AppDatabase {
   /// resume overlays and "jump to next episode".
   Future<Map<String, ({double fraction, bool watched, int updatedAt})>>
       episodeProgressAll() async {
-    final rows = await db.query('episode_progress');
+    final rows = await db.query('episode_progress', where: 'deleted=0');
     final out = <String, ({double fraction, bool watched, int updatedAt})>{};
     for (final r in rows) {
       final pos = (r['position_ms'] as num?)?.toDouble() ?? 0;
@@ -403,34 +851,55 @@ class AppDatabase {
 
   // ---- Pinned categories ---------------------------------------------------
 
-  Future<List<String>> pinnedCategories(int playlistId, StreamKind kind) async {
+  /// Pins live in `pinned_v2`, keyed by the portable source key so they
+  /// survive re-sync and travel between devices. The legacy id-keyed
+  /// `pinned_categories` is dual-written for one release so a downgraded
+  /// binary still reads real data.
+  Future<List<String>> pinnedCategories(
+      Playlist playlist, StreamKind kind) async {
     final rows = await db.query(
-      'pinned_categories',
+      'pinned_v2',
       columns: ['name'],
-      where: 'playlist_id=? AND kind=?',
-      whereArgs: [playlistId, kind.name],
+      where: 'source_key=? AND kind=? AND deleted=0',
+      whereArgs: [playlistSourceKey(playlist), kind.name],
       orderBy: 'position, name',
     );
     return rows.map((r) => r['name'] as String).toList();
   }
 
   Future<void> setPinned(
-      int playlistId, StreamKind kind, String name, bool pinned) async {
+      Playlist playlist, StreamKind kind, String name, bool pinned) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.insert(
+      'pinned_v2',
+      {
+        'source_key': playlistSourceKey(playlist),
+        'kind': kind.name,
+        'name': name,
+        'position': now ~/ 1000,
+        'deleted': pinned ? 0 : 1,
+        'updated_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    // Legacy dual-write (drop with the v4 tables).
+    final plId = playlist.id;
+    if (plId == null) return;
     if (pinned) {
       await db.insert(
         'pinned_categories',
         {
-          'playlist_id': playlistId,
+          'playlist_id': plId,
           'kind': kind.name,
           'name': name,
-          'position': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          'position': now ~/ 1000,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     } else {
       await db.delete('pinned_categories',
           where: 'playlist_id=? AND kind=? AND name=?',
-          whereArgs: [playlistId, kind.name, name]);
+          whereArgs: [plId, kind.name, name]);
     }
   }
 
@@ -441,7 +910,10 @@ class AppDatabase {
       {int limit = 20}) async {
     final rows = await db.rawQuery(
       'SELECT s.* FROM progress pr JOIN streams s ON s.id=pr.stream_id '
-      'WHERE s.playlist_id=? AND pr.watched=0 AND pr.position_ms>60000 '
+      'WHERE s.playlist_id=? AND pr.watched=0 '
+      // Synthetic Trakt seeds carry a fake 100000ms denominator, so the
+      // 60-second floor would drop every seeded resume point under 60%.
+      'AND (pr.position_ms>60000 OR pr.synthetic=1) '
       'ORDER BY pr.updated_at DESC LIMIT ?',
       [playlistId, limit],
     );
@@ -490,8 +962,11 @@ class AppDatabase {
 
   // ---- Playlists -----------------------------------------------------------
 
-  Future<int> insertPlaylist(Playlist pl) =>
-      db.insert('playlists', pl.toRow()..remove('id'));
+  Future<int> insertPlaylist(Playlist pl) => db.insert(
+      'playlists',
+      pl.toRow()
+        ..remove('id')
+        ..['source_key'] = playlistSourceKey(pl));
 
   Future<List<Playlist>> playlists() async {
     final rows = await db.query('playlists', orderBy: 'created_at DESC');
@@ -499,6 +974,22 @@ class AppDatabase {
   }
 
   Future<void> deletePlaylist(int id) async {
+    // Retire the source's pins in the portable table (tombstones, so the
+    // delete can sync); the legacy CASCADE handles the id-keyed leftovers.
+    final pl = await db.query('playlists',
+        where: 'id=?', whereArgs: [id], limit: 1);
+    if (pl.isNotEmpty) {
+      await db.update(
+          'pinned_v2',
+          {
+            'deleted': 1,
+            'updated_at': DateTime.now().millisecondsSinceEpoch
+          },
+          where: 'source_key=?',
+          whereArgs: [playlistSourceKey(Playlist.fromRow(pl.first))]);
+      await db.delete('pinned_categories',
+          where: 'playlist_id=?', whereArgs: [id]);
+    }
     await db.delete('playlists', where: 'id=?', whereArgs: [id]);
     if (ftsAvailable) {
       await db.execute(
@@ -587,8 +1078,8 @@ class AppDatabase {
         }
         final it = iter.current;
         batch.rawInsert(
-          'INSERT INTO streams_staging(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating) '
-          'VALUES(?,?,?,?,?,?,?,?,?)',
+          'INSERT INTO streams_staging(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating,title_key) '
+          'VALUES(?,?,?,?,?,?,?,?,?,?)',
           [
             playlistId,
             it.kind.name,
@@ -599,6 +1090,10 @@ class AppDatabase {
             it.tvgId,
             it.num,
             it.rating,
+            // The portable key, materialised at ingest — live channels have
+            // no title identity (cleanTitle strips the quality tags that
+            // separate regional feeds).
+            it.kind == StreamKind.live ? null : tk.titleKey(it.name),
           ],
         );
         n++;
@@ -611,19 +1106,17 @@ class AppDatabase {
 
     // Phase 2: the swap — pure in-SQL row moves, hundreds of ms not minutes.
     await db.transaction((txn) async {
-      // Favorites and progress reference streams.id with ON DELETE CASCADE, and
-      // ids are reassigned on every re-sync — so a naive delete+reinsert wipes
-      // the user's favorites and watch history. Capture them keyed on the
-      // STABLE stream url, then re-map to the new ids after reinsert.
-      final favRows = await txn.rawQuery(
-          'SELECT s.url AS url, f.added_at AS added_at FROM favorites f '
-          'JOIN streams s ON s.id=f.stream_id WHERE s.playlist_id=?',
-          [playlistId]);
-      final progRows = await txn.rawQuery(
+      // VOD watch state and favorites live in the portable key space
+      // (episode_progress / favorites_v2), so the CASCADE wiping the
+      // id-keyed projections is harmless — they're rebuilt below. Only LIVE
+      // progress rows are direct id-keyed writes (recent-channels recency),
+      // so they alone are captured by url and re-mapped.
+      final liveProg = await txn.rawQuery(
           'SELECT s.url AS url, p.position_ms AS position_ms, '
           'p.duration_ms AS duration_ms, p.watched AS watched, '
           'p.updated_at AS updated_at FROM progress p '
-          'JOIN streams s ON s.id=p.stream_id WHERE s.playlist_id=?',
+          'JOIN streams s ON s.id=p.stream_id '
+          "WHERE s.playlist_id=? AND s.kind='live'",
           [playlistId]);
 
       if (ftsAvailable) {
@@ -634,8 +1127,8 @@ class AppDatabase {
       await txn
           .delete('streams', where: 'playlist_id=?', whereArgs: [playlistId]);
       await txn.execute(
-          'INSERT INTO streams(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating) '
-          'SELECT playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating '
+          'INSERT INTO streams(playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating,title_key) '
+          'SELECT playlist_id,kind,name,logo,url,group_title,tvg_id,num,rating,title_key '
           'FROM streams_staging WHERE playlist_id=? ORDER BY rowid',
           [playlistId]);
 
@@ -648,16 +1141,7 @@ class AppDatabase {
             [playlistId]);
       }
 
-      // Restore favorites + progress against the new ids, matched by url.
-      // INSERT..SELECT so an item that no longer exists in the source is just
-      // skipped (its row finds no matching stream).
-      for (final f in favRows) {
-        await txn.rawInsert(
-            'INSERT OR IGNORE INTO favorites(stream_id, added_at) '
-            'SELECT id, ? FROM streams WHERE playlist_id=? AND url=? LIMIT 1',
-            [f['added_at'], playlistId, f['url']]);
-      }
-      for (final p in progRows) {
+      for (final p in liveProg) {
         await txn.rawInsert(
             'INSERT OR REPLACE INTO progress'
             '(stream_id, position_ms, duration_ms, watched, updated_at) '
@@ -674,6 +1158,10 @@ class AppDatabase {
       }
       await txn.delete('streams_staging',
           where: 'playlist_id=?', whereArgs: [playlistId]);
+
+      // Rebuild the id-keyed projections from the key space against the
+      // fresh ids — this replaces the old url capture/re-map entirely.
+      await _rebuildProjections(txn);
     });
 
     return written;
@@ -820,19 +1308,69 @@ class AppDatabase {
 
   // ---- Favorites / progress ------------------------------------------------
 
-  Future<void> toggleFavorite(int streamId, bool fav) async {
-    if (fav) {
-      await db.insert(
-        'favorites',
-        {
-          'stream_id': streamId,
-          'added_at': DateTime.now().millisecondsSinceEpoch
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+  /// Favorite/unfavorite by the portable key. Writes `favorites_v2` (the
+  /// durable, syncable truth) and refreshes the id-keyed `favorites`
+  /// projection for every library row matching the key — so favoriting
+  /// "EN - Dune" also stars "Dune 4K", matching the search dedupe.
+  Future<void> toggleFavorite(StreamItem item, bool fav) async {
+    final key = favKeyForItem(item);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.insert(
+      'favorites_v2',
+      {
+        'fav_key': key,
+        'kind': item.kind.name,
+        'added_at': now,
+        'deleted': fav ? 0 : 1,
+        'updated_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    await _projectFavoriteKey(key, item.kind, fav ? now : null);
+  }
+
+  /// Refresh the `favorites` projection rows for one fav_key. [addedAt] null
+  /// means the key was unfavorited (delete the projection rows).
+  Future<void> _projectFavoriteKey(
+      String key, StreamKind kind, int? addedAt) async {
+    final String where;
+    final List<Object?> args;
+    if (key.startsWith('live:tvg:')) {
+      where = "kind='live' AND tvg_id=?";
+      args = [key.substring(9)];
+    } else if (key.startsWith('live:xt:')) {
+      where = "kind='live' AND url LIKE ?";
+      args = ['%/${key.substring(8)}.%'];
+    } else if (key.startsWith('live:url:')) {
+      where = "kind='live' AND url=?";
+      args = [key.substring(9)];
     } else {
-      await db.delete('favorites', where: 'stream_id=?', whereArgs: [streamId]);
+      final isShow = key.startsWith('show:');
+      where = 'kind=? AND title_key=?';
+      args = [
+        isShow ? 'series' : 'movie',
+        isShow ? key.substring(5) : key.substring(6)
+      ];
     }
+    if (addedAt == null) {
+      await db.execute(
+          'DELETE FROM favorites WHERE stream_id IN '
+          '(SELECT id FROM streams WHERE $where)',
+          args);
+    } else {
+      await db.execute(
+          'INSERT OR REPLACE INTO favorites(stream_id, added_at) '
+          'SELECT id, ? FROM streams WHERE $where',
+          [addedAt, ...args]);
+    }
+  }
+
+  /// Every favorited key (movie:/show:/live:*), for items with no library
+  /// row — the detail screen's star on debrid-only titles.
+  Future<Set<String>> favoriteKeys() async {
+    final rows = await db.query('favorites_v2',
+        columns: ['fav_key'], where: 'deleted=0');
+    return rows.map((r) => r['fav_key'] as String).toSet();
   }
 
   Future<Set<int>> favoriteIds() async {
@@ -887,57 +1425,66 @@ class AppDatabase {
     return out;
   }
 
-  /// Mark an item watched (e.g. reflecting Trakt's watched history).
-  Future<void> markWatched(int streamId) async {
-    await db.insert(
-      'progress',
-      {
-        'stream_id': streamId,
-        'position_ms': 0,
-        'duration_ms': 0,
-        'watched': 1,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
+  /// Mark a title watched by its portable key (`movie:<tk>` / `show:<tk>`),
+  /// e.g. reflecting Trakt's watched history. Flag-only row (0/0 pos/dur).
+  Future<void> markWatched(String key, {String origin = 'local'}) =>
+      markWatchedMany([key], origin: origin);
 
   /// Batched [markWatched] — the Trakt watched-history reconciliation marks
   /// hundreds of titles at once; one transaction instead of N round-trips.
-  Future<void> markWatchedMany(Iterable<int> streamIds) async {
-    final ids = streamIds.toList();
-    if (ids.isEmpty) return;
+  Future<void> markWatchedMany(Iterable<String> keys,
+      {String origin = 'local'}) async {
+    final list = keys.toList();
+    if (list.isEmpty) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.transaction((txn) async {
       final batch = txn.batch();
-      for (final id in ids) {
+      for (final key in list) {
         batch.insert(
-          'progress',
+          'episode_progress',
           {
-            'stream_id': id,
+            'ep_key': key,
             'position_ms': 0,
             'duration_ms': 0,
             'watched': 1,
             'updated_at': now,
+            'deleted': 0,
+            'synthetic': 0,
+            'origin': origin,
           },
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
       await batch.commit(noResult: true, continueOnError: true);
     });
+    for (final key in list) {
+      await _projectProgressKey(key);
+    }
   }
 
-  /// Clear the watched flag on a stream row (the season un-watch toggle must
-  /// also clear the series' poster check, which the Trakt reconciliation set).
-  /// Flag-only rows (0/0 pos/dur) are deleted outright; real progress stays.
-  Future<void> unmarkWatched(int streamId) async {
-    final deleted = await db.delete('progress',
-        where: 'stream_id=? AND position_ms=0 AND duration_ms=0',
-        whereArgs: [streamId]);
-    if (deleted == 0) {
-      await db.update('progress', {'watched': 0},
-          where: 'stream_id=?', whereArgs: [streamId]);
+  /// Clear the watched flag on a title (the season un-watch toggle must also
+  /// clear the series' poster check, which the Trakt reconciliation set).
+  /// Flag-only rows become tombstones; real progress keeps its position with
+  /// the flag cleared.
+  Future<void> unmarkWatched(String key) async {
+    final rows = await db.query('episode_progress',
+        where: 'ep_key=?', whereArgs: [key], limit: 1);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (rows.isEmpty) return;
+    final flagOnly = (rows.first['position_ms'] as int? ?? 0) == 0 &&
+        (rows.first['duration_ms'] as int? ?? 0) == 0;
+    if (flagOnly) {
+      await db.update(
+          'episode_progress',
+          {'watched': 0, 'deleted': 1, 'updated_at': now, 'origin': 'local'},
+          where: 'ep_key=?',
+          whereArgs: [key]);
+    } else {
+      await db.update('episode_progress',
+          {'watched': 0, 'updated_at': now, 'origin': 'local'},
+          where: 'ep_key=?', whereArgs: [key]);
     }
+    await _projectProgressKey(key);
   }
 
   /// Every movie + series row of one playlist, in a single query — feeds the
@@ -960,15 +1507,19 @@ class AppDatabase {
     return rows.map((r) => r['stream_id'] as int).toSet();
   }
 
-  Future<void> saveProgress(int streamId, int posMs, int durMs) async {
-    final watched = durMs > 0 && posMs / durMs >= watchedThreshold ? 1 : 0;
+  /// Live channels only: an id-keyed recency write (backs the recent-
+  /// channels behaviour of Recently Watched). Live has no title identity, so
+  /// it stays out of the portable key space — VOD progress must go through
+  /// [saveEpisodeProgress] with a `movie:`/episode key instead, or the next
+  /// projection rebuild would silently discard it.
+  Future<void> saveLiveProgress(int streamId, int posMs, int durMs) async {
     await db.insert(
       'progress',
       {
         'stream_id': streamId,
         'position_ms': posMs,
         'duration_ms': durMs,
-        'watched': watched,
+        'watched': 0,
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,

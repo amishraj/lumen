@@ -1,5 +1,7 @@
 // Plain data models — no codegen, so the project builds with zero build_runner steps.
 
+import '../../shared/title_keys.dart' as tk;
+
 enum SourceKind { m3u, xtream }
 
 enum StreamKind { live, movie, series }
@@ -11,17 +13,41 @@ StreamKind streamKindFromString(String s) => StreamKind.values.firstWhere(
 
 /// Stable per-episode identity for local watch tracking. Series episodes are
 /// resolved on demand (no DB stream row) and may play from IPTV *or* a
-/// changing Real-Debrid url, so progress is keyed by the show title + S/E
-/// rather than the stream url. Callers pass an already-cleaned title.
-String episodeKey(String cleanShowTitle, int season, int episode) =>
-    '${cleanShowTitle.trim().toLowerCase()}|s${season}e$episode';
+/// changing Real-Debrid url, so progress is keyed by the show title + S/E.
+/// Since DB v5 this delegates to the canonical [tk.epKey] alphabet — raw and
+/// already-cleaned titles converge on the same key.
+String episodeKey(String showTitle, int season, int episode) =>
+    tk.epKey(showTitle, season, episode);
 
-/// Title-keyed identity for movies that have no library stream row (debrid-only
-/// titles from TMDB/Trakt discovery). Their progress lives in the same
-/// episode_progress table under this prefix — the `movie:` namespace can never
-/// collide with an episode key (those always contain a `|`).
-String movieProgressKey(String cleanTitle) =>
-    'movie:${cleanTitle.trim().toLowerCase()}';
+/// Title-keyed identity for a movie's watch state (library-backed AND
+/// debrid-only — since v5 both live in the same key space). Delegates to the
+/// canonical [tk.movieKey] alphabet; the `movie:` namespace can never collide
+/// with an episode key (those always contain a `|`).
+String movieProgressKey(String title) => tk.movieKey(title);
+
+/// Show-level watched marker (the poster check seeded from Trakt history).
+String showProgressKey(String title) => tk.showKey(title);
+
+/// Portable identity of a source — [Playlist.id] is a local AUTOINCREMENT and
+/// means nothing on another device.
+String playlistSourceKey(Playlist pl) => tk.sourceKeyFor(
+      isXtream: pl.kind == SourceKind.xtream,
+      url: pl.url,
+      username: pl.username,
+      debridSentinel: isDebridSentinel(pl),
+    );
+
+/// Identity of a live channel for favorites (live has no title identity).
+String liveFavKey(StreamItem it) =>
+    tk.liveFavKeyFor(tvgId: it.tvgId, url: it.url);
+
+/// The favorites key for any item: title-keyed for VOD, channel-keyed for
+/// live. This is what `favorites_v2.fav_key` stores.
+String favKeyForItem(StreamItem it) => switch (it.kind) {
+      StreamKind.live => liveFavKey(it),
+      StreamKind.series => tk.showKey(it.name),
+      StreamKind.movie => tk.movieKey(it.name),
+    };
 
 /// Sentinel "source" URL for a debrid-only setup (no IPTV provider). The row
 /// exists so every playlist-scoped provider/snapshot has an id to key on, but

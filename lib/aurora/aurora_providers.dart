@@ -53,7 +53,7 @@ final auroraPinnedProvider = FutureProvider.autoDispose
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return {};
-  return (await repo.pinnedCategories(pl!.id!, kind)).toSet();
+  return (await repo.pinnedCategories(pl!, kind)).toSet();
 });
 
 /// Bumped after a pin toggle so the pinned set + ordered lists recompute.
@@ -64,8 +64,8 @@ Future<void> toggleAuroraPin(
   final repo = await ref.read(repositoryProvider.future);
   final pl = ref.read(activePlaylistProvider);
   if (pl?.id == null) return;
-  final current = (await repo.pinnedCategories(pl!.id!, kind)).contains(name);
-  await repo.setPinned(pl.id!, kind, name, !current);
+  final current = (await repo.pinnedCategories(pl!, kind)).contains(name);
+  await repo.setPinned(pl, kind, name, !current);
   ref.read(auroraPinRevProvider.notifier).state++;
 }
 

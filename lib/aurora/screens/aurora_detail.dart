@@ -74,7 +74,13 @@ class _AuroraDetailScreenState extends ConsumerState<AuroraDetailScreen> {
     final tmdb = bundle.valueOrNull?.tmdb;
     final loading = bundle.isLoading;
     final favs = ref.watch(favoriteIdsProvider).valueOrNull ?? const <int>{};
-    final isFav = item.id != null && favs.contains(item.id);
+    // Library rows check the id set; debrid-only titles (id == null) are
+    // favoritable too since v5 — their state rides favorites_v2 by key.
+    final favKeys =
+        ref.watch(favoriteKeysProvider).valueOrNull ?? const <String>{};
+    final isFav = item.id != null
+        ? favs.contains(item.id)
+        : favKeys.contains(favKeyForItem(item));
     // Library items resume by stream id; debrid-only titles (no id) by their
     // title-keyed local progress — previously they simply had no Resume.
     double? fraction;
@@ -303,30 +309,8 @@ class _AuroraDetailScreenState extends ConsumerState<AuroraDetailScreen> {
   }
 
   Future<void> _toggleList(bool isFav) async {
-    if (item.id != null) {
-      await setFavorite(ref, item, !isFav);
-      return;
-    }
-    // A TMDB-catalog title that isn't matched in the library — resolve the
-    // English IPTV match so My List stays library-backed, else say so.
-    final messenger = ScaffoldMessenger.of(context);
-    final repo = await ref.read(repositoryProvider.future);
-    final pl = ref.read(activePlaylistProvider);
-    if (pl?.id == null) return;
-    final hits = await repo.search(
-        playlistId: pl!.id!, kind: item.kind, query: cleanTitle(item.name).title);
-    final match = hits.isEmpty ? null : hits.first;
-    if (match?.id != null) {
-      await setFavorite(ref, match!, true);
-      messenger.showSnackBar(const SnackBar(
-          backgroundColor: Aurora.bgRaised,
-          content:
-              Text('Added to My List', style: TextStyle(color: Aurora.text))));
-    } else {
-      messenger.showSnackBar(const SnackBar(
-          backgroundColor: Aurora.bgRaised,
-          content: Text('This title isn\'t in your IPTV library.',
-              style: TextStyle(color: Aurora.text))));
-    }
+    // Favorites are title-keyed since v5, so a debrid-only TMDB title
+    // favorites exactly like a library row — no library-match workaround.
+    await setFavorite(ref, item, !isFav);
   }
 }

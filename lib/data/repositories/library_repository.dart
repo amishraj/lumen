@@ -131,12 +131,16 @@ class LibraryRepository {
           query: query);
 
   Future<Set<int>> favoriteIds() => db.favoriteIds();
-  Future<void> toggleFavorite(int id, bool fav) => db.toggleFavorite(id, fav);
+  Future<Set<String>> favoriteKeys() => db.favoriteKeys();
+  Future<void> toggleFavorite(StreamItem item, bool fav) =>
+      db.toggleFavorite(item, fav);
   Future<List<StreamItem>> favorites() => db.favorites();
   Future<List<StreamItem>> favoritesByKind(int playlistId, StreamKind kind) =>
       db.favoritesByKind(playlistId, kind);
-  Future<void> markWatched(int id) => db.markWatched(id);
-  Future<void> markWatchedMany(Iterable<int> ids) => db.markWatchedMany(ids);
+  Future<void> markWatched(String key) => db.markWatched(key);
+  Future<void> markWatchedMany(Iterable<String> keys, {String origin = 'local'}) =>
+      db.markWatchedMany(keys, origin: origin);
+  Future<void> unmarkWatched(String key) => db.unmarkWatched(key);
   Future<Set<int>> watchedIds(int playlistId) => db.watchedIds(playlistId);
   Future<Map<int, double>> progressFractions() => db.progressFractions();
 
@@ -173,12 +177,12 @@ class LibraryRepository {
           int playlistId, StreamKind kind, String group) =>
       db.categoryPreview(playlistId: playlistId, kind: kind, groupTitle: group);
 
-  // Pinned categories.
-  Future<List<String>> pinnedCategories(int playlistId, StreamKind kind) =>
-      db.pinnedCategories(playlistId, kind);
+  // Pinned categories (keyed by the portable source key since v5).
+  Future<List<String>> pinnedCategories(Playlist playlist, StreamKind kind) =>
+      db.pinnedCategories(playlist, kind);
   Future<void> setPinned(
-          int playlistId, StreamKind kind, String name, bool p) =>
-      db.setPinned(playlistId, kind, name, p);
+          Playlist playlist, StreamKind kind, String name, bool p) =>
+      db.setPinned(playlist, kind, name, p);
 
   // Settings.
 
