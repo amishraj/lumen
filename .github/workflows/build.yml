@@ -40,10 +40,27 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
+      # Release keystore from repo secrets (see server/README.md → signing).
+      # Absent secrets fall back to the debug keystore so forks still build.
+      - name: Decode keystore
+        if: env.KEYSTORE_BASE64 != ''
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > $RUNNER_TEMP/lumen.keystore
       # Per-ABI APKs (smaller) + a universal APK that installs on any device,
       # including Google TV / Android TV (leanback launcher is declared).
-      - run: flutter build apk --release --split-per-abi
-      - run: flutter build apk --release
+      - run: flutter build apk --release --split-per-abi --obfuscate --split-debug-info=build/symbols
+        env:
+          KEYSTORE_FILE: ${{ secrets.KEYSTORE_BASE64 != '' && format('{0}/lumen.keystore', runner.temp) || '' }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      - run: flutter build apk --release --obfuscate --split-debug-info=build/symbols
+        env:
+          KEYSTORE_FILE: ${{ secrets.KEYSTORE_BASE64 != '' && format('{0}/lumen.keystore', runner.temp) || '' }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
       - name: Collect artifacts
         run: |
           mkdir -p dist

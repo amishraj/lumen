@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/sources/trakt_service.dart';
+import '../main.dart' show bootFirstFrameMs, bootStopwatch;
 import '../state/providers.dart';
 import '../state/sync_providers.dart';
 import '../state/service_status.dart';
@@ -73,6 +74,13 @@ class _AuroraShellState extends ConsumerState<AuroraShell>
     // there was no lifecycle observer anywhere before this, so a device
     // living in background for a day never re-synced anything.
     WidgetsBinding.instance.addObserver(this);
+    // First shell frame = the moment the user sees their home.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (bootStopwatch.isRunning) {
+        bootStopwatch.stop();
+        bootFirstFrameMs = bootStopwatch.elapsedMilliseconds;
+      }
+    });
   }
 
   @override
@@ -211,9 +219,13 @@ class _AuroraShellState extends ConsumerState<AuroraShell>
           }
         } catch (_) {/* offline — snapshots already shown */}
       });
-      Future.delayed(const Duration(seconds: 6), () {
+      Future.delayed(const Duration(seconds: 6), () async {
         if (!mounted) return;
         ref.read(syncControllerProvider.notifier).resync(active);
+        try {
+          final repo = await ref.read(repositoryProvider.future);
+          await repo.db.pruneOrphanCaches();
+        } catch (_) {/* housekeeping — never surfaces */}
       });
     }
 

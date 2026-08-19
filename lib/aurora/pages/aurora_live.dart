@@ -7,7 +7,6 @@ import '../aurora_focus.dart';
 import '../aurora_providers.dart';
 import '../aurora_theme.dart';
 import '../player/aurora_player.dart';
-import '../widgets/aurora_badges.dart';
 import '../widgets/aurora_image.dart';
 import '../widgets/aurora_search_field.dart';
 
@@ -858,8 +857,6 @@ class _ChannelRow extends ConsumerWidget {
                         fontSize: 13.5,
                         fontWeight: FontWeight.w600,
                         color: focused ? Aurora.text : const Color(0xFFCBD0DC))),
-                if (item.tvgId != null && item.tvgId!.isNotEmpty)
-                  _NowPlayingLine(tvgId: item.tvgId!),
               ],
             ),
           ),
@@ -882,51 +879,3 @@ class _ChannelRow extends ConsumerWidget {
   }
 }
 
-/// Lazy now-playing line from the EPG table (renders nothing when the
-/// source has no EPG rows for this channel). Future is cached per channel so
-/// parent rebuilds (favorite toggles, focus moves) don't re-query.
-class _NowPlayingLine extends ConsumerStatefulWidget {
-  const _NowPlayingLine({required this.tvgId});
-  final String tvgId;
-
-  @override
-  ConsumerState<_NowPlayingLine> createState() => _NowPlayingLineState();
-}
-
-class _NowPlayingLineState extends ConsumerState<_NowPlayingLine> {
-  late Future<EpgEntry?> _future = _lookup();
-
-  Future<EpgEntry?> _lookup() => ref
-      .read(repositoryProvider.future)
-      .then((repo) => repo.nowPlaying(widget.tvgId));
-
-  @override
-  void didUpdateWidget(covariant _NowPlayingLine old) {
-    super.didUpdateWidget(old);
-    if (old.tvgId != widget.tvgId) _future = _lookup();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<EpgEntry?>(
-      future: _future,
-      builder: (context, snap) {
-        final e = snap.data;
-        if (e == null) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: Row(children: [
-            const LiveBadge(small: true),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(e.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Aurora.caption),
-            ),
-          ]),
-        );
-      },
-    );
-  }
-}

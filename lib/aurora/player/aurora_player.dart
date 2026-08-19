@@ -2489,7 +2489,8 @@ class _LiveBanner extends ConsumerWidget {
               ]),
               const SizedBox(height: 4),
               if (item.tvgId != null && item.tvgId!.isNotEmpty)
-                _EpgNow(tvgId: item.tvgId!)
+                const Text('Live broadcast',
+                  style: TextStyle(fontSize: 12.5, color: Aurora.textDim))
               else
                 Text(item.groupTitle ?? 'Live broadcast',
                     maxLines: 1,
@@ -2506,72 +2507,6 @@ class _LiveBanner extends ConsumerWidget {
     );
   }
 }
-
-class _EpgNow extends ConsumerStatefulWidget {
-  const _EpgNow({required this.tvgId});
-  final String tvgId;
-
-  @override
-  ConsumerState<_EpgNow> createState() => _EpgNowState();
-}
-
-class _EpgNowState extends ConsumerState<_EpgNow> {
-  late Future<EpgEntry?> _future = _lookup();
-
-  Future<EpgEntry?> _lookup() => ref
-      .read(repositoryProvider.future)
-      .then((repo) => repo.nowPlaying(widget.tvgId));
-
-  @override
-  void didUpdateWidget(covariant _EpgNow old) {
-    super.didUpdateWidget(old);
-    if (old.tvgId != widget.tvgId) _future = _lookup();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<EpgEntry?>(
-      future: _future,
-      builder: (context, snap) {
-        final e = snap.data;
-        if (e == null) {
-          return const Text('Live broadcast',
-              style: TextStyle(fontSize: 12.5, color: Aurora.textDim));
-        }
-        final progress = e.progress(DateTime.now().millisecondsSinceEpoch);
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(e.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12.5, color: Aurora.text)),
-            const SizedBox(height: 5),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(2),
-              child: SizedBox(
-                height: 3,
-                width: 240,
-                child: Stack(children: [
-                  Container(color: const Color(0x33FFFFFF)),
-                  FractionallySizedBox(
-                    widthFactor: progress.clamp(0.0, 1.0),
-                    child: Container(color: Aurora.live),
-                  ),
-                ]),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Next-up countdown card
-// ---------------------------------------------------------------------------
 
 class _NextUpCard extends StatelessWidget {
   const _NextUpCard({

@@ -53,7 +53,12 @@ class LibraryRepository {
       ));
       dio.httpClientAdapter = IOHttpClientAdapter(
         createHttpClient: () =>
-            HttpClient()..badCertificateCallback = (cert, host, port) => true,
+            HttpClient()
+              // IPTV portals routinely run self-signed/expired certs, but the
+              // bypass is scoped to the USER'S OWN portal host — not every host
+              // this client might ever be pointed at.
+              ..badCertificateCallback = (cert, host, port) =>
+                  host == Uri.tryParse(pl.url)?.host,
       );
       final res = await dio.get(pl.url,
           options: Options(responseType: ResponseType.plain));
@@ -169,8 +174,6 @@ class LibraryRepository {
 
   Future<List<StreamItem>> sportsEvents(int playlistId) =>
       db.sportsEvents(playlistId);
-  Future<EpgEntry?> nowPlaying(String channelId) =>
-      db.nowPlaying(channelId, DateTime.now().millisecondsSinceEpoch);
 
   // Home feed.
   Future<List<StreamItem>> continueWatching(int playlistId) =>

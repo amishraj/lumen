@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,8 +13,22 @@ import 'shared/screens/onboarding_flow.dart';
 import 'state/credential_vault.dart';
 import 'state/providers.dart';
 
+/// Startup instrumentation: ms from main() to the first home-shell frame,
+/// surfaced in Settings → Account (diagnostics). "Production grade" needs a
+/// number you can watch across releases, not a feeling.
+final Stopwatch bootStopwatch = Stopwatch();
+int? bootFirstFrameMs;
+
 void main() {
+  bootStopwatch.start();
   WidgetsFlutterBinding.ensureInitialized();
+  // The in-memory decoded-image budget. Flutter's default is 100 MiB / 1000
+  // images — on a 1 GB Fire TV with a ~200 MB heap that single ceiling is
+  // half the budget (home holds ~50 live images + up to three ~4 MB hero
+  // backdrops). Android (incl. every TV box) gets a tighter cap; desktops
+  // keep the default headroom.
+  PaintingBinding.instance.imageCache.maximumSizeBytes =
+      Platform.isAndroid ? 56 << 20 : 100 << 20;
   // Initialise the libmpv backend used by the player.
   MediaKit.ensureInitialized();
   // Track keyboard/remote vs pointer so focus highlights only show for the former.

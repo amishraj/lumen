@@ -53,7 +53,6 @@ The whole design is built around one rule: **never hold the full library in memo
 | **Scrolling** | Build 40k widgets | Virtualized `ListView.builder` with fixed `itemExtent`, fed by a **paged loader** (60 rows at a time) |
 | **Category switch** | Re-query everything | Indexed `(playlist, kind, group, num)` — each category is a small shard |
 | **Logos** | 40k full-res network images → OOM | `cached_network_image`, **disk-cached + decoded at tile resolution** (`memCacheWidth`), only visible tiles fetch |
-| **EPG** | Load entire XMLTV (100s of MB) | Lazy now/next per visible channel, indexed `(channel_id, start)` |
 | **Ingest writes** | One giant INSERT | **Batched transactions** (~800 rows) + a single `INSERT..SELECT` to populate FTS |
 
 SQLite is opened in **WAL mode** with `synchronous=NORMAL` for fast concurrent reads while a sync writes.
@@ -121,7 +120,6 @@ Requires Flutter 3.4+. Android build needs ~2 GB free disk for the first build (
 ## 🧭 Roadmap / not-yet-done
 
 - Series (episodes/seasons) browsing — schema is ready, UI is stubbed
-- XMLTV EPG ingestion (Xtream short-EPG + full XMLTV table)
 - Profiles + parental PIN
 - Apple TV (tvOS) — **not** covered by Flutter; would be a separate small SwiftUI app sharing this data model
 - Cross-device watch-progress sync

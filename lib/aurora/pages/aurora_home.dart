@@ -53,6 +53,160 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
     }
   }
 
+  /// The home rows as closures: the builder delegate only invokes the ones
+  /// on/near screen. Rows whose data is IPTV/SQL/network-derived defer their
+  /// provider watch into the row widget itself (_DeferredRow), so scrolling
+  /// is what subscribes them.
+  List<Widget Function()> _rows(
+    BuildContext context,
+    Widget Function(String, List<StreamItem>?) posterShelf,
+    Widget Function(String, List<StreamItem>?) wideShelf,
+    double posterW,
+    double wideW,
+    double liveW,
+    double posterRow,
+    double wideRow,
+    double liveRow,
+    dynamic cwSplit,
+    List<StreamItem>? cwOwn,
+    List<StreamItem>? cwExternal,
+    dynamic because,
+    List<TmdbGenre> genres,
+    List<TraktItem>? watchlist,
+  ) {
+    return [
+      // Capped to the most recent slice: a Trakt account wired up to a
+      // streaming service can carry 100+ in-progress titles. The header's ›
+      // opens the full list.
+      () => AuroraShelf<StreamItem>(
+            title: 'Continue Watching',
+            items: cwOwn?.take(kContinueWatchingRailLimit).toList(),
+            totalCount: cwOwn?.length,
+            onMore: (cwOwn != null && cwOwn.isNotEmpty)
+                ? () => openContinueWatching(context)
+                : null,
+            rowHeight: wideRow,
+            skeletonWidth: wideW,
+            itemBuilder: (context, it, i) => AuroraWideCard(
+              item: it,
+              width: wideW,
+              onTap: () => openAuroraItem(context, ref, it),
+              onLongPress: () => dismissFromContinueWatching(ref, it),
+            ),
+          ),
+      // Only present when Trakt attributes resume points to an outside
+      // service — otherwise this shelf removes itself.
+      () => AuroraShelf<StreamItem>(
+            title: cwSplit?.externalLabel == null
+                ? 'Continue elsewhere'
+                : 'Continue on ${cwSplit!.externalLabel}',
+            items: cwExternal?.take(kContinueWatchingRailLimit).toList(),
+            totalCount: cwExternal?.length,
+            hideWhileLoading: true,
+            onMore: (cwExternal != null && cwExternal.isNotEmpty)
+                ? () => openContinueWatching(context)
+                : null,
+            rowHeight: wideRow,
+            skeletonWidth: wideW,
+            itemBuilder: (context, it, i) => AuroraWideCard(
+              item: it,
+              width: wideW,
+              onTap: () => openAuroraItem(context, ref, it),
+              onLongPress: () => dismissFromContinueWatching(ref, it),
+            ),
+          ),
+      () => posterShelf('My List', ref.watch(auroraMyListProvider).valueOrNull),
+      // IPTV-derived: hidden (not skeletoned) until ready, subscribed only
+      // when scrolled to — IPTV must never gate the debrid-first home.
+      () => _DeferredRow(
+            (context, dref) => AuroraShelf<StreamItem>(
+              title: 'Live Now',
+              items: dref.watch(auroraLiveNowProvider).valueOrNull,
+              rowHeight: liveRow,
+              skeletonWidth: liveW,
+              hideWhileLoading: true,
+              itemBuilder: (context, it, i) => AuroraLiveCard(
+                item: it,
+                width: liveW,
+                onTap: () => openAuroraItem(context, dref, it,
+                    liveQueue:
+                        dref.read(auroraLiveNowProvider).valueOrNull),
+              ),
+            ),
+          ),
+      () => const _CategoriesRail(),
+      () => wideShelf(
+          'Trending This Week', ref.watch(tmdbTrendingProvider).valueOrNull),
+      () =>
+          wideShelf('Popular Now', ref.watch(tmdbPopularProvider).valueOrNull),
+      () => _DeferredRow(
+            (context, dref) => AuroraShelf<StreamItem>(
+              title: 'Recently Watched',
+              items: dref.watch(recentlyWatchedProvider).valueOrNull,
+              rowHeight: wideRow,
+              skeletonWidth: wideW,
+              itemBuilder: (context, it, i) => AuroraWideCard(
+                item: it,
+                width: wideW,
+                onTap: () => openAuroraItem(context, dref, it),
+              ),
+            ),
+          ),
+      // IPTV library samples: hidden while loading, like Live Now.
+      () => _DeferredRow(
+            (context, dref) => AuroraShelf<StreamItem>(
+              title: 'Movies for You',
+              items:
+                  dref.watch(kindSampleProvider(StreamKind.movie)).valueOrNull,
+              rowHeight: posterRow,
+              skeletonWidth: posterW,
+              hideWhileLoading: true,
+              itemBuilder: (context, it, i) => AuroraPosterCard(
+                item: it,
+                width: posterW,
+                onTap: () => openAuroraItem(context, dref, it),
+              ),
+            ),
+          ),
+      () => _DeferredRow(
+            (context, dref) => AuroraShelf<StreamItem>(
+              title: 'TV Shows',
+              items:
+                  dref.watch(kindSampleProvider(StreamKind.series)).valueOrNull,
+              rowHeight: posterRow,
+              skeletonWidth: posterW,
+              hideWhileLoading: true,
+              itemBuilder: (context, it, i) => AuroraPosterCard(
+                item: it,
+                width: posterW,
+                onTap: () => openAuroraItem(context, dref, it),
+              ),
+            ),
+          ),
+      if (because != null && because.seed != null)
+        () => posterShelf(
+            'Because you watched ${cleanTitle(because.seed!).title}',
+            because.items),
+      for (final g in genres)
+        () => _DeferredRow(
+              (context, dref) => AuroraShelf<StreamItem>(
+                title: g.name,
+                items: dref.watch(tmdbGenreRowProvider(g.id)).valueOrNull,
+                rowHeight: wideRow,
+                skeletonWidth: wideW,
+                itemBuilder: (context, it, i) => AuroraWideCard(
+                  item: it,
+                  width: wideW,
+                  onTap: () => openAuroraItem(context, dref, it),
+                ),
+              ),
+            ),
+      if (watchlist != null && watchlist.isNotEmpty)
+        () => _TraktShelf(items: watchlist, width: posterW),
+      () => SizedBox(height: Aurora.bottomPad(context)),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final featured = ref.watch(featuredProvider).valueOrNull;
@@ -141,103 +295,20 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
                       : _Billboard(items: featured, onFocusTop: _toTop),
         ),
         SliverList(
-          delegate: SliverChildListDelegate.fixed([
-            // Capped to the most recent slice: a Trakt account wired up to a
-            // streaming service can carry 100+ in-progress titles, which is
-            // neither browsable as a rail nor cheap to build. The header's ›
-            // opens the full list.
-            AuroraShelf<StreamItem>(
-              title: 'Continue Watching',
-              items: cwOwn?.take(kContinueWatchingRailLimit).toList(),
-              totalCount: cwOwn?.length,
-              onMore: (cwOwn != null && cwOwn.isNotEmpty)
-                  ? () => openContinueWatching(context)
-                  : null,
-              rowHeight: wideRow,
-              skeletonWidth: wideW,
-              itemBuilder: (context, it, i) => AuroraWideCard(
-                item: it,
-                width: wideW,
-                onTap: () => openAuroraItem(context, ref, it),
-                onLongPress: () => dismissFromContinueWatching(ref, it),
-              ),
-            ),
-            // Only present when Trakt actually attributes resume points to an
-            // outside service — otherwise this shelf removes itself.
-            AuroraShelf<StreamItem>(
-              title: cwSplit?.externalLabel == null
-                  ? 'Continue elsewhere'
-                  : 'Continue on ${cwSplit!.externalLabel}',
-              items: cwExternal?.take(kContinueWatchingRailLimit).toList(),
-              totalCount: cwExternal?.length,
-              hideWhileLoading: true,
-              onMore: (cwExternal != null && cwExternal.isNotEmpty)
-                  ? () => openContinueWatching(context)
-                  : null,
-              rowHeight: wideRow,
-              skeletonWidth: wideW,
-              itemBuilder: (context, it, i) => AuroraWideCard(
-                item: it,
-                width: wideW,
-                onTap: () => openAuroraItem(context, ref, it),
-                onLongPress: () => dismissFromContinueWatching(ref, it),
-              ),
-            ),
-            posterShelf('My List', v(auroraMyListProvider)),
-            // IPTV-derived: hidden (not skeletoned) until its data is ready —
-            // IPTV must never hold visual space on the debrid-first home.
-            AuroraShelf<StreamItem>(
-              title: 'Live Now',
-              items: v(auroraLiveNowProvider),
-              rowHeight: liveRow,
-              skeletonWidth: liveW,
-              hideWhileLoading: true,
-              itemBuilder: (context, it, i) => AuroraLiveCard(
-                item: it,
-                width: liveW,
-                onTap: () => openAuroraItem(context, ref, it,
-                    liveQueue: v(auroraLiveNowProvider)),
-              ),
-            ),
-            const _CategoriesRail(),
-            wideShelf('Trending This Week', v(tmdbTrendingProvider)),
-            wideShelf('Popular Now', v(tmdbPopularProvider)),
-            wideShelf('Recently Watched', v(recentlyWatchedProvider)),
-            // IPTV library samples: hidden while loading, like Live Now.
-            AuroraShelf<StreamItem>(
-              title: 'Movies for You',
-              items: v(kindSampleProvider(StreamKind.movie)),
-              rowHeight: posterRow,
-              skeletonWidth: posterW,
-              hideWhileLoading: true,
-              itemBuilder: (context, it, i) => AuroraPosterCard(
-                item: it,
-                width: posterW,
-                onTap: () => openAuroraItem(context, ref, it),
-              ),
-            ),
-            AuroraShelf<StreamItem>(
-              title: 'TV Shows',
-              items: v(kindSampleProvider(StreamKind.series)),
-              rowHeight: posterRow,
-              skeletonWidth: posterW,
-              hideWhileLoading: true,
-              itemBuilder: (context, it, i) => AuroraPosterCard(
-                item: it,
-                width: posterW,
-                onTap: () => openAuroraItem(context, ref, it),
-              ),
-            ),
-            if (because != null && because.seed != null)
-              posterShelf(
-                  'Because you watched ${cleanTitle(because.seed!).title}',
-                  because.items),
-            for (final g in genres)
-              wideShelf(g.name, v(tmdbGenreRowProvider(g.id))),
-            if (watchlist != null && watchlist.isNotEmpty)
-              _TraktShelf(items: watchlist, width: posterW),
-            SizedBox(height: Aurora.bottomPad(context)),
-          ]),
+          // Builder delegate + per-row deferred provider watches: rows below
+          // the fold neither inflate NOR subscribe until scrolled within
+          // cacheExtent. The old fixed list subscribed ~19 providers (SQL +
+          // network) on frame 1 — cold start was network-bound before the
+          // first scroll was even possible.
+          delegate: SliverChildBuilderDelegate(
+            (context, i) => _rows(context, posterShelf, wideShelf, posterW,
+                wideW, liveW, posterRow, wideRow, liveRow, cwSplit, cwOwn,
+                cwExternal, because, genres, watchlist)[i](),
+            childCount: _rows(context, posterShelf, wideShelf, posterW, wideW,
+                    liveW, posterRow, wideRow, liveRow, cwSplit, cwOwn,
+                    cwExternal, because, genres, watchlist)
+                .length,
+          ),
         ),
       ],
       ),
@@ -1365,4 +1436,15 @@ class _TraktCard extends ConsumerWidget {
       ),
     );
   }
+}
+
+
+/// A home row whose provider subscription happens at INFLATION time, not at
+/// page build — the mechanism that makes below-fold rows genuinely lazy.
+class _DeferredRow extends ConsumerWidget {
+  const _DeferredRow(this.builder);
+  final Widget Function(BuildContext, WidgetRef) builder;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => builder(context, ref);
 }

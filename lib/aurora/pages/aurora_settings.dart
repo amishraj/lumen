@@ -13,6 +13,7 @@ import '../../shared/screens/trakt_screen.dart';
 import '../../shared/widgets/rd_connect_sheet.dart';
 import '../../shared/widgets/tv_text_field.dart';
 import '../aurora_focus.dart';
+import '../../main.dart' show bootFirstFrameMs;
 import '../aurora_theme.dart';
 import '../screens/aurora_account.dart';
 import '../widgets/aurora_buttons.dart';
@@ -415,6 +416,7 @@ class _AccountRow extends ConsumerWidget {
       title: signedIn ? (email ?? 'Signed in') : 'Sign in to sync',
       subtitle: signedIn
           ? 'Progress, favorites, sources and keys sync everywhere.'
+              '${bootFirstFrameMs != null ? '  ·  boot ${bootFirstFrameMs}ms' : ''}'
           : 'One account, every device — progress, sources and keys follow you.',
       onTap: () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const AuroraAccountScreen())),

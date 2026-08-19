@@ -20,7 +20,12 @@ class XtreamClient {
     // the user's own provider, so tolerate cert problems rather than failing.
     _dio.httpClientAdapter = IOHttpClientAdapter(
       createHttpClient: () =>
-          HttpClient()..badCertificateCallback = (cert, host, port) => true,
+          HttpClient()
+              // IPTV portals routinely run self-signed/expired certs, but the
+              // bypass is scoped to the USER'S OWN portal host — not every host
+              // this client might ever be pointed at.
+              ..badCertificateCallback = (cert, host, port) =>
+                  host == Uri.tryParse(playlist.url)?.host,
     );
   }
 
@@ -88,6 +93,13 @@ class XtreamClient {
   Future<List<StreamItem>> fetchAll({
     void Function(String stage)? onStage,
   }) async {
+    // Each endpoint is fetched, transformed in its own isolate, and its raw
+    // multi-MB JSON string RELEASED before the next fetch starts. The old
+    // shape held all six response strings simultaneously and then copied the
+    // lot into one isolate — the app's single largest memory peak, and the
+    // most likely OOM on a 1 GB TV box mid-sync.
+    final out = <StreamItem>[];
+
     onStage?.call('Loading live categories…');
     final liveCats = await _safe(() => _get('get_live_categories')) ?? '[]';
     onStage?.call('Loading live channels…');
@@ -99,32 +111,47 @@ class XtreamClient {
           'Timed out loading channels from the portal. It may be slow or the '
           'account may be over its connection limit — try again. ($e)');
     }
+    onStage?.call('Indexing channels…');
+    out.addAll(await compute(
+        _transformLive,
+        _XtPart(
+            playlistId: playlist.id!,
+            base: _base,
+            user: playlist.username ?? '',
+            pass: playlist.password ?? '',
+            cats: liveCats,
+            items: liveStreams)));
 
     onStage?.call('Loading movie categories…');
     final vodCats = await _safe(() => _get('get_vod_categories'));
     onStage?.call('Loading movies…');
     final vodStreams = await _safe(() => _get('get_vod_streams'));
+    onStage?.call('Indexing movies…');
+    out.addAll(await compute(
+        _transformVod,
+        _XtPart(
+            playlistId: playlist.id!,
+            base: _base,
+            user: playlist.username ?? '',
+            pass: playlist.password ?? '',
+            cats: vodCats ?? '[]',
+            items: vodStreams ?? '[]')));
 
     onStage?.call('Loading TV shows…');
     final seriesCats = await _safe(() => _get('get_series_categories'));
     final series = await _safe(() => _get('get_series'));
+    onStage?.call('Indexing shows…');
+    out.addAll(await compute(
+        _transformSeries,
+        _XtPart(
+            playlistId: playlist.id!,
+            base: _base,
+            user: playlist.username ?? '',
+            pass: playlist.password ?? '',
+            cats: seriesCats ?? '[]',
+            items: series ?? '[]')));
 
-    onStage?.call('Indexing…');
-    return compute(
-      _transform,
-      _XtArgs(
-        playlistId: playlist.id!,
-        base: _base,
-        user: playlist.username ?? '',
-        pass: playlist.password ?? '',
-        liveCats: liveCats,
-        liveStreams: liveStreams,
-        vodCats: vodCats ?? '[]',
-        vodStreams: vodStreams ?? '[]',
-        seriesCats: seriesCats ?? '[]',
-        series: series ?? '[]',
-      ),
-    );
+    return out;
   }
 
   /// Resolve a series' episodes on demand (two-level Xtream model). The series
@@ -180,24 +207,7 @@ class XtreamClient {
   }
 }
 
-class _XtArgs {
-  final int playlistId;
-  final String base, user, pass;
-  final String liveCats, liveStreams, vodCats, vodStreams, seriesCats, series;
-  const _XtArgs({
-    required this.playlistId,
-    required this.base,
-    required this.user,
-    required this.pass,
-    required this.liveCats,
-    required this.liveStreams,
-    required this.vodCats,
-    required this.vodStreams,
-    required this.seriesCats,
-    required this.series,
-  });
-}
-
+/// category_id → category_name from a get_*_categories payload.
 Map<String, String> _catMap(String body) {
   final out = <String, String>{};
   final list = jsonDecode(body);
@@ -211,12 +221,23 @@ Map<String, String> _catMap(String body) {
   return out;
 }
 
-/// Runs in an isolate — turns raw JSON bodies into StreamItems with play URLs.
-List<StreamItem> _transform(_XtArgs a) {
-  final out = <StreamItem>[];
+class _XtPart {
+  final int playlistId;
+  final String base, user, pass, cats, items;
+  const _XtPart({
+    required this.playlistId,
+    required this.base,
+    required this.user,
+    required this.pass,
+    required this.cats,
+    required this.items,
+  });
+}
 
-  final liveCatNames = _catMap(a.liveCats);
-  final live = jsonDecode(a.liveStreams);
+List<StreamItem> _transformLive(_XtPart a) {
+  final out = <StreamItem>[];
+  final catNames = _catMap(a.cats);
+  final live = jsonDecode(a.items);
   if (live is List) {
     for (final s in live) {
       if (s is! Map) continue;
@@ -227,15 +248,19 @@ List<StreamItem> _transform(_XtArgs a) {
         name: '${s['name'] ?? ''}'.trim(),
         logo: _nullIfEmpty('${s['stream_icon'] ?? ''}'),
         url: '${a.base}/live/${a.user}/${a.pass}/$id.ts',
-        groupTitle: liveCatNames['${s['category_id']}'] ?? 'Uncategorized',
+        groupTitle: catNames['${s['category_id']}'] ?? 'Uncategorized',
         tvgId: _nullIfEmpty('${s['epg_channel_id'] ?? ''}'),
         num: int.tryParse('${s['num'] ?? ''}'),
       ));
     }
   }
+  return out;
+}
 
-  final vodCatNames = _catMap(a.vodCats);
-  final vod = jsonDecode(a.vodStreams);
+List<StreamItem> _transformVod(_XtPart a) {
+  final out = <StreamItem>[];
+  final catNames = _catMap(a.cats);
+  final vod = jsonDecode(a.items);
   if (vod is List) {
     for (final s in vod) {
       if (s is! Map) continue;
@@ -247,15 +272,19 @@ List<StreamItem> _transform(_XtArgs a) {
         name: '${s['name'] ?? ''}'.trim(),
         logo: _nullIfEmpty('${s['stream_icon'] ?? s['cover'] ?? ''}'),
         url: '${a.base}/movie/${a.user}/${a.pass}/$id.$ext',
-        groupTitle: vodCatNames['${s['category_id']}'] ?? 'Movies',
+        groupTitle: catNames['${s['category_id']}'] ?? 'Movies',
         rating: double.tryParse('${s['rating'] ?? ''}'),
       ));
     }
   }
+  return out;
+}
 
-  // Series: store the series_id in `url`; episodes are resolved on demand.
-  final seriesCatNames = _catMap(a.seriesCats);
-  final series = jsonDecode(a.series);
+// Series: store the series_id in `url`; episodes are resolved on demand.
+List<StreamItem> _transformSeries(_XtPart a) {
+  final out = <StreamItem>[];
+  final catNames = _catMap(a.cats);
+  final series = jsonDecode(a.items);
   if (series is List) {
     for (final s in series) {
       if (s is! Map) continue;
@@ -266,12 +295,11 @@ List<StreamItem> _transform(_XtArgs a) {
         name: '${s['name'] ?? ''}'.trim(),
         logo: _nullIfEmpty('${s['cover'] ?? s['stream_icon'] ?? ''}'),
         url: sid,
-        groupTitle: seriesCatNames['${s['category_id']}'] ?? 'TV Shows',
+        groupTitle: catNames['${s['category_id']}'] ?? 'TV Shows',
         rating: double.tryParse('${s['rating'] ?? ''}'),
       ));
     }
   }
-
   return out;
 }
 

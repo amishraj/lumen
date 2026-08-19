@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../repositories/library_repository.dart';
@@ -469,20 +470,17 @@ class TraktService {
         // explicit large limit keeps big histories intact in one request.
         final res = await _authGet(url, queryParameters: {'limit': '1000'});
         if (res.statusCode != 200) return;
-        final data = res.data is String ? jsonDecode(res.data) : res.data;
-        final fresh = jsonEncode(data);
+        // These payloads run to 1000 items each and this fires at T+2s —
+        // mid first-scroll — so ALL the decode/encode/compare work happens
+        // off the UI isolate. Only the tiny setSetting write comes back.
         final old = await _repo.getSetting(cacheKey);
-        var same = false;
-        if (old != null && old.isNotEmpty) {
-          try {
-            same = jsonEncode((jsonDecode(old) as Map)['v']) == fresh;
-          } catch (_) {/* corrupt old snapshot — treat as changed */}
-        }
-        await _repo.setSetting(
-            cacheKey,
-            jsonEncode(
-                {'at': DateTime.now().millisecondsSinceEpoch, 'v': data}));
-        if (!same) changed = true;
+        final packed = await compute(_packSnapshot, (
+          raw: res.data is String ? res.data as String : jsonEncode(res.data),
+          old: old,
+          at: DateTime.now().millisecondsSinceEpoch,
+        ));
+        await _repo.setSetting(cacheKey, packed.stored);
+        if (!packed.same) changed = true;
       } catch (_) {/* offline — keep the old snapshot */}
     }
 
@@ -1410,3 +1408,20 @@ final traktListItemsProvider =
   final svc = await ref.watch(traktServiceProvider.future);
   return svc.listItems(listId);
 });
+
+
+/// compute() target for [TraktService.refreshHomeSnapshots]: decode the
+/// fresh payload, byte-compare against the old snapshot, and re-encode the
+/// stored envelope — all off the UI isolate.
+({String stored, bool same}) _packSnapshot(
+    ({String raw, String? old, int at}) args) {
+  final data = jsonDecode(args.raw);
+  final fresh = jsonEncode(data);
+  var same = false;
+  if (args.old != null && args.old!.isNotEmpty) {
+    try {
+      same = jsonEncode((jsonDecode(args.old!) as Map)['v']) == fresh;
+    } catch (_) {/* corrupt old snapshot — treat as changed */}
+  }
+  return (stored: jsonEncode({'at': args.at, 'v': data}), same: same);
+}

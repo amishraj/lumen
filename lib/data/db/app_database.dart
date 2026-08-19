@@ -141,16 +141,6 @@ class AppDatabase {
     }
 
     await db.execute('''
-      CREATE TABLE epg (
-        channel_id TEXT NOT NULL,
-        start_ms INTEGER NOT NULL,
-        stop_ms INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT
-      )''');
-    await db.execute('CREATE INDEX idx_epg_chan ON epg(channel_id, start_ms)');
-
-    await db.execute('''
       CREATE TABLE favorites (
         stream_id INTEGER PRIMARY KEY REFERENCES streams(id) ON DELETE CASCADE,
         added_at INTEGER NOT NULL
@@ -345,6 +335,10 @@ class AppDatabase {
         key TEXT PRIMARY KEY,
         value TEXT
       )''');
+
+    // The epg table shipped in v1 with readers and NO writer, ever — the
+    // now/next UI it fed never rendered a row. Feature honestly removed.
+    await db.execute('DROP TABLE IF EXISTS epg');
   }
 
   /// The v5 data fold. Merge decisions run in Dart through [mergeWatch] — the
@@ -631,6 +625,36 @@ class AppDatabase {
         'w.updated_at FROM streams s JOIN episode_progress w ON w.ep_key=? '
         'WHERE s.kind=? AND s.title_key=?',
         [key, kind, tkey]);
+  }
+
+  /// Bounded caches: the per-title tmdb:/omdb: families are permanent and
+  /// grew without limit, and home-row snapshots for deleted playlists were
+  /// orphaned forever. Called from the shell's post-boot slot — cheap when
+  /// there's nothing to do.
+  Future<void> pruneOrphanCaches() async {
+    final ids = (await db.query('playlists', columns: ['id']))
+        .map((r) => '${r['id']}')
+        .toSet();
+    final snaps = await db.query('app_settings',
+        columns: ['key'], where: "key LIKE 'home:snap:%'");
+    for (final r in snaps) {
+      final key = r['key'] as String;
+      final parts = key.split(':');
+      if (parts.length >= 3 && !ids.contains(parts[2])) {
+        await db.delete('app_settings', where: 'key=?', whereArgs: [key]);
+      }
+    }
+    // The per-title rows carry no timestamp, so there's no LRU to run —
+    // above a generous cap the whole family is dropped and rebuilds lazily
+    // on demand (each read re-caches).
+    final n = Sqflite.firstIntValue(await db.rawQuery(
+            "SELECT COUNT(*) FROM app_settings WHERE key LIKE 'tmdb:%' "
+            "OR key LIKE 'omdb:%'")) ??
+        0;
+    if (n > 6000) {
+      await deleteSettingsPrefix('tmdb:');
+      await deleteSettingsPrefix('omdb:');
+    }
   }
 
   /// Remote-apply entry points (lib/data/sync/apply.dart) — the projections
@@ -1682,23 +1706,4 @@ class AppDatabase {
     );
   }
 
-  // ---- EPG -----------------------------------------------------------------
-
-  Future<EpgEntry?> nowPlaying(String channelId, int nowMs) async {
-    final rows = await db.query(
-      'epg',
-      where: 'channel_id=? AND start_ms<=? AND stop_ms>?',
-      whereArgs: [channelId, nowMs, nowMs],
-      limit: 1,
-    );
-    if (rows.isEmpty) return null;
-    final r = rows.first;
-    return EpgEntry(
-      channelId: channelId,
-      startMs: r['start_ms'] as int,
-      stopMs: r['stop_ms'] as int,
-      title: r['title'] as String,
-      description: r['description'] as String?,
-    );
-  }
 }
