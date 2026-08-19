@@ -39,6 +39,11 @@ class AppDatabase {
     final db = await openDatabase(
       path,
       version: 4,
+      // Forward-compat: a future schema version must not brick this binary.
+      // With onDowngrade unset, sqflite treats opening a NEWER db as an error,
+      // so rolling back an APK after a schema bump would make the app
+      // unopenable. No-op is safe: schema changes are additive by policy.
+      onDowngrade: (db, from, to) async {},
       onConfigure: (db) async {
         // journal_mode returns a row ("wal"); on sqflite_darwin (iOS/macOS)
         // running it via execute() throws "not an error" — must use rawQuery.
