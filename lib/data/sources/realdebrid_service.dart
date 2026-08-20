@@ -121,7 +121,9 @@ class RealDebridService {
     if (cid == null || secret == null) return t;
     try {
       final ok = await _exchangeToken(cid, secret, refresh);
-      if (ok) return token();
+      // await, so a failure here lands in the catch below rather than
+      // escaping as an unhandled future and losing the old-token fallback.
+      if (ok) return await token();
     } catch (_) {/* keep the old token; RD may still accept it */}
     return t;
   }

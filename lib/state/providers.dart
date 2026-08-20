@@ -867,7 +867,10 @@ final traktWatchedEpisodesProvider =
   try {
     if (!await ref.watch(traktConnectedProvider.future)) return {};
     final svc = await ref.watch(traktServiceProvider.future);
-    return svc.watchedEpisodesFor(title);
+    // await: without it the future escapes the try and a Trakt failure
+    // errors the provider instead of degrading to "no marks", which is
+    // what the doc above promises (and what the series screen expects).
+    return await svc.watchedEpisodesFor(title);
   } catch (_) {
     return {};
   }
