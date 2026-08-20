@@ -14,7 +14,9 @@ val keyProps = Properties().apply {
     val f = rootProject.file("key.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
-val envStoreFile: String? = System.getenv("KEYSTORE_FILE")
+// takeIf: CI always sets KEYSTORE_FILE, to "" when no keystore secret exists —
+// an empty string is not null, so without this `file("")` would blow up.
+val envStoreFile: String? = System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
 val hasReleaseKeys = keyProps.getProperty("storeFile") != null || envStoreFile != null
 
 android {

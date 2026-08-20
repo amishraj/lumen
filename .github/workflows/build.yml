@@ -42,11 +42,14 @@ jobs:
       - run: flutter pub get
       # Release keystore from repo secrets (see server/README.md → signing).
       # Absent secrets fall back to the debug keystore so forks still build.
+      # NB: `if` must test `secrets` directly — a step's own `env:` block is
+      # NOT in scope for that step's `if`, so `env.KEYSTORE_BASE64 != ''`
+      # silently evaluates empty and skips the decode.
       - name: Decode keystore
-        if: env.KEYSTORE_BASE64 != ''
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: echo "$KEYSTORE_BASE64" | base64 -d > $RUNNER_TEMP/lumen.keystore
+        run: echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/lumen.keystore"
       # Per-ABI APKs (smaller) + a universal APK that installs on any device,
       # including Google TV / Android TV (leanback launcher is declared).
       - run: flutter build apk --release --split-per-abi --obfuscate --split-debug-info=build/symbols
