@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- App-brand splash: paints the Aurora background from the first OS frame,
-     so cold start is dark→dark instead of a white flash into a dark app. -->
+     so cold start is dark→dark instead of a white flash into a dark app.
+     NB: a bare android:drawable="#RRGGBB" does not link — that attribute
+     wants a drawable reference, so the colour is wrapped in <color>. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="#FF06070B" />
+    <item>
+        <color android:color="#FF06070B" />
+    </item>
 </layer-list>

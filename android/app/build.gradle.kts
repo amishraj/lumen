@@ -67,7 +67,15 @@ android {
             )
             // No TV or phone this app targets runs x86; dropping the slices
             // cuts the universal APK by two ABI copies of libmpv + AOT.
-            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+            //
+            // Only for the UNIVERSAL build: `flutter build apk --split-per-abi`
+            // passes -Psplit-per-abi=true and installs its own splits abi
+            // filters, and gradle rejects ndk.abiFilters alongside those
+            // ("Conflicting configuration"). The per-ABI run still emits an
+            // x86_64 apk; CI simply never publishes it.
+            if (project.findProperty("split-per-abi") != "true") {
+                ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+            }
         }
     }
 }

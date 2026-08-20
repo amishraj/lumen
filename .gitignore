@@ -43,6 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+# Gradle output — only /build/ (the Flutter root one) was ignored before, so
+# a local `flutter build apk` left android/build/ untracked-but-visible.
+/android/build/
+/android/.gradle/
 android/key.properties
 *.keystore
 *.jks
