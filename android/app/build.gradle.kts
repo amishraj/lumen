@@ -65,18 +65,33 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // No TV or phone this app targets runs x86; dropping the slices
-            // cuts the universal APK by two ABI copies of libmpv + AOT.
-            //
-            // Only for the UNIVERSAL build: `flutter build apk --split-per-abi`
-            // passes -Psplit-per-abi=true and installs its own splits abi
-            // filters, and gradle rejects ndk.abiFilters alongside those
-            // ("Conflicting configuration"). The per-ABI run still emits an
-            // x86_64 apk; CI simply never publishes it.
-            if (project.findProperty("split-per-abi") != "true") {
-                ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
-            }
+            // NB: ABI selection is NOT done here. Flutter's gradle plugin sets
+            // ndk.abiFilters itself from --target-platform, after this block,
+            // so anything set here is silently overwritten (and conflicts
+            // outright with the splits filters --split-per-abi installs).
+            // The universal build passes --target-platform instead; see
+            // .github/workflows/build.yml.
         }
+    }
+}
+
+// Drop x86 slices from RELEASE builds only.
+//
+// Three layers had to line up here, which is why this looks over-engineered:
+//   - ndk.abiFilters does not work: Flutter's gradle plugin sets it itself
+//     from --target-platform, after our buildTypes block, and it conflicts
+//     outright with the splits filters --split-per-abi installs.
+//   - --target-platform drops Flutter's own libapp.so but NOT plugin
+//     natives, which arrive as prebuilt jniLibs inside AARs — media_kit's
+//     libmpv.so alone is 15MB per ABI.
+//   - so the x86 exclusion happens at PACKAGING time, which nothing
+//     downstream overrides.
+// Release only, so debug/profile still run on an x86_64 emulator.
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.packaging.jniLibs.excludes.addAll(
+            listOf("lib/x86/**", "lib/x86_64/**")
+        )
     }
 }
 

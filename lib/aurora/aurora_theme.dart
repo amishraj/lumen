@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// Marketing/version string for the 1.1 line. Keep in sync with pubspec.yaml.
-const kLumenVersion = '2.0.0';
+const kLumenVersion = '2.0.1';
 
 /// Aurora — the Lumen 1.1 design language.
 ///
