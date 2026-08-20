@@ -16,7 +16,7 @@ compatibility_date = "2026-08-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "lumen"
-database_id = "REPLACE_WITH_YOUR_D1_ID"
+database_id = "a083dd4b-a46f-4d7b-9cc7-2f576943f8c0"
 
 [triggers]
 crons = ["0 4 * * *"]   # nightly changes-log compaction + tombstone GC
