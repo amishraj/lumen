@@ -931,6 +931,64 @@ class AppDatabase {
     _notifyOutbox();
   }
 
+  /// Seed Trakt's WATCHED episode history into the local table.
+  ///
+  /// Trakt's per-show progress used to render only as green checks on the
+  /// series screen, while Continue Watching, resume and next-episode read
+  /// the local table — so an episode finished on another device showed a
+  /// check but was still offered as "up next". These are the same fact and
+  /// must live in one place.
+  ///
+  /// Flag-only rows (0/0), `origin: trakt` so they never enter the sync
+  /// outbox — every device on the account shares the Trakt link and derives
+  /// them itself. Returns true when anything changed.
+  ///
+  /// Two things are deliberately NOT overwritten:
+  ///  - a tombstone: an explicit local un-watch outranks Trakt until the
+  ///    user actually rewatches, otherwise the next fetch resurrects it;
+  ///  - a row already watched: nothing to do, and rewriting it would churn
+  ///    updated_at and reshuffle Continue Watching's ordering.
+  Future<bool> markEpisodesWatchedFromTrakt(Iterable<String> keys) async {
+    final list = keys.toList();
+    if (list.isEmpty) return false;
+    final existing = <String, ({bool watched, bool deleted})>{};
+    for (final r in await db.query('episode_progress',
+        columns: ['ep_key', 'watched', 'deleted'])) {
+      existing[r['ep_key'] as String] = (
+        watched: (r['watched'] as int? ?? 0) == 1,
+        deleted: (r['deleted'] as int? ?? 0) == 1,
+      );
+    }
+    final todo = [
+      for (final k in list)
+        if (!(existing[k]?.watched ?? false) && !(existing[k]?.deleted ?? false))
+          k
+    ];
+    if (todo.isEmpty) return false;
+    final now = SyncClock.now();
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final k in todo) {
+        batch.insert(
+          'episode_progress',
+          {
+            'ep_key': k,
+            'position_ms': 0,
+            'duration_ms': 0,
+            'watched': 1,
+            'updated_at': now,
+            'deleted': 0,
+            'synthetic': 0,
+            'origin': SyncOrigin.trakt.name,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true, continueOnError: true);
+    });
+    return true;
+  }
+
   /// ep_key → (completed fraction 0..1, watched, last-touched ms) for every
   /// episode the user has started. Drives the series screen's seen marks,
   /// resume overlays and "jump to next episode".

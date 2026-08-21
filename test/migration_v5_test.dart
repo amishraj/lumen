@@ -381,6 +381,52 @@ void main() {
     await app.db.close();
   });
 
+  test('Trakt watched history lands locally, without clobbering intent',
+      () async {
+    final v4 = await createV4Db();
+    await seed(v4);
+    await v4.close();
+
+    final app = await AppDatabase.open(overridePath: path);
+    const show = 'marvel s daredevil';
+
+    // A local in-progress episode, an explicit local un-watch, and one
+    // Trakt has never seen.
+    await app.saveEpisodeProgress('$show|s1e3', 1500000, 3000000);
+    await app.setEpisodesWatched(['$show|s1e9'], true);
+    await app.setEpisodesWatched(['$show|s1e9'], false); // -> tombstone
+    final before = await app.episodeProgressAll();
+    expect(before.containsKey('$show|s1e9'), isFalse);
+
+    final wrote = await app.markEpisodesWatchedFromTrakt([
+      '$show|s1e1', // new -> should land watched
+      '$show|s1e3', // in progress locally -> Trakt says finished, takes it
+      '$show|s1e9', // locally un-watched -> must NOT be resurrected
+    ]);
+    expect(wrote, isTrue);
+
+    final after = await app.episodeProgressAll();
+    expect(after['$show|s1e1']?.watched, isTrue, reason: 'new episode seeded');
+    expect(after['$show|s1e3']?.watched, isTrue, reason: 'Trakt completes it');
+    expect(after.containsKey('$show|s1e9'), isFalse,
+        reason: 'an explicit un-watch outranks Trakt');
+
+    // Trakt-derived writes must never enter the sync outbox. s1e1 was
+    // touched ONLY by the Trakt pass, so it is the clean probe — s1e3/s1e9
+    // are queued from the local actions above, which SHOULD journal.
+    final queued = (await app.db.query('sync_outbox', where: "ns='prog'"))
+        .map((r) => '${r['k']}')
+        .toSet();
+    expect(queued.contains('$show|s1e1'), isFalse,
+        reason: 'Trakt facts reach other devices via Trakt, not our sync');
+    expect(queued.contains('$show|s1e3'), isTrue,
+        reason: 'the local checkpoint still journals');
+
+    // Idempotent: a second pass changes nothing.
+    expect(await app.markEpisodesWatchedFromTrakt(['$show|s1e1']), isFalse);
+    await app.db.close();
+  });
+
   test('titleKey alphabet properties', () {
     expect(titleKey('EN - The Godfather (1972) [1080p]'), 'the godfather');
     expect(titleKey("Marvel's Daredevil"), 'marvel s daredevil');

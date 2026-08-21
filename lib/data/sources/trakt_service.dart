@@ -786,6 +786,13 @@ class TraktService {
           }
         }
       }
+      // Land the same fact locally, so Continue Watching, resume and
+      // next-episode agree with the checks the series screen draws. Cheap
+      // and idempotent: rows already watched (or locally un-watched) are
+      // skipped, so a cache hit costs one indexed read and no writes.
+      unawaited(_repo.db.markEpisodesWatchedFromTrakt([
+        for (final (sn, en) in out) episodeKey(cleanTitle(title).title, sn, en),
+      ]));
       return out;
     } catch (_) {
       return {};
