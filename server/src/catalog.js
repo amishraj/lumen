@@ -10,6 +10,10 @@
 import { json, err } from './auth.js';
 
 const TMDB = 'https://api.themoviedb.org/3';
+
+// Workers' fetch() sends no User-Agent; some upstreams (and the bot
+// protection in front of them) reject that outright.
+const UA = { 'user-agent': 'Lumen/2.0 (+https://github.com/amishraj/lumen)' };
 const CATALOG_TTL = 6 * 3600; // seconds
 
 /// Make an upstream response safe to hand to the Cache API.
@@ -39,7 +43,7 @@ async function cachedFetch(request, upstreamUrl, ttl) {
   const cacheKey = new Request(new URL(request.url).toString(), { method: 'GET' });
   const hit = await caches.default.match(cacheKey);
   if (hit) return hit;
-  const res = await fetch(upstreamUrl);
+  const res = await fetch(upstreamUrl, { headers: UA });
   if (!res.ok) return new Response(res.body, { status: res.status });
   const out = cacheable(res, ttl);
   await putSafe(cacheKey, out.clone());
@@ -81,7 +85,9 @@ export async function catalogHome(env, request) {
 
   const key = env.TMDB_KEY ?? '';
   const get = async (path) => {
-    const r = await fetch(`${TMDB}${path}${path.includes('?') ? '&' : '?'}api_key=${key}`);
+    const r = await fetch(
+      `${TMDB}${path}${path.includes('?') ? '&' : '?'}api_key=${key}`,
+      { headers: UA });
     return r.ok ? r.json() : { results: [] };
   };
   const [trending, popMovie, popTv, movieGenres, tvGenres] = await Promise.all([
@@ -130,7 +136,8 @@ export async function metaBatch(env, request) {
     q.searchParams.set('api_key', key);
     q.searchParams.set('query', t.title ?? '');
     if (t.year) q.searchParams.set(type === 'tv' ? 'first_air_date_year' : 'year', String(t.year));
-    const r = await fetch(q).then((x) => (x.ok ? x.json() : { results: [] }));
+    const r = await fetch(q, { headers: UA })
+        .then((x) => (x.ok ? x.json() : { results: [] }));
     const best = (r.results ?? [])[0] ?? null;
     const doc = { title: t.title, year: t.year ?? null, tv: !!t.tv, result: best };
     await env.DB.prepare(

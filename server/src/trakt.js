@@ -24,7 +24,18 @@ async function forward(env, path, body) {
   try {
     res = await fetch(`${TRAKT}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'trakt-api-version': '2' },
+      headers: {
+        'content-type': 'application/json',
+        'trakt-api-version': '2',
+        'trakt-api-key': clientId(env),
+        // REQUIRED. Workers' fetch() sends no User-Agent, and Trakt sits
+        // behind Cloudflare bot protection which answers a UA-less request
+        // with an HTML 403 — never reaching Trakt's API at all. This looked
+        // exactly like "bad client id" and no amount of re-setting the
+        // secrets could have fixed it.
+        'user-agent': 'Lumen/2.0 (+https://github.com/amishraj/lumen)',
+        accept: 'application/json',
+      },
       body: JSON.stringify(body),
     });
   } catch (e) {
