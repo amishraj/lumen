@@ -209,9 +209,12 @@ class SyncService {
   Future<void> seedOutboxFromLocal() async {
     final db = _repo.db.db;
     final batchAt = SyncClock.now();
-    // prog — real rows only, tombstones included.
+    // prog — this device's OWN rows only. Trakt-derived marks are excluded
+    // for the same reason they never journal: every device on the account
+    // shares the Trakt link and re-derives them itself, so pushing them
+    // duplicates the fact along a second path with a worse timestamp.
     for (final r in await db.query('episode_progress',
-        where: 'synthetic=0')) {
+        where: "synthetic=0 AND origin<>'trakt'")) {
       await db.insert(
         'sync_outbox',
         {

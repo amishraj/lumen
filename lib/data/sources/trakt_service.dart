@@ -94,6 +94,18 @@ class TraktService {
     return null;
   }
 
+  /// Surface the server's own explanation instead of a bare status code —
+  /// the Worker returns {"error": "..."} for anything it could not forward.
+  static String? _proxyError(Response res) {
+    try {
+      final d = res.data is String ? jsonDecode(res.data) : res.data;
+      final e = d is Map ? d['error'] : null;
+      return e == null ? null : '$e';
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<Options> _oauthProxyOptions() async => Options(headers: {
         'authorization':
             'Bearer ${await _repo.getSetting('lumen_token')}',
@@ -116,7 +128,8 @@ class TraktService {
           data: jsonEncode({'client_id': clientId}));
     }
     if (res.statusCode != 200) {
-      throw Exception('Trakt rejected the client id (${res.statusCode}).');
+      throw Exception(_proxyError(res) ??
+          'Trakt rejected the client id (${res.statusCode}).');
     }
     final d = res.data is String ? jsonDecode(res.data) : res.data;
     return TraktDeviceCode(

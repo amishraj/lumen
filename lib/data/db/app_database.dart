@@ -1040,6 +1040,43 @@ class AppDatabase {
 
   // ---- Home feed rows ------------------------------------------------------
 
+  /// Providers carry the same film in several languages/qualities, and since
+  /// v5 the STATE deliberately spans them all (favoriting "EN - Dune" stars
+  /// "FR - Dune" and "Dune 4K" too, and they share one progress row). The
+  /// LISTS must still show one card per title, so collapse variants here —
+  /// preferring the English-labelled row, matching how playback picks a match.
+  ///
+  /// Live rows have no title identity (cleanTitle strips the quality tags
+  /// that separate regional feeds), so they collapse on url instead, i.e.
+  /// not at all in practice.
+  static final _enLabel =
+      RegExp(r'^\s*(en|eng|english)\b', caseSensitive: false);
+
+  static List<StreamItem> _oneCardPerTitle(
+      List<Map<String, Object?>> rows, int limit) {
+    final best = <String, Map<String, Object?>>{};
+    final order = <String>[];
+    for (final r in rows) {
+      final tkey = (r['title_key'] as String?) ?? '';
+      final key = tkey.isEmpty
+          ? 'url:${r['url']}'
+          : '${r['kind']}:$tkey';
+      final have = best[key];
+      if (have == null) {
+        best[key] = r;
+        order.add(key);
+      } else if (!_enLabel.hasMatch('${have['name']}') &&
+          _enLabel.hasMatch('${r['name']}')) {
+        best[key] = r; // upgrade to the English variant, keep row order
+      }
+      if (order.length >= limit && best.length >= limit) break;
+    }
+    return [
+      for (final k in order.take(limit)) StreamItem.fromRow(best[k]!),
+    ];
+  }
+
+
   /// In-progress VOD (started but not finished), most recent first.
   Future<List<StreamItem>> continueWatching(int playlistId,
       {int limit = 20}) async {
@@ -1049,10 +1086,12 @@ class AppDatabase {
       // Synthetic Trakt seeds carry a fake 100000ms denominator, so the
       // 60-second floor would drop every seeded resume point under 60%.
       'AND (pr.position_ms>60000 OR pr.synthetic=1) '
+      // Over-fetch: variants of one title collapse below, so the caller's
+      // limit must apply to CARDS, not to rows.
       'ORDER BY pr.updated_at DESC LIMIT ?',
-      [playlistId, limit],
+      [playlistId, limit * 4],
     );
-    return rows.map(StreamItem.fromRow).toList();
+    return _oneCardPerTitle(rows, limit);
   }
 
   /// Anything touched recently (watched or not).
@@ -1061,9 +1100,9 @@ class AppDatabase {
     final rows = await db.rawQuery(
       'SELECT s.* FROM progress pr JOIN streams s ON s.id=pr.stream_id '
       'WHERE s.playlist_id=? ORDER BY pr.updated_at DESC LIMIT ?',
-      [playlistId, limit],
+      [playlistId, limit * 4],
     );
-    return rows.map(StreamItem.fromRow).toList();
+    return _oneCardPerTitle(rows, limit);
   }
 
   /// Featured picks for the hero banner — items that have artwork, sampled
@@ -1549,7 +1588,7 @@ class AppDatabase {
       'SELECT s.* FROM favorites fv JOIN streams s ON s.id=fv.stream_id '
       'ORDER BY fv.added_at DESC',
     );
-    return rows.map(StreamItem.fromRow).toList();
+    return _oneCardPerTitle(rows, rows.length);
   }
 
   /// Favorites of one kind in one playlist — backs the "My Favorites"
@@ -1561,7 +1600,7 @@ class AppDatabase {
       'WHERE s.playlist_id=? AND s.kind=? ORDER BY fv.added_at DESC',
       [playlistId, kind.name],
     );
-    return rows.map(StreamItem.fromRow).toList();
+    return _oneCardPerTitle(rows, rows.length);
   }
 
   /// stream_id → last-touched ms for every progress row. Lets Continue

@@ -338,6 +338,49 @@ void main() {
     await app.db.close();
   });
 
+  test('title variants share state but show ONE card', () async {
+    final v4 = await createV4Db();
+    await seed(v4);
+    await v4.close();
+
+    final app = await AppDatabase.open(overridePath: path);
+
+    // The library holds The Godfather twice (EN + FR). Favoriting either
+    // must star BOTH rows (shared state) ...
+    final fr = (await app.db.query('streams', where: 'id=12')).single;
+    await app.toggleFavorite(StreamItem.fromRow(fr), true);
+    final starred = (await app.db.query('favorites'))
+        .map((r) => r['stream_id'] as int)
+        .toSet();
+    expect(starred.containsAll({11, 12}), isTrue,
+        reason: 'state spans every variant');
+
+    // ... but My List must render one card, not one per variant, and it
+    // should be the English-labelled row.
+    final list = await app.favorites();
+    final godfathers =
+        list.where((i) => i.name.toLowerCase().contains('godfather')).toList();
+    expect(godfathers.length, 1, reason: 'one card per title');
+    expect(godfathers.single.id, 11, reason: 'prefers the EN variant');
+
+    // Same for the in-progress rails (seed gave id 11 real progress, which
+    // the v5 fold shared onto id 12).
+    final cw = await app.continueWatching(1);
+    expect(cw.where((i) => i.name.toLowerCase().contains('godfather')).length,
+        1);
+    final recent = await app.recentlyWatched(1);
+    expect(
+        recent.where((i) => i.name.toLowerCase().contains('godfather')).length,
+        1);
+
+    // Live favorites are per-channel and must be untouched by all this.
+    final live = (await app.db.query('streams', where: 'id=14')).single;
+    await app.toggleFavorite(StreamItem.fromRow(live), true);
+    final liveFavs = await app.favoritesByKind(1, StreamKind.live);
+    expect(liveFavs.length, 1);
+    await app.db.close();
+  });
+
   test('titleKey alphabet properties', () {
     expect(titleKey('EN - The Godfather (1972) [1080p]'), 'the godfather');
     expect(titleKey("Marvel's Daredevil"), 'marvel s daredevil');
