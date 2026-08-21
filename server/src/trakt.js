@@ -33,6 +33,14 @@ async function forward(env, path, body) {
 
   const text = await res.text();
 
+  // Diagnostic (safe): never logs the credentials, only their shape — a
+  // Trakt client_id is 64 hex chars, so a wrong length is the giveaway.
+  if (res.status !== 200) {
+    console.log(
+      `trakt ${path} -> HTTP ${res.status} | id_len=${clientId(env).length} ` +
+      `secret_len=${clientSecret(env).length} | body=${text.slice(0, 300)}`);
+  }
+
   // Only claim application/json when the body actually IS json. Relabelling
   // an HTML error page (or an empty body) as json turned every upstream
   // failure into an opaque "FormatException: Unexpected character (at

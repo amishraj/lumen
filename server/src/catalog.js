@@ -12,16 +12,37 @@ import { json, err } from './auth.js';
 const TMDB = 'https://api.themoviedb.org/3';
 const CATALOG_TTL = 6 * 3600; // seconds
 
+/// Make an upstream response safe to hand to the Cache API.
+///
+/// OMDb answers with `Vary: *`, which the Cache API rejects outright
+/// ("Cannot cache response with 'Vary: *' header") — and because the put()
+/// threw, the whole request 500'd. Caching is an optimisation; it must never
+/// be able to fail the response, hence both the header scrub and the guard
+/// around put().
+function cacheable(res, ttl) {
+  const out = new Response(res.body, res);
+  out.headers.delete('vary');
+  out.headers.delete('set-cookie');
+  out.headers.set('cache-control', `public, max-age=${ttl}`);
+  return out;
+}
+
+async function putSafe(cacheKey, res) {
+  try {
+    await caches.default.put(cacheKey, res);
+  } catch (e) {
+    console.log(`cache put skipped: ${e}`);
+  }
+}
+
 async function cachedFetch(request, upstreamUrl, ttl) {
   const cacheKey = new Request(new URL(request.url).toString(), { method: 'GET' });
   const hit = await caches.default.match(cacheKey);
   if (hit) return hit;
   const res = await fetch(upstreamUrl);
   if (!res.ok) return new Response(res.body, { status: res.status });
-  const out = new Response(res.body, res);
-  out.headers.set('cache-control', `public, max-age=${ttl}`);
-  out.headers.delete('set-cookie');
-  await caches.default.put(cacheKey, out.clone());
+  const out = cacheable(res, ttl);
+  await putSafe(cacheKey, out.clone());
   return out;
 }
 
@@ -85,7 +106,7 @@ export async function catalogHome(env, request) {
     genre_rows: genreRows,
   });
   out.headers.set('cache-control', `public, max-age=${CATALOG_TTL}`);
-  await caches.default.put(cacheKey, out.clone());
+  await putSafe(cacheKey, out.clone());
   return out;
 }
 
