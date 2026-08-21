@@ -718,7 +718,13 @@ class AppDatabase {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
-    _outboxDirty = true;
+    // Progress deliberately does NOT wake the 3-second auto-push: the player
+    // checkpoints every 5s, so it would fire between checkpoints and turn a
+    // two-hour film into a request every few seconds. Progress rides the
+    // push at player close, plus app open / resume / pause. Everything else
+    // (favorites, pins, settings, sources) is a discrete user action and
+    // should reach the account promptly.
+    if (ns != 'prog') _outboxDirty = true;
   }
 
   bool _outboxDirty = false;

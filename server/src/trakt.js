@@ -44,9 +44,14 @@ async function forward(env, path, body) {
 
   const text = await res.text();
 
-  // Diagnostic (safe): never logs the credentials, only their shape — a
-  // Trakt client_id is 64 hex chars, so a wrong length is the giveaway.
-  if (res.status !== 200) {
+  // Diagnostic (safe): never logs the credentials, only their shape.
+  //
+  // HTTP 400 on device/token is NOT an error — it is the device flow's
+  // "authorization pending" while the user types the code at
+  // trakt.tv/activate, and the app polls every few seconds. Logging it
+  // buried the real failures in noise.
+  const pending = path === '/oauth/device/token' && res.status === 400;
+  if (res.status !== 200 && !pending) {
     console.log(
       `trakt ${path} -> HTTP ${res.status} | id_len=${clientId(env).length} ` +
       `secret_len=${clientSecret(env).length} | body=${text.slice(0, 300)}`);
