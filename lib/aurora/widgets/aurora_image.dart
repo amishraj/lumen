@@ -63,6 +63,45 @@ class AuroraImage extends StatelessWidget {
   }
 }
 
+/// The exact [ImageProvider] [AuroraImage] renders [url] with, at the decode
+/// cap it would use for a card/hero [width] logical pixels wide.
+///
+/// Exists because warming artwork through a bare `CachedNetworkImageProvider`
+/// is *worse* than not warming it at all. `memCacheWidth` compiles down to a
+/// [ResizeImage] wrapper (via octo_image), and ResizeImage is a different
+/// [ImageCache] key from the provider it wraps — so a precache with the raw
+/// provider decoded a second, FULL-resolution copy of the image that nothing
+/// ever drew, then held it live. On the home hero deck that was several MB of
+/// dead pixels per backdrop, allocated at exactly the moment the app is trying
+/// to paint its first frame on a memory-starved TV box.
+ImageProvider auroraImageProvider(
+  BuildContext context,
+  String url, {
+  required double width,
+}) {
+  final media = MediaQuery.of(context);
+  final decodeW = width.isFinite ? width : media.size.width;
+  return ResizeImage.resizeIfNeeded(
+    (decodeW * media.devicePixelRatio).round(),
+    null,
+    CachedNetworkImageProvider(url, cacheManager: LumenImageCache.instance),
+  );
+}
+
+/// Warm [url] into the image cache under the key [AuroraImage] will look it up
+/// by, so the warm-up is actually the copy that gets drawn. No-op for a null or
+/// empty url.
+Future<void> precacheAuroraImage(
+  BuildContext context,
+  String? url, {
+  required double width,
+}) {
+  if (url == null || url.isEmpty) return Future<void>.value();
+  return precacheImage(
+      auroraImageProvider(context, url, width: width), context,
+      onError: (_, __) {/* a cold backdrop just loads late — never throw */});
+}
+
 /// A dark tile that *contains* a channel logo (IPTV logos are transparent
 /// glyphs that must never be cropped) with a soft radial glow behind it.
 class AuroraLogoTile extends StatelessWidget {

@@ -29,6 +29,12 @@ void main() {
   // keep the default headroom.
   PaintingBinding.instance.imageCache.maximumSizeBytes =
       Platform.isAndroid ? 56 << 20 : 100 << 20;
+  // …and the object count, which is a separate ceiling Flutter defaults to
+  // 1000. Bytes alone doesn't bound it: a shelf of small posters can hold a
+  // thousand entries well under the byte cap while every one of them pins a
+  // decoded bitmap. TV boxes get a count that matches what a few screens of
+  // rails can actually show.
+  if (Platform.isAndroid) PaintingBinding.instance.imageCache.maximumSize = 220;
   // Initialise the libmpv backend used by the player.
   MediaKit.ensureInitialized();
   // Track keyboard/remote vs pointer so focus highlights only show for the former.

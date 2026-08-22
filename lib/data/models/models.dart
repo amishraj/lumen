@@ -201,6 +201,25 @@ class StreamItem {
         rating: (r['rating'] as double?),
       );
 
+  /// Built from the narrow projection [AppDatabase.vodItemsStream] reads for
+  /// the title index: no group_title / tvg_id / num, and playlist_id supplied
+  /// by the caller (the query already filters on it). Those three fields are
+  /// live/browse concerns — the index only ever hands its matches to the
+  /// discovery rails, the detail pages and the play resolver.
+  factory StreamItem.fromIndexRow(Map<String, Object?> r, int playlistId) =>
+      StreamItem(
+        id: r['id'] as int?,
+        playlistId: playlistId,
+        kind: streamKindFromString(r['kind'] as String),
+        name: r['name'] as String,
+        logo: r['logo'] as String?,
+        url: r['url'] as String,
+        // NB: the `num` field shadows the `num` type in here — the column is
+        // REAL, so a plain double cast is both correct and the only one that
+        // compiles inside this class.
+        rating: r['rating'] as double?,
+      );
+
   /// JSON round-trip for the persisted home-row snapshots (same keys as the
   /// DB row, so fromRow-shaped code can share the field names).
   Map<String, Object?> toJson() => {

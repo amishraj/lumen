@@ -1770,15 +1770,43 @@ class AppDatabase {
     _notifyOutbox();
   }
 
-  /// Every movie + series row of one playlist, in a single query — feeds the
-  /// in-memory TitleIndex so per-title discovery matching never hits SQL.
-  Future<List<StreamItem>> vodItems(int playlistId) async {
-    final rows = await db.query(
+  /// The columns the in-memory TitleIndex actually needs. `SELECT *` also
+  /// dragged group_title/tvg_id/num across for every row — dead weight in a
+  /// 40k-row read, on the one query that is big enough for it to matter.
+  static const _vodIndexColumns = [
+    'id', 'kind', 'name', 'logo', 'url', 'rating',
+  ];
+
+  /// Every movie + series row of one playlist, **streamed in chunks**.
+  ///
+  /// This used to be one `SELECT *` returning the whole VOD table in a single
+  /// platform-channel message. On a 40k-title playlist that message is tens of
+  /// MB, and it is assembled Java-side as one ArrayList<HashMap> before it can
+  /// even be encoded — a 2 GB Google TV box hits the Dalvik heap growth limit
+  /// and the process dies. That is a genuine native OOM, not a Dart exception,
+  /// so nothing in the app could catch it.
+  ///
+  /// A cursor moves the same rows over in [bufferSize] batches: peak memory is
+  /// one batch instead of the whole table, and the awaits between batches give
+  /// the UI isolate room to paint. The caller ([TitleIndex.buildFrom]) folds
+  /// each batch into the index and drops it, so the raw rows never all exist
+  /// at once on either side of the channel.
+  Stream<StreamItem> vodItemsStream(int playlistId,
+      {int bufferSize = 800}) async* {
+    final cursor = await db.queryCursor(
       'streams',
+      columns: _vodIndexColumns,
       where: "playlist_id=? AND kind IN ('movie','series')",
       whereArgs: [playlistId],
+      bufferSize: bufferSize,
     );
-    return rows.map(StreamItem.fromRow).toList();
+    try {
+      while (await cursor.moveNext()) {
+        yield StreamItem.fromIndexRow(cursor.current, playlistId);
+      }
+    } finally {
+      await cursor.close();
+    }
   }
 
   Future<Set<int>> watchedIds(int playlistId) async {

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -44,6 +45,10 @@ class _AuroraShellState extends ConsumerState<AuroraShell>
   /// and springs back the instant you scroll up — it never hides, so the tabs
   /// are always a thumb-reach away.
   final ValueNotifier<bool> _navExpanded = ValueNotifier(true);
+
+  /// Bumped to tell [_LazyStack] to drop every page but the one on screen.
+  /// Fired on an OS memory-pressure warning — see [didHaveMemoryPressure].
+  final ValueNotifier<int> _purgePages = ValueNotifier(0);
 
   // Stable per-tab focus nodes — created once, never swapped, and owned by the
   // shell rather than by a bar, because on compact the tabs are split across
@@ -104,11 +109,31 @@ class _AuroraShellState extends ConsumerState<AuroraShell>
     }
   }
 
+  /// Android sends this via onTrimMemory/onLowMemory — on a 2 GB Google TV it
+  /// arrives well before the kill, which makes it the one chance the app gets
+  /// to shed memory instead of being shot.
+  ///
+  /// Flutter's own default handler only clears the *cached* half of the image
+  /// cache. The half that actually matters here is the live half: every
+  /// decoded image still referenced by a mounted widget, which no size cap
+  /// applies to. Home's shelves plus a few pages parked in the lazy stack keep
+  /// dozens of those alive, so we drop the parked pages first (that releases
+  /// their references), then clear both halves of the cache.
+  @override
+  void didHaveMemoryPressure() {
+    super.didHaveMemoryPressure();
+    _purgePages.value++;
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     FocusManager.instance.removeListener(_ensureFocus);
     _navExpanded.dispose();
+    _purgePages.dispose();
     for (final e in _nodes.entries) {
       if (auroraTabNodes[e.key] == e.value) auroraTabNodes.remove(e.key);
       e.value.dispose();
@@ -246,6 +271,7 @@ class _AuroraShellState extends ConsumerState<AuroraShell>
               onNotification: compact ? _onPageScroll : null,
               child: _LazyStack(
                 index: tab,
+                purge: _purgePages,
                 builders: [
                   () => const AuroraSearchPage(),
                   () => const AuroraHomePage(),
@@ -633,9 +659,16 @@ class _TabItem extends StatelessWidget {
 /// incoming pages are painted together with crossfading opacity, so switching
 /// is a seamless fade rather than a blank-then-appear flicker.
 class _LazyStack extends StatefulWidget {
-  const _LazyStack({required this.index, required this.builders});
+  const _LazyStack({
+    required this.index,
+    required this.builders,
+    required this.purge,
+  });
   final int index;
   final List<Widget Function()> builders;
+
+  /// Bumped by the shell on OS memory pressure: drop every parked page.
+  final ValueListenable<int> purge;
 
   @override
   State<_LazyStack> createState() => _LazyStackState();
@@ -644,6 +677,22 @@ class _LazyStack extends StatefulWidget {
 class _LazyStackState extends State<_LazyStack>
     with SingleTickerProviderStateMixin {
   final Map<int, Widget> _built = {};
+
+  /// Least-recently-shown first. Bounds how many pages stay mounted.
+  final List<int> _mru = [];
+
+  /// How many pages keep their state while parked.
+  ///
+  /// Unbounded retention is what made "it gets slower and then dies" a
+  /// browsing pattern rather than a one-off: an Offstage page is still a
+  /// mounted subtree, so every card image it ever resolved stays a LIVE image
+  /// — and live images are exempt from `imageCache.maximumSizeBytes`. Visit
+  /// all eight tabs and the cap is enforcing nothing at all. Three covers the
+  /// realistic there-and-back (Home → Movies → detail → Home) with scroll and
+  /// focus intact; anything older rebuilds from its providers, which are
+  /// snapshot-backed and repaint immediately.
+  static const _keepAlive = 3;
+
   late final AnimationController _ctrl = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 260))
     ..value = 1;
@@ -652,8 +701,18 @@ class _LazyStackState extends State<_LazyStack>
   int _from = 0; // fading out during a transition
 
   @override
+  void initState() {
+    super.initState();
+    widget.purge.addListener(_purgeParked);
+  }
+
+  @override
   void didUpdateWidget(covariant _LazyStack old) {
     super.didUpdateWidget(old);
+    if (old.purge != widget.purge) {
+      old.purge.removeListener(_purgeParked);
+      widget.purge.addListener(_purgeParked);
+    }
     if (old.index != widget.index) {
       _from = _to;
       _to = widget.index;
@@ -661,8 +720,33 @@ class _LazyStackState extends State<_LazyStack>
     }
   }
 
+  /// Memory pressure: nothing but the page being looked at survives.
+  void _purgeParked() {
+    if (!mounted) return;
+    setState(() {
+      _built.removeWhere((i, _) => i != _to);
+      _mru
+        ..clear()
+        ..add(_to);
+      _from = _to;
+    });
+  }
+
+  /// Evict the oldest parked pages once more than [_keepAlive] are mounted.
+  /// Never the page on screen, and never the one still fading out.
+  void _trim() {
+    while (_mru.length > _keepAlive) {
+      final victim = _mru.firstWhere((i) => i != _to && i != _from,
+          orElse: () => -1);
+      if (victim < 0) break;
+      _mru.remove(victim);
+      _built.remove(victim);
+    }
+  }
+
   @override
   void dispose() {
+    widget.purge.removeListener(_purgeParked);
     _ctrl.dispose();
     super.dispose();
   }
@@ -670,11 +754,15 @@ class _LazyStackState extends State<_LazyStack>
   @override
   Widget build(BuildContext context) {
     _built.putIfAbsent(_to, () => widget.builders[_to]());
+    _mru
+      ..remove(_to)
+      ..add(_to);
     // Build the outgoing page only while actually transitioning (not on first
     // mount) so we don't eagerly build a page the user never opened.
     if (_from != _to && _ctrl.value < 1) {
       _built.putIfAbsent(_from, () => widget.builders[_from]());
     }
+    _trim();
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (context, _) {

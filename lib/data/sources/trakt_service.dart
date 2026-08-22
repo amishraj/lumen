@@ -9,6 +9,7 @@ import '../repositories/library_repository.dart';
 import '../models/models.dart';
 import '../../state/providers.dart';
 import '../../shared/title_utils.dart';
+import '../sync/auth_service.dart' show lumenApiBase;
 
 /// How many of Trakt's in-progress episodes get seeded into the local
 /// `episode_progress` table per pass. Streaming-service integrations (Netflix
@@ -87,11 +88,8 @@ class TraktService {
   /// user's token. Returns null when signed out (embedded/user creds path).
   Future<String?> _oauthProxyBase() async {
     final t = await _repo.getSetting('lumen_token');
-    final b = await _repo.getSetting('lumen_api_base');
-    if ((t?.isNotEmpty ?? false) && (b?.isNotEmpty ?? false)) {
-      return b!.replaceAll(RegExp(r'/+$'), '');
-    }
-    return null;
+    if (!(t?.isNotEmpty ?? false)) return null;
+    return lumenApiBase(_repo);
   }
 
   /// Surface the server's own explanation instead of a bare status code —

@@ -155,7 +155,8 @@ class LibraryRepository {
   Future<Map<int, double>> progressFractions() => db.progressFractions();
 
   /// All movies + series of one playlist (one query) — the TitleIndex source.
-  Future<List<StreamItem>> vodItems(int playlistId) => db.vodItems(playlistId);
+  Stream<StreamItem> vodItemsStream(int playlistId) =>
+      db.vodItemsStream(playlistId);
 
   /// Providers often carry the same movie/show in several languages, prefixed
   /// like "EN | Title", "EN - Title", "ENGLISH: Title". When we pick a title

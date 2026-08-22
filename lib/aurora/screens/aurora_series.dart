@@ -41,7 +41,14 @@ class AuroraSeriesScreen extends ConsumerStatefulWidget {
 }
 
 class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
-  late Future<List<Episode>> _future;
+  /// Resolved episodes, held in state rather than read through a FutureBuilder.
+  /// The list has to be available while [build] assembles slivers: a
+  /// FutureBuilder can only return ONE widget, which is what forced every
+  /// episode of a season into a single Column — see the episode sliver below.
+  /// null = still loading.
+  List<Episode>? _episodes;
+  Object? _episodesError;
+
   int _season = 1;
   bool _seasonChosen = false; // resume season applied once
 
@@ -78,7 +85,11 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
   @override
   void initState() {
     super.initState();
-    _future = _load();
+    _load().then((eps) {
+      if (mounted) setState(() => _episodes = eps);
+    }, onError: (Object e) {
+      if (mounted) setState(() => _episodesError = e);
+    });
     _loadProgress();
   }
 
@@ -405,10 +416,9 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                   left: margin,
                   right: margin,
                   bottom: 24,
-                  child: FutureBuilder<List<Episode>>(
-                    future: _future,
-                    builder: (context, snap) {
-                      final eps = snap.data ?? const <Episode>[];
+                  child: Builder(
+                    builder: (context) {
+                      final eps = _episodes ?? const <Episode>[];
                       final resume = eps.isEmpty ? null : _resumeEpisode(eps);
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -465,155 +475,214 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
               ]),
             ),
           ),
-          SliverToBoxAdapter(
-            child: FutureBuilder<List<Episode>>(
-              future: _future,
-              builder: (context, snap) {
-                if (snap.connectionState != ConnectionState.done) {
-                  return const Padding(
-                    padding: EdgeInsets.all(48),
-                    child: Center(
-                        child: SizedBox(
-                            width: 22,
-                            height: 22,
-                            child:
-                                CircularProgressIndicator(strokeWidth: 2))),
-                  );
-                }
-                if (snap.hasError) {
-                  return Padding(
-                    padding: EdgeInsets.all(margin),
-                    child: Text('Could not load episodes: ${snap.error}',
-                        style: const TextStyle(color: Aurora.textDim)),
-                  );
-                }
-                final eps = snap.data ?? const <Episode>[];
-                if (eps.isEmpty) {
-                  return Padding(
-                    padding: EdgeInsets.all(margin),
-                    child: const Text('No episodes found for this series.',
-                        style: TextStyle(color: Aurora.textFaint)),
-                  );
-                }
-                final seasons = eps.map((e) => e.season).toSet().toList()
-                  ..sort();
-
-                // Jump to the resume episode's season on first load, then
-                // once more when Trakt's watched-episodes data lands (it's a
-                // network call — without this second pass, a show watched via
-                // Trakt on another device could lock onto the wrong season/
-                // episode using only-local progress from the very first
-                // frame, before Trakt had a chance to say otherwise).
-                final resume = _resumeEpisode(eps);
-                if (!_seasonChosen ||
-                    (traktJustArrived && !_userPickedSeason)) {
-                  _seasonChosen = true;
-                  if (traktJustArrived) {
-                    _traktApplied = true;
-                    _scrolledToResume = false; // let it re-target correctly
-                  }
-                  _season = resume?.season ?? seasons.first;
-                }
-                if (!seasons.contains(_season)) _season = seasons.first;
-                final inSeason =
-                    eps.where((e) => e.season == _season).toList();
-
-                // Scroll to the resume card once, if it's in this season.
-                final resumeHere = resume != null && resume.season == _season;
-                if (!_scrolledToResume && resumeHere) {
-                  _scrolledToResume = true;
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    final ctx = _resumeCardKey.currentContext;
-                    if (ctx != null) {
-                      Scrollable.ensureVisible(ctx,
-                          duration: const Duration(milliseconds: 420),
-                          curve: Curves.easeOutCubic,
-                          alignment: 0.25);
-                    }
-                  });
-                }
-
-                // A season is "watched" when every one of its episodes is —
-                // locally or on Trakt. Drives the check on the season chips.
-                final watchedSeasons = <int>{
-                  for (final s in seasons)
-                    if (eps
-                        .where((e) => e.season == s)
-                        .every(_isWatched))
-                      s,
-                };
-
-                final seasonWatched = watchedSeasons.contains(_season);
-                return Padding(
-                  padding:
-                      EdgeInsets.symmetric(horizontal: margin, vertical: 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _SeasonRail(
-                        seasons: seasons,
-                        selected: _season,
-                        watchedSeasons: watchedSeasons,
-                        onPick: (s) => setState(() {
-                          _season = s;
-                          _scrolledToResume = true; // manual pick — don't yank
-                          _userPickedSeason = true; // and never auto-repick
-                        }),
-                      ),
-                      const SizedBox(height: 12),
-                      // Clean per-season toggle: mark the whole season watched
-                      // (or clear it) locally + on Trakt in one press.
-                      AuroraPillButton(
-                        label: _markingSeason
-                            ? 'Updating…'
-                            : (seasonWatched
-                                ? 'Season $_season watched'
-                                : 'Mark Season $_season watched'),
-                        icon: seasonWatched
-                            ? Icons.check_circle_rounded
-                            : Icons.done_all_rounded,
-                        compact: true,
-                        onPressed: () => _toggleSeasonWatched(inSeason, _season),
-                      ),
-                      const SizedBox(height: 16),
-                      // Centre the episode column rather than hugging the left
-                      // edge — it reads as a deliberate, focused reel on wide TV
-                      // screens.
-                      Center(
-                        child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 860),
-                        child: Column(children: [
-                          for (final ep in inSeason)
-                            _EpisodeCard(
-                              key: (resume != null &&
-                                      ep.season == resume.season &&
-                                      ep.episode == resume.episode)
-                                  ? _resumeCardKey
-                                  : ValueKey('ep-${ep.season}-${ep.episode}'),
-                              episode: ep,
-                              meta: _tmdb[(ep.season, ep.episode)],
-                              title: _titleFor(ep),
-                              fallbackArt: widget.series.logo,
-                              progress: _progFor(ep),
-                              watched: _isWatched(ep),
-                              isResume: resume != null &&
-                                  ep.season == resume.season &&
-                                  ep.episode == resume.episode,
-                              onPlay: () => _play(eps, ep),
-                            ),
-                        ]),
-                      ),
-                      ),
-                      const SizedBox(height: 40),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
+          // The episode reel, virtualised.
+          //
+          // This whole section used to be ONE SliverToBoxAdapter holding a
+          // Column of every episode in the season. A sliver adapter has no
+          // viewport awareness, so a 26-episode season inflated 26 cards and
+          // kicked off 26 still-image downloads-and-decodes the instant the
+          // list resolved — off-screen ones included. Long-running shows and
+          // anime seasons (100+ episodes in one "season") made that a decode
+          // storm big enough to take the process down on a TV box. A
+          // SliverList builds only what the viewport (plus cache extent)
+          // actually needs.
+          ..._episodeSlivers(margin, traktJustArrived),
         ],
       ),
     );
+  }
+
+  /// Bring the resume episode into view.
+  ///
+  /// Now that the list is virtualised, [_resumeCardKey] usually has no context
+  /// on the first frame — the card is a hundred episodes below the viewport
+  /// and simply has not been built, so `ensureVisible` had nothing to target.
+  /// So we walk: page down until the card exists, then hand off to
+  /// ensureVisible for the final, animated placement. Bounded by both a step
+  /// count and by the scroll position refusing to move, so it always
+  /// terminates — including on a season where the card never materialises.
+  void _revealResumeCard([int step = 0]) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final ctx = _resumeCardKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(ctx,
+            duration: const Duration(milliseconds: 420),
+            curve: Curves.easeOutCubic,
+            alignment: 0.25);
+        return;
+      }
+      if (step >= 40) return; // give up quietly rather than spin
+      final pos = _scroll.position;
+      final next =
+          (pos.pixels + pos.viewportDimension * 0.8).clamp(0.0, pos.maxScrollExtent);
+      if (next <= pos.pixels) return; // already at the end — nothing below
+      _scroll.jumpTo(next);
+      _revealResumeCard(step + 1);
+    });
+  }
+
+  /// Everything below the hero: the season rail, the season toggle, and the
+  /// episode cards as a real [SliverList].
+  ///
+  /// Returns slivers (not one widget) precisely so the episodes can virtualise
+  /// — that is the whole point of hoisting the episode future into state.
+  List<Widget> _episodeSlivers(double margin, bool traktJustArrived) {
+    if (_episodesError != null) {
+      return [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.all(margin),
+            child: Text('Could not load episodes: $_episodesError',
+                style: const TextStyle(color: Aurora.textDim)),
+          ),
+        ),
+      ];
+    }
+    final eps = _episodes;
+    if (eps == null) {
+      return [
+        const SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.all(48),
+            child: Center(
+                child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2))),
+          ),
+        ),
+      ];
+    }
+    if (eps.isEmpty) {
+      return [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.all(margin),
+            child: const Text('No episodes found for this series.',
+                style: TextStyle(color: Aurora.textFaint)),
+          ),
+        ),
+      ];
+    }
+
+    final seasons = eps.map((e) => e.season).toSet().toList()..sort();
+
+    // Jump to the resume episode's season on first load, then once more when
+    // Trakt's watched-episodes data lands (it's a network call — without this
+    // second pass, a show watched via Trakt on another device could lock onto
+    // the wrong season/episode using only-local progress from the very first
+    // frame, before Trakt had a chance to say otherwise).
+    final resume = _resumeEpisode(eps);
+    if (!_seasonChosen || (traktJustArrived && !_userPickedSeason)) {
+      _seasonChosen = true;
+      if (traktJustArrived) {
+        _traktApplied = true;
+        _scrolledToResume = false; // let it re-target correctly
+      }
+      _season = resume?.season ?? seasons.first;
+    }
+    if (!seasons.contains(_season)) _season = seasons.first;
+    final inSeason = eps.where((e) => e.season == _season).toList();
+
+    // Scroll to the resume card once, if it's in this season.
+    final resumeHere = resume != null && resume.season == _season;
+    if (!_scrolledToResume && resumeHere) {
+      _scrolledToResume = true;
+      _revealResumeCard();
+    }
+
+    // A season is "watched" when every one of its episodes is — locally or on
+    // Trakt. Drives the check on the season chips.
+    final watchedSeasons = <int>{
+      for (final s in seasons)
+        if (eps.where((e) => e.season == s).every(_isWatched)) s,
+    };
+    final seasonWatched = watchedSeasons.contains(_season);
+
+    // Centre the episode column rather than hugging the left edge — it reads
+    // as a deliberate, focused reel on wide TV screens.
+    Widget centred(Widget child) => Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 860),
+            child: child,
+          ),
+        );
+
+    return [
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(margin, 14, margin, 0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _SeasonRail(
+                seasons: seasons,
+                selected: _season,
+                watchedSeasons: watchedSeasons,
+                onPick: (s) => setState(() {
+                  _season = s;
+                  _scrolledToResume = true; // manual pick — don't yank
+                  _userPickedSeason = true; // and never auto-repick
+                }),
+              ),
+              const SizedBox(height: 12),
+              // Clean per-season toggle: mark the whole season watched (or
+              // clear it) locally + on Trakt in one press.
+              AuroraPillButton(
+                label: _markingSeason
+                    ? 'Updating…'
+                    : (seasonWatched
+                        ? 'Season $_season watched'
+                        : 'Mark Season $_season watched'),
+                icon: seasonWatched
+                    ? Icons.check_circle_rounded
+                    : Icons.done_all_rounded,
+                compact: true,
+                onPressed: () => _toggleSeasonWatched(inSeason, _season),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+      SliverPadding(
+        padding: EdgeInsets.symmetric(horizontal: margin),
+        sliver: SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, i) {
+              final ep = inSeason[i];
+              final isResume = resume != null &&
+                  ep.season == resume.season &&
+                  ep.episode == resume.episode;
+              return centred(_EpisodeCard(
+                key: isResume
+                    ? _resumeCardKey
+                    : ValueKey('ep-${ep.season}-${ep.episode}'),
+                episode: ep,
+                meta: _tmdb[(ep.season, ep.episode)],
+                title: _titleFor(ep),
+                fallbackArt: widget.series.logo,
+                progress: _progFor(ep),
+                watched: _isWatched(ep),
+                isResume: isResume,
+                onPlay: () => _play(eps, ep),
+              ));
+            },
+            childCount: inSeason.length,
+            // Cards are a fixed height, so the viewport can index straight to
+            // the resume episode instead of walking every card to find it.
+            findChildIndexCallback: (key) {
+              if (key is! ValueKey<String>) return null;
+              final i = inSeason.indexWhere(
+                  (e) => key.value == 'ep-${e.season}-${e.episode}');
+              return i < 0 ? null : i;
+            },
+          ),
+        ),
+      ),
+      SliverToBoxAdapter(child: SizedBox(height: Aurora.bottomPad(context))),
+    ];
   }
 }
 

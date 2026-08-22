@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../repositories/library_repository.dart';
 import '../../state/providers.dart';
+import '../sync/auth_service.dart' show lumenApiBase;
 
 /// Looks up IMDb / Rotten Tomatoes / Metacritic ratings + plot from OMDb.
 /// Results (including misses) are cached in app_settings so each title is
@@ -31,7 +32,7 @@ class OmdbService {
   Future<bool> get enabled async {
     if ((await key())?.isNotEmpty ?? false) return true;
     final t = await _repo.getSetting('lumen_token');
-    final b = await _repo.getSetting('lumen_api_base');
+    final b = await lumenApiBase(_repo);
     return (t?.isNotEmpty ?? false) && (b?.isNotEmpty ?? false);
   }
 
@@ -39,10 +40,9 @@ class OmdbService {
   /// injects the real key server-side — else direct with the local key.
   Future<(String, String?, Map<String, String>)> _endpoint() async {
     final t = await _repo.getSetting('lumen_token');
-    final b = await _repo.getSetting('lumen_api_base');
+    final b = await lumenApiBase(_repo);
     if ((t?.isNotEmpty ?? false) && (b?.isNotEmpty ?? false)) {
-      final base = b!.replaceAll(RegExp(r'/+$'), '');
-      return ('$base/v1/omdb', null, {'authorization': 'Bearer $t'});
+      return ('$b/v1/omdb', null, {'authorization': 'Bearer $t'});
     }
     return ('https://www.omdbapi.com/', await key(), const <String, String>{});
   }

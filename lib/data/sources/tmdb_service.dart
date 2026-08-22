@@ -8,6 +8,7 @@ import '../models/models.dart';
 import '../repositories/library_repository.dart';
 import '../../state/providers.dart';
 import 'realdebrid_service.dart';
+import '../sync/auth_service.dart' show lumenApiBase;
 
 /// The Movie Database (TMDB) — richer artwork (posters/backdrops), overviews,
 /// genres, cast, and discovery lists (popular / trending / by-genre /
@@ -39,7 +40,7 @@ class TmdbService {
     if ((await key())?.isNotEmpty ?? false) return true;
     // Signed in to a Lumen account → the Worker holds the key.
     final t = await _repo.getSetting('lumen_token');
-    final b = await _repo.getSetting('lumen_api_base');
+    final b = await lumenApiBase(_repo);
     return (t?.isNotEmpty ?? false) && (b?.isNotEmpty ?? false);
   }
 
@@ -72,9 +73,9 @@ class TmdbService {
   /// token (as a Bearer header). v4 tokens are long JWTs starting with `eyJ`.
   Future<(Map<String, dynamic>, Options)> _auth() async {
     final token = await _repo.getSetting('lumen_token');
-    final base = await _repo.getSetting('lumen_api_base');
+    final base = await lumenApiBase(_repo);
     if (token != null && token.isNotEmpty && base != null && base.isNotEmpty) {
-      _proxyBase = '${base.replaceAll(RegExp(r'/+$'), '')}/v1/tmdb';
+      _proxyBase = '$base/v1/tmdb';
       return (
         <String, dynamic>{},
         Options(headers: {'Authorization': 'Bearer $token'})

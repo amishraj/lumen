@@ -1,10 +1,8 @@
 import 'dart:async';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/image_cache.dart';
 import '../../data/models/models.dart';
 import '../../data/repositories/library_repository.dart';
 import '../../data/sources/realdebrid_service.dart';
@@ -272,6 +270,10 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
           ),
         );
 
+    final rows = _rows(context, posterShelf, wideShelf, posterW, wideW, liveW,
+        posterRow, wideRow, liveRow, cwSplit, cwOwn, cwExternal, because,
+        genres, watchlist);
+
     return AuroraRowScope(
       // Row-aware Up/Down: a page of horizontal rails stacked vertically, so
       // Down always lands on the row below (never sideways). AuroraRowScope
@@ -300,14 +302,13 @@ class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
           // cacheExtent. The old fixed list subscribed ~19 providers (SQL +
           // network) on frame 1 — cold start was network-bound before the
           // first scroll was even possible.
+          //
+          // `rows` is built ONCE per build, not per delegate call: it was
+          // being reconstructed for every child AND every childCount read, and
+          // a sliver asks for childCount many times per layout.
           delegate: SliverChildBuilderDelegate(
-            (context, i) => _rows(context, posterShelf, wideShelf, posterW,
-                wideW, liveW, posterRow, wideRow, liveRow, cwSplit, cwOwn,
-                cwExternal, because, genres, watchlist)[i](),
-            childCount: _rows(context, posterShelf, wideShelf, posterW, wideW,
-                    liveW, posterRow, wideRow, liveRow, cwSplit, cwOwn,
-                    cwExternal, because, genres, watchlist)
-                .length,
+            (context, i) => rows[i](),
+            childCount: rows.length,
           ),
         ),
       ],
@@ -402,6 +403,8 @@ class _Billboard extends ConsumerStatefulWidget {
 
 class _BillboardState extends ConsumerState<_Billboard> {
   int _index = 0;
+  /// Backdrops already warmed, so a rebuild never re-fires the precache.
+  final Set<String> _warmed = {};
   bool _heroFocused = false;
   bool _compact = false;
   Timer? _rotate;
@@ -438,14 +441,13 @@ class _BillboardState extends ConsumerState<_Billboard> {
     // Warm the next backdrop so the crossfade never shows a loading tile.
     // Through LumenImageCache — the default manager caps at 200 objects, so
     // warming through it downloaded every backdrop twice AND churned that
-    // tiny cache instead of sharing the disk copy AuroraImage reads.
+    // tiny cache instead of sharing the disk copy AuroraImage reads. And
+    // through the SAME ResizeImage key AuroraImage draws with, or the warm-up
+    // decodes a full-resolution second copy nobody looks at
+    // (see [precacheAuroraImage]).
     final after = widget.items[(next + 1) % n];
-    if (after.logo != null && after.logo!.isNotEmpty) {
-      precacheImage(
-          CachedNetworkImageProvider(after.logo!,
-              cacheManager: LumenImageCache.instance),
-          context);
-    }
+    unawaited(precacheAuroraImage(context, after.logo,
+        width: MediaQuery.of(context).size.width));
     setState(() => _index = next);
   }
 
@@ -552,13 +554,20 @@ class _BillboardState extends ConsumerState<_Billboard> {
         ? item.logo
         : bundle?.tmdb?.backdrop;
     // Warm the detail backdrop anyway so a source without its own art (Trakt
-    // fallback) crossfades to a cached image instead of a blank tile.
+    // fallback) crossfades to a cached image instead of a blank tile. Deferred
+    // to after the frame and de-duped: this runs inside build(), which the
+    // detail bundle / favourites watches re-enter constantly, and precaching
+    // is a network fetch plus a decode — firing it per rebuild was work the
+    // hero paid for over and over while the page was still loading.
     if ((item.logo == null || item.logo!.isEmpty) &&
-        bundle?.tmdb?.backdrop != null) {
-      precacheImage(
-          CachedNetworkImageProvider(bundle!.tmdb!.backdrop!,
-              cacheManager: LumenImageCache.instance),
-          context);
+        bundle?.tmdb?.backdrop != null &&
+        _warmed.add(bundle!.tmdb!.backdrop!)) {
+      final url = bundle.tmdb!.backdrop!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          unawaited(precacheAuroraImage(context, url, width: size.width));
+        }
+      });
     }
     final synopsis = bundle?.overview;
     final omdb = bundle?.omdb;

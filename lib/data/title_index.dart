@@ -13,8 +13,9 @@ import 'models/models.dart';
 /// also queue behind a running playlist re-sync). That was the minutes-long
 /// "home is stuck" stall.
 ///
-/// This index is built from ONE query (see [LibraryRepository.vodItems]) and
-/// answers matches from memory. Rebuilt when the playlist re-syncs.
+/// This index is built by folding ONE streamed query (see
+/// [LibraryRepository.vodItemsStream]) and answers matches from memory.
+/// Rebuilt when the playlist re-syncs.
 class TitleIndex {
   TitleIndex._(this.playlistId, this._byNorm, this._byNormLoose);
 
@@ -47,27 +48,68 @@ class TitleIndex {
     return key.substring(0, m.start);
   }
 
-  /// Build from the library's VOD rows. Top-level-callable so it can run via
-  /// `compute()` — normalising tens of thousands of names off the UI thread.
-  static TitleIndex build((int, List<StreamItem>) args) {
-    final (playlistId, items) = args;
+  /// A provider that ships the same film in a dozen languages can pile
+  /// hundreds of rows onto one title. Nothing reads past a handful — [match]
+  /// takes the first, [matches] is consumed with `.take(4)` — so buckets stop
+  /// growing here. Without the cap a duplicate-heavy playlist retains the
+  /// entire VOD table twice over for no reachable benefit.
+  static const _maxPerBucket = 8;
+
+  /// "EN | Title", "ENG - Title", "English: Title" — the label providers use
+  /// to mark the version most users actually want.
+  static final _enLabel =
+      RegExp(r'^\s*(en|eng|english)\b', caseSensitive: false);
+
+  /// Build from the library's VOD rows as they arrive.
+  ///
+  /// Deliberately **not** a `compute()` any more. Handing 40k StreamItems to
+  /// an isolate deep-copies the whole list across the boundary before a single
+  /// name is normalised, so the peak cost was the table twice over plus an
+  /// isolate spawn — on a TV box that was both the slowest and the most
+  /// memory-hungry part of opening the app. Folding a streamed cursor keeps
+  /// one batch alive at a time, and the `await` on each row hands the frame
+  /// scheduler a gap, so the normalising cost is spread instead of blocking.
+  static Future<TitleIndex> buildFrom(
+    int playlistId,
+    Stream<StreamItem> items, {
+    bool Function()? isCancelled,
+  }) async {
     final map = <String, List<StreamItem>>{};
     final loose = <String, List<StreamItem>>{};
-    for (final it in items) {
+    void put(Map<String, List<StreamItem>> m, String k, StreamItem it) {
+      final bucket = m[k] ??= [];
+      if (bucket.length < _maxPerBucket) {
+        bucket.add(it);
+        return;
+      }
+      // The cap must never change *which* variant the app picks. An English
+      // entry that shows up after eight others would otherwise be dropped, and
+      // [match] would start returning a dubbed copy of a film it used to
+      // return in English. Evict a non-English member for it instead.
+      if (!_enLabel.hasMatch(it.name)) return;
+      final i = bucket.indexWhere((e) => !_enLabel.hasMatch(e.name));
+      if (i >= 0) bucket[i] = it;
+    }
+
+    await for (final it in items) {
+      // Abandoned (a re-sync bumped the index revision, or the app is going
+      // away): stop pulling rows. Breaking out cancels the subscription, which
+      // closes the underlying cursor — leaving it open would keep a read
+      // running against the very table the re-sync is rewriting.
+      if (isCancelled != null && isCancelled()) break;
       final k = normalize(it.name);
       if (k.isEmpty) continue;
-      (map[k] ??= []).add(it);
+      put(map, k, it);
       final stripped = _stripYear(k);
-      if (stripped != null) (loose[stripped] ??= []).add(it);
+      if (stripped != null) put(loose, stripped, it);
     }
     // English-labelled entries first within each bucket (stable otherwise).
-    final en = RegExp(r'^\s*(en|eng|english)\b', caseSensitive: false);
     void sortBuckets(Map<String, List<StreamItem>> m) {
       for (final bucket in m.values) {
         if (bucket.length > 1) {
           bucket.sort((a, b) {
-            final ae = en.hasMatch(a.name) ? 0 : 1;
-            final be = en.hasMatch(b.name) ? 0 : 1;
+            final ae = _enLabel.hasMatch(a.name) ? 0 : 1;
+            final be = _enLabel.hasMatch(b.name) ? 0 : 1;
             return ae - be;
           });
         }
@@ -78,6 +120,10 @@ class TitleIndex {
     sortBuckets(loose);
     return TitleIndex._(playlistId, map, loose);
   }
+
+  /// In-memory build, for tests and any caller that already holds the rows.
+  static Future<TitleIndex> build(int playlistId, List<StreamItem> items) =>
+      buildFrom(playlistId, Stream.fromIterable(items));
 
   List<StreamItem> _bucketFor(String title) {
     final k = normalize(title);

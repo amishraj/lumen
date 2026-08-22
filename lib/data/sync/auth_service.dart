@@ -6,13 +6,44 @@ import 'package:dio/dio.dart';
 import '../db/sync_origin.dart';
 import '../repositories/library_repository.dart';
 
+/// The Worker this build talks to, baked in — same idea as the embedded Trakt
+/// credentials next door.
+///
+/// Typing `https://lumen-api.<something>.workers.dev` on a TV remote, one
+/// character at a time on an on-screen keyboard, was a hard gate in front of
+/// signing in: every new device and every reinstall paid it again, and one
+/// typo reads as "could not reach the server". Nobody should ever have to know
+/// this string. It stays overridable two ways — `--dart-define` at build time
+/// for a fork or a staging Worker, and the Advanced field on the sign-in
+/// screen at run time — so hosting your own is still one setting, not a
+/// rebuild.
+const String kEmbeddedLumenApiBase = String.fromEnvironment(
+  'LUMEN_API_BASE',
+  defaultValue: 'https://lumen-api.amishu197.workers.dev',
+);
+
+String _trimBase(String b) => b.trim().replaceAll(RegExp(r'/+$'), '');
+
+/// The Worker base for this device: the user's own override if they set one,
+/// otherwise [kEmbeddedLumenApiBase]. Null only when the embedded default has
+/// been compiled out AND nothing is saved.
+///
+/// Shared with the TMDB / OMDb / Trakt proxies so all four agree on where the
+/// server is — they each used to read the raw setting, which meant a device
+/// that had never visited the sign-in screen had no base at all.
+Future<String?> lumenApiBase(LibraryRepository repo) async {
+  final saved = await repo.getSetting('lumen_api_base');
+  if (saved != null && saved.trim().isNotEmpty) return _trimBase(saved);
+  return kEmbeddedLumenApiBase.isEmpty ? null : _trimBase(kEmbeddedLumenApiBase);
+}
+
 /// Lumen account auth against the Worker (server/). Tokens are long-lived
 /// bearers; the vault mirrors them, so a TV logs in once, ever — even across
 /// reinstalls.
 ///
 /// Settings keys (device-local — deliberately NOT in kSyncedSettings; the
 /// session token must never round-trip through its own sync):
-///   lumen_api_base   — https://lumen-api.<you>.workers.dev
+///   lumen_api_base   — the Worker; defaults to [kEmbeddedLumenApiBase]
 ///   lumen_token      — bearer
 ///   lumen_device_id  — server-issued device id
 ///   lumen_email      — display only
@@ -27,10 +58,15 @@ class AuthService {
     validateStatus: (s) => s != null && s < 500,
   ));
 
-  Future<String?> apiBase() async {
-    final b = await _repo.getSetting('lumen_api_base');
-    if (b == null || b.isEmpty) return null;
-    return b.replaceAll(RegExp(r'/+$'), '');
+  Future<String?> apiBase() => lumenApiBase(_repo);
+
+  /// True when the user has pointed this device at their own Worker rather
+  /// than the built-in one — the sign-in screen keeps its Advanced section
+  /// open in that case, so an override is never invisible.
+  Future<bool> hasCustomApiBase() async {
+    final saved = await _repo.getSetting('lumen_api_base');
+    if (saved == null || saved.trim().isEmpty) return false;
+    return _trimBase(saved) != _trimBase(kEmbeddedLumenApiBase);
   }
 
   Future<String?> token() => _repo.getSetting('lumen_token');
@@ -42,9 +78,14 @@ class AuthService {
         'content-type': 'application/json',
       });
 
-  Future<void> saveBase(String base) =>
-      _repo.setSetting('lumen_api_base', base.trim(),
-          origin: SyncOrigin.system);
+  /// Persist the base the user typed. An empty string means "use the built-in
+  /// one" — stored as the resolved value so the TMDB / OMDb / Trakt proxies,
+  /// which read the setting to decide whether they can proxy at all, see a
+  /// concrete URL rather than a blank.
+  Future<void> saveBase(String base) => _repo.setSetting(
+      'lumen_api_base',
+      base.trim().isEmpty ? _trimBase(kEmbeddedLumenApiBase) : _trimBase(base),
+      origin: SyncOrigin.system);
 
   Future<({bool ok, String detail})> login(
       String base, String email, String password, String deviceLabel) async {

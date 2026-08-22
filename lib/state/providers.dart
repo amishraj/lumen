@@ -292,15 +292,19 @@ final titleIndexProvider = FutureProvider<TitleIndex?>((ref) async {
   final repo = await ref.watch(repositoryProvider.future);
   final pl = ref.watch(activePlaylistProvider);
   if (pl?.id == null) return null;
-  // Yield briefly before the full VOD table scan: this provider is (indirectly)
-  // triggered by the very first home build, and sqflite serializes all queries
-  // through one connection — without the pause, the big scan lands in the queue
-  // AHEAD of the tiny `home:snap:*` reads that first paint depends on, stalling
-  // the "instant" snapshot path behind it on slow TV-box storage.
+  // Yield briefly before the VOD scan: this provider is (indirectly) triggered
+  // by the very first home build, and sqflite serializes all queries through
+  // one connection — without the pause, the big scan lands in the queue AHEAD
+  // of the tiny `home:snap:*` reads that first paint depends on, stalling the
+  // "instant" snapshot path behind it on slow TV-box storage.
   await Future<void>.delayed(const Duration(milliseconds: 350));
-  final items = await repo.vodItems(pl!.id!);
-  // Normalising tens of thousands of names is CPU work — off the UI thread.
-  return compute(TitleIndex.build, (pl.id!, items));
+  // Folded from a chunked cursor rather than one giant read: see
+  // [AppDatabase.vodItemsStream] for why the single-message version killed
+  // low-memory TV boxes outright.
+  var cancelled = false;
+  ref.onDispose(() => cancelled = true);
+  return TitleIndex.buildFrom(pl!.id!, repo.vodItemsStream(pl.id!),
+      isCancelled: () => cancelled);
 });
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/sync/auth_service.dart' show kEmbeddedLumenApiBase;
 import '../../shared/widgets/tv_text_field.dart';
 import '../../state/providers.dart';
 import '../../state/sync_providers.dart';
@@ -28,6 +29,10 @@ class _AuroraAccountScreenState extends ConsumerState<AuroraAccountScreen> {
 
   bool _busy = false;
   String? _status;
+  /// The server field is hidden by default — the Worker is baked into the
+  /// build. Opened automatically when this device already points somewhere
+  /// custom, so an override is never invisible.
+  bool _showAdvanced = false;
   // TV pairing state (this device showing a code).
   String? _showingCode;
   Timer? _pollTimer;
@@ -37,8 +42,13 @@ class _AuroraAccountScreenState extends ConsumerState<AuroraAccountScreen> {
     super.initState();
     () async {
       final auth = await ref.read(authServiceProvider.future);
+      if (!await auth.hasCustomApiBase()) return;
       final base = await auth.apiBase();
-      if (base != null && mounted) _server.text = base;
+      if (base == null || !mounted) return;
+      setState(() {
+        _server.text = base;
+        _showAdvanced = true;
+      });
     }();
   }
 
@@ -227,11 +237,6 @@ class _AuroraAccountScreenState extends ConsumerState<AuroraAccountScreen> {
           style: TextStyle(color: Aurora.textDim, height: 1.4)),
       const SizedBox(height: 20),
       TvTextField(
-          controller: _server,
-          hint: 'https://lumen-api.you.workers.dev',
-          icon: Icons.dns_rounded),
-      const SizedBox(height: 12),
-      TvTextField(
           controller: _email, hint: 'Email', icon: Icons.person_rounded),
       const SizedBox(height: 12),
       TvTextField(
@@ -257,6 +262,35 @@ class _AuroraAccountScreenState extends ConsumerState<AuroraAccountScreen> {
         onPressed: _busy ? null : _startPairing,
         child: const Text('Show a pairing code instead (TV)'),
       ),
+      // Self-hosting escape hatch, folded away. The server address used to be
+      // the first field on this screen, which meant everyone — every device,
+      // every reinstall — typed a workers.dev URL on a remote before they
+      // could even reach the password box. It's compiled in now
+      // ([kEmbeddedLumenApiBase]); this is only for pointing at a different
+      // Worker, and leaving it blank means "the built-in one".
+      const SizedBox(height: 18),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          onPressed: () => setState(() => _showAdvanced = !_showAdvanced),
+          icon: Icon(
+              _showAdvanced
+                  ? Icons.expand_less_rounded
+                  : Icons.expand_more_rounded,
+              size: 18),
+          label: const Text('Use a different server'),
+        ),
+      ),
+      if (_showAdvanced) ...[
+        const SizedBox(height: 8),
+        TvTextField(
+            controller: _server,
+            hint: kEmbeddedLumenApiBase,
+            icon: Icons.dns_rounded),
+        const SizedBox(height: 6),
+        const Text('Leave blank to use the built-in server.',
+            style: TextStyle(color: Aurora.textFaint, fontSize: 12)),
+      ],
       if (_status != null) ...[
         const SizedBox(height: 14),
         Text(_status!,
