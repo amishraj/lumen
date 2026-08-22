@@ -11,6 +11,7 @@ import '../aurora_theme.dart';
 import '../widgets/aurora_cards.dart';
 import '../widgets/aurora_search_field.dart';
 import '../widgets/aurora_shelf.dart';
+import '../../shared/smooth_scroll.dart';
 
 /// Unified search over the whole library (FTS5-backed), with one-press voice.
 /// Results group into Live / Movies / Shows rails as you type.
@@ -22,6 +23,7 @@ class AuroraSearchPage extends ConsumerStatefulWidget {
 }
 
 class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
+  final _scroll = SmoothScrollController();
   final _ctl = TextEditingController();
   Timer? _debounce;
 
@@ -29,6 +31,7 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
   void dispose() {
     _debounce?.cancel();
     _ctl.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -95,6 +98,7 @@ class _AuroraSearchPageState extends ConsumerState<AuroraSearchPage> {
                         text: 'No results for "$q"');
                   }
                   return ListView(
+                    controller: _scroll,
                     padding:
                         EdgeInsets.only(bottom: Aurora.bottomPad(context)),
                     children: [

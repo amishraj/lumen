@@ -22,6 +22,7 @@ import '../widgets/aurora_buttons.dart';
 import '../widgets/aurora_cards.dart';
 import '../widgets/aurora_image.dart';
 import '../widgets/aurora_shelf.dart';
+import '../../shared/smooth_scroll.dart';
 
 /// Aurora Home: one cinematic billboard, then dense, calm shelves.
 class AuroraHomePage extends ConsumerStatefulWidget {
@@ -32,7 +33,7 @@ class AuroraHomePage extends ConsumerStatefulWidget {
 }
 
 class _AuroraHomePageState extends ConsumerState<AuroraHomePage> {
-  final _scroll = ScrollController();
+  final _scroll = SmoothScrollController();
 
   @override
   void dispose() {

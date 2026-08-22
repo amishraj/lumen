@@ -78,12 +78,25 @@ class _AuroraSidePanelState extends State<AuroraSidePanel> {
         child: ExcludeFocus(
           excluding: !open,
           child: Stack(children: [
-            AnimatedOpacity(
-              opacity: open ? 1 : 0,
-              duration: Aurora.normal,
-              child: GestureDetector(
-                onTap: widget.onClose,
-                child: const ColoredBox(color: Color(0x8005060A)),
+            // Tap-outside-to-close scrim.
+            //
+            // Positioned.fill is not optional here. A childless ColoredBox is
+            // a RenderProxyBox with no child, so it lays out to
+            // `constraints.smallest` — and a Stack loosens constraints for its
+            // non-positioned children, making that Size.zero. The scrim
+            // therefore painted nothing and, because hit testing is gated on
+            // size, absorbed nothing: clicking outside an open panel fell
+            // straight through to the player's own tap handler and merely
+            // toggled the controls. It has never dimmed and has never closed.
+            Positioned.fill(
+              child: AnimatedOpacity(
+                opacity: open ? 1 : 0,
+                duration: Aurora.normal,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: widget.onClose,
+                  child: const ColoredBox(color: Color(0x8005060A)),
+                ),
               ),
             ),
             Align(

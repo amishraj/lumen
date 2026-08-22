@@ -13,6 +13,7 @@ import '../widgets/aurora_cards.dart';
 import '../widgets/aurora_panel.dart';
 import '../widgets/aurora_shelf.dart';
 import '../widgets/aurora_up_to_nav.dart';
+import '../aurora_navigation.dart';
 
 /// Sports hub. Top: today's REAL fixtures per sport (live guide from ESPN's
 /// public scoreboards) — tap a game and Lumen finds the matching IPTV event
@@ -38,8 +39,10 @@ class AuroraSportsPage extends ConsumerWidget {
       return;
     }
     if (candidates.length == 1) {
-      Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => AuroraPlayerScreen(item: candidates.first)));
+      pushFromTab(
+          ref,
+          Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => AuroraPlayerScreen(item: candidates.first))));
       return;
     }
     // Several plausible feeds — let the user pick (D-pad friendly rows).
@@ -89,13 +92,15 @@ class AuroraSportsPage extends ConsumerWidget {
     );
     if (picked != null && context.mounted) {
       final at = candidates.indexOf(picked);
-      Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => AuroraPlayerScreen(
-          item: picked,
-          queue: candidates,
-          startIndex: at < 0 ? 0 : at,
-        ),
-      ));
+      pushFromTab(
+          ref,
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => AuroraPlayerScreen(
+              item: picked,
+              queue: candidates,
+              startIndex: at < 0 ? 0 : at,
+            ),
+          )));
     }
   }
 
@@ -179,14 +184,15 @@ class AuroraSportsPage extends ConsumerWidget {
                   itemBuilder: (context, it, j) => AuroraLiveCard(
                     item: it,
                     width: w,
-                    onTap: () =>
+                    onTap: () => pushFromTab(
+                        ref,
                         Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => AuroraPlayerScreen(
-                        item: it,
-                        queue: items,
-                        startIndex: j,
-                      ),
-                    )),
+                          builder: (_) => AuroraPlayerScreen(
+                            item: it,
+                            queue: items,
+                            startIndex: j,
+                          ),
+                        ))),
                   ),
                 );
               },

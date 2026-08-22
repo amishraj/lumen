@@ -12,6 +12,7 @@ import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
 import '../../shared/title_keys.dart';
 import '../../shared/title_utils.dart';
+import '../../shared/smooth_scroll.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
 import '../player/aurora_player.dart';
@@ -60,7 +61,7 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
   bool _traktApplied = false;
   bool _userPickedSeason = false;
 
-  final _scroll = ScrollController();
+  final _scroll = SmoothScrollController();
   final GlobalKey _resumeCardKey = GlobalKey();
   bool _scrolledToResume = false;
 
@@ -257,15 +258,37 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
     }
   }
 
+  /// Watched status is only editable inside an explicit mode.
+  ///
+  /// It used to be a live "Mark Season N watched" button sitting directly under
+  /// the season rail — right where focus and the cursor pass through on the way
+  /// to the episodes — so wiping a season's history was one stray click away,
+  /// with no confirmation and no undo. Editing is now something you opt into:
+  /// nothing in the default view mutates anything, entering the mode is itself
+  /// harmless, and leaving it is one press.
+  bool _editingWatched = false;
+
   bool _markingSeason = false;
 
-  /// Toggle a whole season's watched state: locally (episode_progress) and on
-  /// Trakt, then refresh every seen/continue surface. When the season is
-  /// already fully watched this clears it; otherwise it marks all episodes.
-  Future<void> _toggleSeasonWatched(List<Episode> seasonEps, int season) async {
-    if (_markingSeason || seasonEps.isEmpty) return;
+  /// Toggle a whole season's watched state. Marks unless it is already fully
+  /// seen, in which case it clears.
+  Future<void> _toggleSeasonWatched(List<Episode> seasonEps, int season) =>
+      _writeWatched(seasonEps, !seasonEps.every(_isWatched), season: season);
+
+  /// Flip one episode. The editor's primary action.
+  Future<void> _toggleEpisodeWatched(Episode e) =>
+      _writeWatched([e], !_isWatched(e));
+
+  /// Set [target] on [eps]: locally (episode_progress) and on Trakt, then
+  /// refresh every seen/continue surface.
+  ///
+  /// [season] non-null means "this is the whole of that season", which lets the
+  /// Trakt side use the single season endpoint instead of enumerating episodes.
+  Future<void> _writeWatched(List<Episode> eps, bool target,
+      {int? season}) async {
+    if (_markingSeason || eps.isEmpty) return;
     setState(() => _markingSeason = true);
-    final target = !seasonEps.every(_isWatched); // mark unless already all seen
+    final seasonEps = eps;
     try {
       final repo = await ref.read(repositoryProvider.future);
       final keys = [
@@ -300,9 +323,14 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
       // inside setSeasonWatched, so refetching traktWatchedEpisodes BEFORE it
       // completes just re-read the pre-toggle cache (the revert flicker).
       final svc = ref.read(traktServiceProvider).valueOrNull;
-      unawaited(svc
-          ?.setSeasonWatched(_showTitle, season, watched: target)
-          .then((_) {
+      final write = season != null
+          ? svc?.setSeasonWatched(_showTitle, season, watched: target)
+          : svc?.setEpisodesWatched(
+              _showTitle,
+              [for (final e in seasonEps) (e.season, e.episode)],
+              watched: target,
+            );
+      unawaited(write?.then((_) {
         try {
           ref.invalidate(traktWatchedEpisodesProvider(_showTitle));
         } catch (_) {/* screen gone */}
@@ -380,7 +408,13 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
     final traktJustArrived = traktWatched != null && !_traktApplied;
     if (traktWatched != null) _traktWatched = traktWatched;
 
-    return Scaffold(
+    return PopScope(
+      // Back leaves the editor before it leaves the show.
+      canPop: !_editingWatched,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _exitEditMode();
+      },
+      child: Scaffold(
       backgroundColor: Aurora.bg,
       body: CustomScrollView(
         controller: _scroll,
@@ -489,7 +523,14 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
           ..._episodeSlivers(margin, traktJustArrived),
         ],
       ),
+      ),
     );
+  }
+
+  /// Leave edit mode. Also what Back does while it is on, so the first press
+  /// returns you to the episode list rather than off the show entirely.
+  void _exitEditMode() {
+    if (_editingWatched) setState(() => _editingWatched = false);
   }
 
   /// Bring the resume episode into view.
@@ -627,20 +668,24 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                 }),
               ),
               const SizedBox(height: 12),
-              // Clean per-season toggle: mark the whole season watched (or
-              // clear it) locally + on Trakt in one press.
-              AuroraPillButton(
-                label: _markingSeason
-                    ? 'Updating…'
-                    : (seasonWatched
-                        ? 'Season $_season watched'
-                        : 'Mark Season $_season watched'),
-                icon: seasonWatched
-                    ? Icons.check_circle_rounded
-                    : Icons.done_all_rounded,
-                compact: true,
-                onPressed: () => _toggleSeasonWatched(inSeason, _season),
-              ),
+              _editingWatched
+                  ? _WatchedEditBar(
+                      season: _season,
+                      seasonWatched: seasonWatched,
+                      busy: _markingSeason,
+                      onToggleSeason: () =>
+                          _toggleSeasonWatched(inSeason, _season),
+                      onDone: _exitEditMode,
+                    )
+                  // View mode carries no mutating control at all. This only
+                  // changes what a tap MEANS; it cannot change any history.
+                  : AuroraPillButton(
+                      label: 'Edit watched',
+                      icon: Icons.checklist_rounded,
+                      compact: true,
+                      onPressed: () =>
+                          setState(() => _editingWatched = true),
+                    ),
               const SizedBox(height: 16),
             ],
           ),
@@ -666,7 +711,13 @@ class _AuroraSeriesScreenState extends ConsumerState<AuroraSeriesScreen> {
                 progress: _progFor(ep),
                 watched: _isWatched(ep),
                 isResume: isResume,
-                onPlay: () => _play(eps, ep),
+                editing: _editingWatched,
+                // In edit mode the primary action toggles instead of playing,
+                // and the card says so — the meaning of a press is never
+                // ambiguous.
+                onPlay: _editingWatched
+                    ? () => _toggleEpisodeWatched(ep)
+                    : () => _play(eps, ep),
               ));
             },
             childCount: inSeason.length,
@@ -716,6 +767,78 @@ class _FadedImage extends StatelessWidget {
         height: height,
         radius: 0,
         fallbackText: title,
+      ),
+    );
+  }
+}
+
+/// The editing-watched-status bar.
+///
+/// Deliberately loud: a tinted strip with an explicit "Editing watched status"
+/// label, so there is never a moment where a press means something other than
+/// what the screen appears to offer. It carries the season-wide shortcut —
+/// which is where a bulk action belongs, behind a mode you chose — and the way
+/// out.
+class _WatchedEditBar extends StatelessWidget {
+  const _WatchedEditBar({
+    required this.season,
+    required this.seasonWatched,
+    required this.busy,
+    required this.onToggleSeason,
+    required this.onDone,
+  });
+
+  final int season;
+  final bool seasonWatched;
+  final bool busy;
+  final VoidCallback onToggleSeason;
+  final VoidCallback onDone;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: Aurora.accent.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Aurora.accent.withValues(alpha: 0.35)),
+      ),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          const Icon(Icons.checklist_rounded, size: 18, color: Aurora.accent),
+          Text(
+            busy ? 'Updating…' : 'Editing watched status',
+            style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                fontSize: 13.5,
+                color: Aurora.accent),
+          ),
+          const Text('Pick episodes to tick or untick.',
+              style: TextStyle(fontSize: 12.5, color: Aurora.textDim)),
+          AuroraPillButton(
+            label: seasonWatched
+                ? 'Clear season $season'
+                : 'Mark season $season',
+            icon: seasonWatched
+                ? Icons.remove_done_rounded
+                : Icons.done_all_rounded,
+            compact: true,
+            // A no-op while a write is in flight, rather than a disabled
+            // button: on a remote, a control that vanishes from the focus
+            // order mid-press strands the user.
+            onPressed: busy ? () {} : onToggleSeason,
+          ),
+          AuroraPillButton(
+            label: 'Done',
+            icon: Icons.check_rounded,
+            primary: true,
+            compact: true,
+            onPressed: onDone,
+          ),
+        ],
       ),
     );
   }
@@ -804,7 +927,13 @@ class _EpisodeCard extends StatelessWidget {
     required this.watched,
     required this.isResume,
     required this.onPlay,
+    this.editing = false,
   });
+
+  /// Edit mode: the card shows a checkbox and [onPlay] toggles watched instead
+  /// of starting playback. The visual change is the point — a control whose
+  /// meaning silently changed would be worse than the button it replaced.
+  final bool editing;
 
   final Episode episode;
   final TmdbEpisode? meta;
@@ -828,7 +957,9 @@ class _EpisodeCard extends StatelessWidget {
     return AuroraFocusable(
       radius: 16,
       scale: 1.015,
-      autofocus: isResume,
+      // Don't yank focus to the resume episode while editing — the user is
+      // working through the list, not resuming.
+      autofocus: isResume && !editing,
       onActivate: onPlay,
       builder: (context, focused) => AnimatedContainer(
         duration: Aurora.fast,
@@ -843,6 +974,16 @@ class _EpisodeCard extends StatelessWidget {
                   : Aurora.hairline),
         ),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (editing) ...[
+            Icon(
+              watched
+                  ? Icons.check_box_rounded
+                  : Icons.check_box_outline_blank_rounded,
+              size: 24,
+              color: watched ? Aurora.accent : Aurora.textDim,
+            ),
+            const SizedBox(width: 12),
+          ],
           Stack(children: [
             Opacity(
               opacity: watched ? 0.55 : 1,

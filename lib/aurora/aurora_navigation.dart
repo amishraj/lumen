@@ -7,6 +7,7 @@ import '../data/models/models.dart';
 import '../data/sources/trakt_service.dart';
 import '../state/providers.dart';
 import '../shared/title_utils.dart';
+import 'aurora_providers.dart';
 import 'player/aurora_player.dart';
 import 'screens/aurora_detail.dart';
 import 'screens/aurora_series.dart';
@@ -23,12 +24,51 @@ import 'screens/aurora_series.dart';
 /// OUT (see [syncTitleWithTrakt]) — the app-open pull alone is too coarse on a
 /// slow TV box, where it can be minutes stale by the time you've navigated to
 /// something.
+/// Push [route] and put the shell back on the tab it was pushed from.
+///
+/// For the player pushes that don't go through [openAuroraItem] (Sports, Live).
+/// Any route that returns straight to the shell needs this — see [_restoreTab]
+/// for why the landing tab is otherwise a guess.
+void pushFromTab(WidgetRef ref, Future<void> route) {
+  final from = ref.read(auroraTabProvider);
+  route.then((_) => _restoreTab(ref, from));
+}
+
+/// Put the shell back on the tab a title was opened from.
+///
+/// Also suppresses the top bar's focus-selects-tab behaviour for a beat: the
+/// focus fallout from a pop arrives over the next few frames, and without the
+/// window it would immediately overwrite what we just restored.
+void _restoreTab(WidgetRef ref, int tab) {
+  auroraSuppressFocusTabUntil =
+      DateTime.now().add(const Duration(milliseconds: 600));
+  try {
+    if (ref.read(auroraTabProvider) != tab) {
+      ref.read(auroraTabProvider.notifier).state = tab;
+    }
+  } catch (_) {/* shell disposed — nothing to restore into */}
+}
+
 void openAuroraItem(
   BuildContext context,
   WidgetRef ref,
   StreamItem item, {
   List<StreamItem>? liveQueue,
 }) {
+  // Where this title was opened FROM. Nothing else in the app remembers it:
+  // the landing tab after a pop was whatever `auroraTabProvider` happened to
+  // hold, and that is ambient state two unrelated things overwrite. The shell's
+  // Back handler force-writes Home whenever a Back reaches the shell route, and
+  // the top bar turns *any* nav node gaining focus into a tab switch — so when
+  // Flutter restores focus after a pop and falls through to a tab node (the
+  // page's own focus scope having been excluded or unmounted underneath the
+  // route), the accident is committed as navigation. Home is the node seeded at
+  // boot; Search is the reading-order-first one. Those are exactly the two
+  // wrong destinations reported.
+  //
+  // Rather than chase every way focus can drift, record the answer on the way
+  // in and assert it on the way out.
+  final openedFromTab = ref.read(auroraTabProvider);
   Future<void> route;
   switch (item.kind) {
     case StreamKind.series:
@@ -54,7 +94,10 @@ void openAuroraItem(
         ),
       ));
   }
-  if (item.kind == StreamKind.live) return;
+  if (item.kind == StreamKind.live) {
+    route.then((_) => _restoreTab(ref, openedFromTab));
+    return;
+  }
 
   final isShow = item.kind == StreamKind.series;
   final title = cleanTitle(item.name).title;
@@ -65,6 +108,7 @@ void openAuroraItem(
   Future.delayed(const Duration(milliseconds: 700),
       () => unawaited(syncTitleWithTrakt(ref, title, isShow: isShow)));
   route.then((_) {
+    _restoreTab(ref, openedFromTab);
     try {
       ref.invalidate(continueWatchingProvider);
       ref.invalidate(recentlyWatchedProvider);

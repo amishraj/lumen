@@ -7,6 +7,7 @@ import '../aurora_navigation.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_buttons.dart';
 import '../widgets/aurora_cards.dart';
+import '../../shared/smooth_scroll.dart';
 
 /// The full Continue Watching list — everything the rails cap away.
 ///
@@ -54,7 +55,9 @@ class AuroraContinueScreen extends ConsumerWidget {
               ),
             );
 
-        return CustomScrollView(slivers: [
+        return SmoothScrollArea(
+          builder: (context, scroll) =>
+              CustomScrollView(controller: scroll, slivers: [
           SliverToBoxAdapter(
             child: Padding(
               padding: EdgeInsets.fromLTRB(
@@ -117,7 +120,7 @@ class AuroraContinueScreen extends ConsumerWidget {
           SliverToBoxAdapter(
             child: SizedBox(height: Aurora.bottomPad(context)),
           ),
-        ]);
+        ]));
       }),
     );
   }

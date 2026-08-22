@@ -7,6 +7,7 @@ import '../../data/models/models.dart';
 import '../../data/sources/realdebrid_service.dart';
 import '../../state/detail_bundle.dart';
 import '../../state/providers.dart';
+import '../../shared/smooth_scroll.dart';
 import '../../shared/title_utils.dart';
 import '../aurora_navigation.dart';
 import '../aurora_playback.dart';
@@ -36,6 +37,13 @@ class AuroraDetailScreen extends ConsumerStatefulWidget {
 
 class _AuroraDetailScreenState extends ConsumerState<AuroraDetailScreen> {
   bool _resolving = false;
+  final _scroll = SmoothScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   StreamItem get item => widget.item;
 
@@ -120,7 +128,7 @@ class _AuroraDetailScreenState extends ConsumerState<AuroraDetailScreen> {
 
     return Scaffold(
       backgroundColor: Aurora.bg,
-      body: CustomScrollView(slivers: [
+      body: CustomScrollView(controller: _scroll, slivers: [
         SliverToBoxAdapter(
           child: SizedBox(
             height: heroH,

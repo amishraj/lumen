@@ -9,6 +9,7 @@ import '../aurora_providers.dart';
 import '../aurora_theme.dart';
 import '../widgets/aurora_cards.dart';
 import '../widgets/aurora_search_field.dart';
+import '../../shared/smooth_scroll.dart';
 
 /// Movies / TV Shows browse.
 ///
@@ -26,7 +27,7 @@ class AuroraBrowsePage extends ConsumerStatefulWidget {
 }
 
 class _AuroraBrowsePageState extends ConsumerState<AuroraBrowsePage> {
-  final _scroll = ScrollController();
+  final _scroll = SmoothScrollController();
   final _catSearch = TextEditingController();
   String _catQuery = '';
 

@@ -9,6 +9,8 @@ import '../aurora_theme.dart';
 import '../player/aurora_player.dart';
 import '../widgets/aurora_image.dart';
 import '../widgets/aurora_search_field.dart';
+import '../../shared/smooth_scroll.dart';
+import '../aurora_navigation.dart';
 
 const _kFavGroup = '★ Favorites';
 
@@ -23,7 +25,7 @@ class AuroraLivePage extends ConsumerStatefulWidget {
 }
 
 class _AuroraLivePageState extends ConsumerState<AuroraLivePage> {
-  final _railScroll = ScrollController();
+  final _railScroll = SmoothScrollController();
   final _catSearch = TextEditingController();
   String _catQuery = '';
 
@@ -652,7 +654,7 @@ class _ChannelPane extends ConsumerStatefulWidget {
 }
 
 class _ChannelPaneState extends ConsumerState<_ChannelPane> {
-  final _scroll = ScrollController();
+  final _scroll = SmoothScrollController();
   final _searchCtl = TextEditingController();
   late final ChannelPageKey _key =
       ChannelPageKey(widget.playlistId, StreamKind.live, widget.group);
@@ -809,13 +811,15 @@ class _ChannelRow extends ConsumerWidget {
       radius: 14,
       scale: 1.01,
       onActivate: () {
-        Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => AuroraPlayerScreen(
-            item: item,
-            queue: List.of(queue),
-            startIndex: index,
-          ),
-        ));
+        pushFromTab(
+            ref,
+            Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => AuroraPlayerScreen(
+                item: item,
+                queue: List.of(queue),
+                startIndex: index,
+              ),
+            )));
       },
       builder: (context, focused) => Container(
         margin: const EdgeInsets.symmetric(vertical: 3),

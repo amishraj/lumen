@@ -176,6 +176,10 @@ class _AuroraShellState extends ConsumerState<AuroraShell>
 
   /// Back bounces to Home first; on Home a second press within 2s exits.
   void _onBack() {
+    // A Back that arrives in the settling window straight after a title screen
+    // popped is the tail of that same gesture, not a new one. Acting on it
+    // bounced the user to Home the instant they returned from a title.
+    if (auroraFocusTabSuppressed) return;
     final current = ref.read(auroraTabProvider);
     if (current != AuroraTab.home.index) {
       _select(AuroraTab.home);
@@ -488,9 +492,16 @@ class _TopBarState extends ConsumerState<_TopBar> {
   /// cross-dissolves in). This is the "auto fade switch on focus" behaviour.
   void _focusTab(AuroraTab tab, bool focused) {
     if (!focused) return;
+    // Not while a route sits above us, and not in the settling window right
+    // after one popped: focus lands on a tab node by accident in both cases,
+    // and committing that as navigation is the "Back went to Home / Search"
+    // bug. See [auroraSuppressFocusTabUntil].
+    if (auroraFocusTabSuppressed) return;
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return;
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 90), () {
-      if (mounted) widget.onSelect(tab);
+      if (mounted && !auroraFocusTabSuppressed) widget.onSelect(tab);
     });
   }
 

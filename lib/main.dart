@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart' hide Playlist;
 import 'aurora/aurora_theme.dart';
 import 'aurora/shell.dart';
 import 'data/models/models.dart';
+import 'shared/device_class.dart';
 import 'shared/input_mode.dart';
 import 'shared/screens/onboarding_flow.dart';
 import 'state/credential_vault.dart';
@@ -19,9 +20,13 @@ import 'state/providers.dart';
 final Stopwatch bootStopwatch = Stopwatch();
 int? bootFirstFrameMs;
 
-void main() {
+void main() async {
   bootStopwatch.start();
   WidgetsFlutterBinding.ensureInitialized();
+  // Ask the platform whether this is a television before the first frame, so
+  // nothing phone-only ever paints on a TV. One method call; failures leave
+  // it false (see DeviceClass).
+  await DeviceClass.init();
   // The in-memory decoded-image budget. Flutter's default is 100 MiB / 1000
   // images — on a 1 GB Fire TV with a ~200 MB heap that single ceiling is
   // half the budget (home holds ~50 live images + up to three ~4 MB hero
@@ -66,8 +71,15 @@ class LumenApp extends StatelessWidget {
 
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.backspace): back,
-        const SingleActivator(LogicalKeyboardKey.browserBack): back,
+        // includeRepeats: false is load-bearing. A held or bouncy Back emits a
+        // KeyDownEvent AND KeyRepeatEvents, and with repeats included each one
+        // popped a route: the first press closed the title, the repeat reached
+        // the shell — whose PopScope refuses to pop and bounces to Home. One
+        // press, two pops, wrong destination.
+        const SingleActivator(LogicalKeyboardKey.backspace, includeRepeats: false):
+            back,
+        const SingleActivator(LogicalKeyboardKey.browserBack,
+            includeRepeats: false): back,
       },
       child: MaterialApp(
       navigatorKey: rootNavigatorKey,

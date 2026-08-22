@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../repositories/library_repository.dart';
 import '../models/models.dart';
 import '../../state/providers.dart';
+import '../../shared/title_keys.dart' show titleKey;
 import '../../shared/title_utils.dart';
 import '../sync/auth_service.dart' show lumenApiBase;
 
@@ -38,19 +39,126 @@ class TraktService {
       'A-8sJv32VFIUAACM6MfDlhoMZKHq1mFMoaU2765KX_8';
 
   static const _api = 'https://api.trakt.tv';
+
+  /// Trakt sits behind Cloudflare bot protection, and a request carrying no
+  /// User-Agent is answered with an HTML 403 that never reaches Trakt's API at
+  /// all. Dart's HTTP client sends none by default.
+  ///
+  /// The Worker learned this in v2.0.2 (see `server/src/trakt.js`). The app's
+  /// OWN direct calls — which is every read, every scrobble, every history
+  /// write — never did, so the whole Trakt integration was talking to a
+  /// Cloudflare error page. That is where `FormatException: Unexpected
+  /// character (at offset 0)` came from: an HTML body being handed to
+  /// jsonDecode.
+  static const _userAgent = 'Lumen/2.0 (+https://github.com/amishraj/lumen)';
+
+  /// `responseType: plain` keeps Dio out of the parsing business: an error
+  /// body that is HTML, or empty, or plain text, must be *reportable* rather
+  /// than an opaque DioException thrown from inside the response transformer.
+  /// Everything decodes through [_json], which returns null instead of
+  /// throwing. Statuses still follow the old rule (5xx throws) so the outbox
+  /// keeps telling "server is down, retry" apart from "this op is bad".
   final _dio = Dio(BaseOptions(
-    headers: {'Content-Type': 'application/json', 'trakt-api-version': '2'},
+    headers: {
+      'Content-Type': 'application/json',
+      'trakt-api-version': '2',
+      'User-Agent': _userAgent,
+      'Accept': 'application/json',
+    },
+    responseType: ResponseType.plain,
     validateStatus: (s) => s != null && s < 500,
   ));
 
-  // User-entered credentials take precedence over the embedded ones, so a
-  // revoked/deleted embedded Trakt app (Trakt replies 401 "client not found")
-  // never hard-blocks connect — the user can paste their own app's id/secret
-  // and override it. Falls back to the embedded pair when nothing is saved.
+  /// Decode a Trakt response body, or null when it is not JSON (an HTML block
+  /// page, a bare "Forbidden", an empty body). Never throws.
+  static dynamic _json(Response res) {
+    final raw = res.data;
+    if (raw == null) return null;
+    if (raw is! String) return raw;
+    if (raw.trim().isEmpty) return null;
+    try {
+      return jsonDecode(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Plain-English cause for a non-200, for the sanity check and for anything
+  /// that surfaces a Trakt failure to the user. Status codes per Trakt's docs.
+  static String describeFailure(Response res) {
+    final body = res.data is String ? (res.data as String).trim() : '';
+    final looksLikeHtml = body.startsWith('<');
+    switch (res.statusCode) {
+      case 401:
+        return 'Unauthorized — the access token expired and could not be '
+            'refreshed. Reconnect Trakt.';
+      case 403:
+        return looksLikeHtml
+            ? 'Blocked before reaching Trakt (Cloudflare bot protection).'
+            : 'Forbidden — the API key is not valid for this account\'s '
+                'token. Run this check again to pick up the current key.';
+      case 404:
+        return 'Not found on Trakt.';
+      case 420:
+      case 429:
+        return 'Rate limited by Trakt — too many requests. Wait a minute and '
+            'try again.';
+      default:
+        final detail = body.isEmpty
+            ? 'empty response body'
+            : (looksLikeHtml ? 'an HTML error page' : body.substring(0, body.length.clamp(0, 120)));
+        return 'HTTP ${res.statusCode} — $detail';
+    }
+  }
+
+  /// Where the Worker's Trakt client id is cached once fetched.
+  static const _serverClientIdKey = 'trakt_server_client_id';
+
+  /// The client id sent as `trakt-api-key` on every direct Trakt call.
+  ///
+  /// The order matters, and getting it wrong is invisible from the outside.
+  /// Connecting goes through the Worker, which holds the ROTATED credentials
+  /// as secrets — so the access token belongs to *that* Trakt app. Every read
+  /// then sent the embedded id instead, which is committed to a public repo
+  /// and no longer valid. A token from one app presented with another app's
+  /// key gets a bare `403 Forbidden`: connected, and every single list empty.
+  /// That is the bug the sanity check was reporting.
+  ///
+  ///   1. credentials the user typed in — an explicit override always wins
+  ///   2. the server's client id — the app that actually minted the token
+  ///   3. the embedded pair — for a build with no Lumen account behind it
   Future<String?> _clientId() async {
     final saved = await _repo.getSetting('trakt_client_id');
     if (saved != null && saved.isNotEmpty) return saved;
+    final server = await _repo.getSetting(_serverClientIdKey);
+    if (server != null && server.isNotEmpty) return server;
     return _embeddedClientId.isNotEmpty ? _embeddedClientId : null;
+  }
+
+  /// Fetch and cache the Worker's Trakt client id (`GET /v1/trakt/client_id`,
+  /// which returns only the PUBLIC half). No-op when signed out of a Lumen
+  /// account — there is no server to ask, and the embedded id stands.
+  ///
+  /// [force] re-fetches even when one is cached, which is how a stale cached
+  /// id gets corrected: Trakt announces it as a 403.
+  Future<String?> refreshServerClientId({bool force = false}) async {
+    if (!force) {
+      final cached = await _repo.getSetting(_serverClientIdKey);
+      if (cached != null && cached.isNotEmpty) return cached;
+    }
+    final base = await _oauthProxyBase();
+    if (base == null) return null;
+    try {
+      final res = await _dio.get('$base/v1/trakt/client_id',
+          options: await _oauthProxyOptions());
+      final d = _json(res);
+      final id = d is Map ? '${d['client_id'] ?? ''}' : '';
+      if (res.statusCode == 200 && id.isNotEmpty) {
+        await _repo.setSetting(_serverClientIdKey, id);
+        return id;
+      }
+    } catch (_) {/* offline — the cached or embedded id stands */}
+    return null;
   }
 
   Future<String?> _clientSecret() async {
@@ -96,7 +204,7 @@ class TraktService {
   /// the Worker returns {"error": "..."} for anything it could not forward.
   static String? _proxyError(Response res) {
     try {
-      final d = res.data is String ? jsonDecode(res.data) : res.data;
+      final d = _json(res);
       final e = d is Map ? d['error'] : null;
       return e == null ? null : '$e';
     } catch (_) {
@@ -112,6 +220,9 @@ class TraktService {
 
   /// Step 1 of the device flow — get a code for the user to enter.
   Future<TraktDeviceCode> requestDeviceCode() async {
+    // Pick up the server's client id BEFORE the flow starts, so the key we
+    // read with afterwards is the same app that is about to mint the token.
+    await refreshServerClientId();
     final proxy = await _oauthProxyBase();
     final Response res;
     if (proxy != null) {
@@ -129,7 +240,7 @@ class TraktService {
       throw Exception(_proxyError(res) ??
           'Trakt rejected the client id (${res.statusCode}).');
     }
-    final d = res.data is String ? jsonDecode(res.data) : res.data;
+    final d = _json(res);
     return TraktDeviceCode(
       deviceCode: d['device_code'],
       userCode: d['user_code'],
@@ -160,7 +271,7 @@ class TraktService {
     }
     switch (res.statusCode) {
       case 200:
-        final d = res.data is String ? jsonDecode(res.data) : res.data;
+        final d = _json(res);
         await _repo.setSetting('trakt_access_token', d['access_token']);
         await _repo.setSetting('trakt_refresh_token', d['refresh_token']);
         await _clearCaches(); // fresh account — drop any prior snapshots
@@ -225,7 +336,7 @@ class TraktService {
             }));
       }
       if (res.statusCode == 200) {
-        final d = res.data is String ? jsonDecode(res.data) : res.data;
+        final d = _json(res);
         await _repo.setSetting('trakt_access_token', d['access_token']);
         await _repo.setSetting('trakt_refresh_token', d['refresh_token']);
         return true;
@@ -248,9 +359,30 @@ class TraktService {
     var res = await go();
     if (res.statusCode == 401 && await _refreshToken()) {
       res = await go();
+    } else if (res.statusCode == 403 && await _recoverKey()) {
+      res = await go();
     }
     return res;
   }
+
+  /// A 403 from Trakt means "invalid API key or unapproved app". By far the
+  /// commonest cause here is a key that no longer matches the app that minted
+  /// the token, so pull the server's current one and let the caller retry
+  /// once. Returns true only when the key actually CHANGED — otherwise
+  /// retrying would just buy a second identical 403.
+  Future<bool> _recoverKey() async {
+    if (_recovering) return false;
+    _recovering = true;
+    try {
+      final before = await _clientId();
+      await refreshServerClientId(force: true);
+      return await _clientId() != before;
+    } finally {
+      _recovering = false;
+    }
+  }
+
+  bool _recovering = false;
 
   /// Authenticated POST with the same self-healing 401 → refresh → retry as
   /// [_authGet]. Every WRITE goes through here: the old raw posts treated an
@@ -265,6 +397,8 @@ class TraktService {
           options: Options(headers: await _authHeaders()));
       var res = await go();
       if (res.statusCode == 401 && await _refreshToken()) {
+        res = await go();
+      } else if (res.statusCode == 403 && await _recoverKey()) {
         res = await go();
       }
       return res.statusCode;
@@ -308,7 +442,7 @@ class TraktService {
       try {
         final res = await fetcher();
         if (res.statusCode != 200) return stale;
-        final data = res.data is String ? jsonDecode(res.data) : res.data;
+        final data = _json(res);
         await _repo.setSetting(
             cacheKey, jsonEncode({'at': now, 'v': data}));
         return data;
@@ -457,6 +591,20 @@ class TraktService {
                 watched: op['watched'] == true)
             ? _opDone
             : _opRetry;
+      case 'episodes':
+        final raw = op['episodes'];
+        final pairs = <(int, int)>[
+          if (raw is List)
+            for (final e in raw)
+              if (e is Map &&
+                  e['season'] is num &&
+                  e['episode'] is num)
+                ((e['season'] as num).toInt(), (e['episode'] as num).toInt()),
+        ];
+        if (pairs.isEmpty) return _opDone; // malformed — drop
+        return await _postEpisodes(title, pairs, watched: op['watched'] == true)
+            ? _opDone
+            : _opRetry;
       case 'watchlist':
         return await _postWatchlist(title,
                 year: year, isShow: isShow, inList: op['inList'] == true)
@@ -517,7 +665,7 @@ class TraktService {
       final res =
           await _authGet('$_api/sync/playback', queryParameters: {'limit': '1000'});
       if (res.statusCode != 200) return false;
-      final data = res.data is String ? jsonDecode(res.data) : res.data;
+      final data = _json(res);
       final fresh = jsonEncode(data);
       var same = false;
       final old = await _repo.getSetting('trakt:cache:playback');
@@ -624,7 +772,7 @@ class TraktService {
   Future<void> _fetchUsername() async {
     try {
       final res = await _authGet('$_api/users/settings');
-      final d = res.data is String ? jsonDecode(res.data) : res.data;
+      final d = _json(res);
       final name = d['user']?['username'] ?? d['user']?['name'];
       if (name != null) await _repo.setSetting('trakt_username', '$name');
     } catch (_) {/* non-fatal */}
@@ -642,7 +790,7 @@ class TraktService {
     try {
       final res = await _authGet('$_api/users/settings');
       if (res.statusCode == 200) {
-        final d = res.data is String ? jsonDecode(res.data) : res.data;
+        final d = _json(res);
         final name =
             d is Map ? (d['user']?['username'] ?? d['user']?['name']) : null;
         return (
@@ -824,12 +972,122 @@ class TraktService {
       'trakt:cache:list:$listId',
       queryParameters: {'limit': '1000'});
 
+  /// Push everything watched on THIS device up to Trakt.
+  ///
+  /// The merge was only ever half-built: Trakt's history is pulled down on
+  /// every open, and new plays go up through the outbox, but anything watched
+  /// before the account was linked had no route off the device at all. Connect
+  /// Trakt after a month of watching and that month simply never existed.
+  ///
+  /// Skips what Trakt already has, so it is safe to run repeatedly — and the
+  /// local `updated_at` is sent as `watched_at`, so even a duplicate would land
+  /// on the same timestamp rather than inventing a second play.
+  ///
+  /// Returns what it did, for the UI to report honestly.
+  Future<({int uploaded, int alreadyThere, bool connected})> uploadLocalHistory({
+    void Function(String stage)? onProgress,
+  }) async {
+    if (!await isConnected()) {
+      return (uploaded: 0, alreadyThere: 0, connected: false);
+    }
+    var uploaded = 0;
+    var already = 0;
+
+    onProgress?.call('Reading what you\'ve watched here…');
+    final local = await _repo.db.episodeProgressAll();
+
+    // movie title -> when; show title -> {(season, episode): when}
+    final movies = <String, int>{};
+    final shows = <String, Map<(int, int), int>>{};
+    final epPattern = RegExp(r'^(.*)\|s(\d+)e(\d+)$');
+    for (final entry in local.entries) {
+      if (!entry.value.watched) continue;
+      final key = entry.key;
+      if (key.startsWith('movie:')) {
+        final t = key.substring(6);
+        if (t.isNotEmpty) movies[t] = entry.value.updatedAt;
+        continue;
+      }
+      if (key.startsWith('show:')) continue; // a poster marker, not a play
+      final m = epPattern.firstMatch(key);
+      if (m == null) continue;
+      final title = m.group(1)!;
+      if (title.isEmpty) continue;
+      (shows[title] ??= {})[(int.parse(m.group(2)!), int.parse(m.group(3)!))] =
+          entry.value.updatedAt;
+    }
+
+    String stamp(int ms) => ms > 0
+        ? DateTime.fromMillisecondsSinceEpoch(ms).toUtc().toIso8601String()
+        : '';
+
+    // ---- Movies: one snapshot read tells us everything Trakt already has.
+    onProgress?.call('Checking your Trakt movies…');
+    final onTrakt = <String>{
+      for (final m in await watchedMovies()) titleKey(m.title),
+    };
+    for (final e in movies.entries) {
+      if (onTrakt.contains(titleKey(e.key))) {
+        already++;
+        continue;
+      }
+      await _enqueue({
+        'op': 'history_add',
+        'title': e.key,
+        'isShow': false,
+        'watched_at': stamp(e.value),
+      });
+      uploaded++;
+    }
+
+    // ---- Shows: per-show, because Trakt's watched-progress is per-show.
+    // Bounded so an enormous library cannot turn one tap into a thousand
+    // requests; the rest goes up on the next run.
+    const maxShows = 60;
+    var i = 0;
+    for (final entry in shows.entries) {
+      if (i >= maxShows) break;
+      i++;
+      onProgress?.call('Checking ${entry.key} ($i/${shows.length})…');
+      final have = await watchedEpisodesFor(entry.key);
+      final missing = <(int, int)>[];
+      for (final ep in entry.value.keys) {
+        if (have.contains(ep)) {
+          already++;
+        } else {
+          missing.add(ep);
+        }
+      }
+      if (missing.isEmpty) continue;
+      await _enqueue({
+        'op': 'episodes',
+        'title': entry.key,
+        'isShow': true,
+        'watched': true,
+        'episodes': [
+          for (final (sn, en) in missing) {'season': sn, 'episode': en},
+        ],
+      });
+      uploaded += missing.length;
+    }
+
+    onProgress?.call('Sending to Trakt…');
+    await flushOutbox();
+    return (uploaded: uploaded, alreadyThere: already, connected: true);
+  }
+
   /// Live end-to-end sanity check: verifies the token, forces a refresh if the
   /// account call 401s, and reports real HTTP status + counts for each Trakt
   /// endpoint the home screen depends on. Nothing here is swallowed, so the
   /// user can actually see *why* rows are empty.
   Future<List<TraktCheck>> diagnostics() async {
     final out = <TraktCheck>[];
+
+    // Re-pull the server's key first: a mismatched key is the single most
+    // likely reason someone is running this check at all, and fixing it here
+    // means the probes below report the state AFTER the repair rather than
+    // the failure that prompted it.
+    await refreshServerClientId(force: true);
 
     final tok = await token();
     out.add(TraktCheck('Access token',
@@ -838,9 +1096,19 @@ class TraktService {
             ? 'none saved — not connected'
             : 'present'));
     final cid = await _clientId();
+    final fromServer =
+        (await _repo.getSetting(_serverClientIdKey))?.isNotEmpty ?? false;
+    final userSet =
+        (await _repo.getSetting('trakt_client_id'))?.isNotEmpty ?? false;
     out.add(TraktCheck('API key (client id)',
         ok: cid != null && cid.isNotEmpty,
-        detail: (cid == null || cid.isEmpty) ? 'missing' : 'present'));
+        detail: (cid == null || cid.isEmpty)
+            ? 'missing'
+            : userSet
+                ? 'your own Trakt app'
+                : fromServer
+                    ? 'from your Lumen account (matches the token)'
+                    : 'built-in'));
 
     if (tok == null || tok.isEmpty) return out;
 
@@ -848,35 +1116,43 @@ class TraktService {
         {bool countList = true}) async {
       try {
         final res = await _authGet(url);
-        final d = res.data is String ? jsonDecode(res.data) : res.data;
+        final d = _json(res);
         final count = countList && d is List ? d.length : null;
+        final ok = res.statusCode == 200 && d != null;
         out.add(TraktCheck(label,
-            ok: res.statusCode == 200,
+            ok: ok,
             status: res.statusCode,
             count: count,
-            detail: res.statusCode == 200
+            // Never a raw FormatException again: a body that isn't JSON is a
+            // fact about the response, and gets described as one.
+            detail: ok
                 ? null
-                : (res.statusCode == 401
-                    ? 'unauthorized — token refresh failed; reconnect'
-                    : 'HTTP ${res.statusCode}')));
-      } catch (e) {
-        out.add(TraktCheck(label, ok: false, detail: '$e'));
+                : (res.statusCode == 200
+                    ? 'Trakt replied 200 but the body was not JSON.'
+                    : describeFailure(res))));
+      } catch (_) {
+        out.add(TraktCheck(label, ok: false, detail: 'Could not reach Trakt.'));
       }
     }
 
     // Account: also confirms who we're linked to.
     try {
       final res = await _authGet('$_api/users/settings');
-      final d = res.data is String ? jsonDecode(res.data) : res.data;
+      final d = _json(res);
       final name =
           d is Map ? (d['user']?['username'] ?? d['user']?['name']) : null;
       if (name != null) await _repo.setSetting('trakt_username', '$name');
       out.add(TraktCheck('Account',
           ok: res.statusCode == 200 && name != null,
           status: res.statusCode,
-          detail: name != null ? '@$name' : 'no user in response'));
-    } catch (e) {
-      out.add(TraktCheck('Account', ok: false, detail: '$e'));
+          detail: name != null
+              ? '@$name'
+              : (res.statusCode == 200
+                  ? 'Trakt replied 200 but named no user.'
+                  : describeFailure(res))));
+    } catch (_) {
+      out.add(const TraktCheck('Account',
+          ok: false, detail: 'Could not reach Trakt.'));
     }
 
     await probe('Watchlist', '$_api/sync/watchlist');
@@ -1073,7 +1349,7 @@ class TraktService {
           queryParameters: {'query': title, if (year != null) 'years': '$year'},
           options: Options(headers: await _authHeaders()));
       final list =
-          search.data is String ? jsonDecode(search.data) : search.data;
+          _json(search);
       if (list is! List || list.isEmpty) return;
       final node = (list.first as Map)[type];
       if (node is! Map) return;
@@ -1097,7 +1373,7 @@ class TraktService {
           queryParameters: {'query': title, if (year != null) 'years': '$year'},
           options: Options(headers: await _authHeaders()));
       final list =
-          search.data is String ? jsonDecode(search.data) : search.data;
+          _json(search);
       if (list is! List || list.isEmpty) return;
       final node = (list.first as Map)[type];
       if (node is! Map) return;
@@ -1134,6 +1410,72 @@ class TraktService {
   /// Posts the season to /sync/history (or /remove) — Trakt expands a bare
   /// season to all its episodes — then drops the affected snapshots so the
   /// next read reflects the change instead of the pre-toggle 6h cache.
+  /// Set the watched flag on specific episodes of [title] (as (season,
+  /// episode) pairs). Queued to the outbox on failure, like every other write,
+  /// so the "anything marked watched locally MUST eventually reach Trakt"
+  /// invariant holds for the episode editor too.
+  ///
+  /// Trakt had only a whole-season write before this; the editor needs to move
+  /// one episode without touching the other twenty-five.
+  Future<void> setEpisodesWatched(String title, List<(int, int)> episodes,
+      {required bool watched}) async {
+    if (episodes.isEmpty) return;
+    if (!await isConnected()) return;
+    if (!await _postEpisodes(title, episodes, watched: watched)) {
+      await _enqueue({
+        'op': 'episodes',
+        'title': title,
+        'isShow': true,
+        'watched': watched,
+        'episodes': [
+          for (final (s, e) in episodes) {'season': s, 'episode': e},
+        ],
+      });
+    }
+  }
+
+  /// Raw episode write (also the outbox replay path — must not re-enqueue).
+  Future<bool> _postEpisodes(String title, List<(int, int)> episodes,
+      {required bool watched}) async {
+    try {
+      final ids = await idsFor(title, isShow: true);
+      if (ids == null) return false;
+      // Group by season so one call covers a mixed selection.
+      final bySeason = <int, List<int>>{};
+      for (final (s, e) in episodes) {
+        (bySeason[s] ??= []).add(e);
+      }
+      final ok = await _authPost(
+        watched ? '$_api/sync/history' : '$_api/sync/history/remove',
+        {
+          'shows': [
+            {
+              'ids': ids,
+              'seasons': [
+                for (final entry in bySeason.entries)
+                  {
+                    'number': entry.key,
+                    'episodes': [
+                      for (final n in entry.value) {'number': n},
+                    ],
+                  },
+              ],
+            }
+          ]
+        },
+      );
+      if (!ok) return false;
+      await _repo.setSetting('trakt:cache:watched:shows', null);
+      final sid = ids['trakt'] ?? ids['slug'];
+      if (sid != null) {
+        await _repo.setSetting('trakt:cache:show_progress:$sid', null);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<bool> _postSeason(String title, int season,
       {required bool watched}) async {
     try {
@@ -1261,7 +1603,7 @@ class TraktService {
           queryParameters: {'query': title, if (year != null) 'years': '$year'},
           options: Options(headers: await _authHeaders()));
       final list =
-          search.data is String ? jsonDecode(search.data) : search.data;
+          _json(search);
       if (list is! List || list.isEmpty) return null;
       final node = (list.first as Map)[type];
       if (node is! Map || node['ids'] is! Map) return null;

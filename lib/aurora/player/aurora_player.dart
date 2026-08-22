@@ -18,6 +18,7 @@ import '../../state/playback_engine.dart';
 import '../../state/providers.dart';
 import '../../state/sync_providers.dart';
 import '../../state/scrub_thumbs.dart';
+import '../../shared/device_class.dart';
 import '../../shared/title_utils.dart';
 import '../aurora_focus.dart';
 import '../aurora_theme.dart';
@@ -136,6 +137,28 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
   bool _fill = false; // false = fit (contain), true = fill (cover)
   bool _fetchingSubs = false; // OpenSubtitles online fetch in flight
 
+  /// The subtitle track the panel should show a tick against.
+  ///
+  /// Deliberately ours, not `_player.state.track.subtitle`. media_kit only
+  /// writes that field from an explicit `setSubtitleTrack()` call — mpv's own
+  /// track-list observer updates the track *list* and never reflects the sid
+  /// mpv selected back into it — so when mpv auto-picks a default or forced
+  /// track the field sits at `SubtitleTrack.auto()` and every row in the panel
+  /// compares false. Subtitles visibly on, nothing ticked. It also could not
+  /// represent an OpenSubtitles fetch, whose SubtitleTrack.data carries the
+  /// whole SRT as its id and matches no row in the list.
+  SubtitleTrack? _subtitleChoice;
+
+  /// True when [t] is what is currently showing.
+  bool _isActiveSub(SubtitleTrack t) => _subtitleChoice == t;
+
+  /// Select a subtitle track and remember it. Every path that changes
+  /// subtitles goes through here so the panel can never drift out of step.
+  Future<void> _chooseSubtitle(SubtitleTrack t) async {
+    await _player.setSubtitleTrack(t);
+    if (mounted) setState(() => _subtitleChoice = t);
+  }
+
   // Brief seek preview (position bubble) shown for ~1.1s after a ◀ ▶ seek.
   Duration? _previewPos;
   Timer? _previewTimer;
@@ -151,16 +174,15 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
 
   // ---- Mobile-only: brightness control + screen lock (Netflix-style) ------
   /// Touch phone/tablet layout: the only place the brightness rail and lock
-  /// live. TV boxes are Android too but never phone-sized, so they're excluded.
+  /// live.
   ///
-  /// Judged on the *short* side, not `Aurora.isCompact`: a phone rotated into
-  /// landscape — which is how the player is actually watched — is ~900dp wide
-  /// and would fail a width test, which is exactly why the rail used to vanish
-  /// outside portrait.
-  bool _phoneUi(BuildContext context) =>
-      (defaultTargetPlatform == TargetPlatform.android ||
-          defaultTargetPlatform == TargetPlatform.iOS) &&
-      MediaQuery.of(context).size.shortestSide < 760;
+  /// This asks the PLATFORM what kind of device this is, because no measurement
+  /// of the screen can tell you. The previous test — Android or iOS, with a
+  /// shortest side under 760 — is true on every television: a 1080p TV at
+  /// density 2.0 reports 960x540dp, and 540 is phone-shaped by any width rule.
+  /// That is how a lock button and a brightness rail, neither of which a remote
+  /// can even reach, ended up on the TV. See [DeviceClass].
+  bool _phoneUi(BuildContext context) => DeviceClass.isHandheld;
 
   /// Notifier, not setState: a drag fires dozens of updates a second and only
   /// the rail may rebuild — never the whole player Stack.
@@ -284,6 +306,13 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
       _maybePickEnglishAudio(t.audio);
       _maybePickEnglishSubtitle(t.subtitle);
     }));
+    // Without this the tick never moves: the panel is normally opened while
+    // PAUSED, and the only thing rebuilding the player was the once-a-second
+    // position tick, which does not fire when paused.
+    _subs.add(_player.stream.track.listen((t) {
+      if (!mounted) return;
+      setState(() => _subtitleChoice = t.subtitle);
+    }));
     _subs.add(_player.stream.error.listen(_onPlayerError));
     if (widget.playContext?.rememberedUrl ?? false) {
       _usedRemembered.add(widget.startIndex);
@@ -330,7 +359,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
           .englishSrt(imdb, season: season, episode: episode);
       if (srt == null || !mounted || !_ownsPlayback) return;
       if (_autoSubPicked) return; // an embedded track appeared meanwhile
-      await _player.setSubtitleTrack(
+      await _chooseSubtitle(
           SubtitleTrack.data(srt, title: 'English (online)', language: 'en'));
     } catch (_) {/* quiet — the manual Subtitles panel still exists */}
   }
@@ -368,7 +397,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
     );
     if (en != SubtitleTrack.no()) {
       _autoSubPicked = true;
-      _player.setSubtitleTrack(en);
+      unawaited(_chooseSubtitle(en));
     }
   }
 
@@ -1143,7 +1172,7 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
         toast('No English subtitles found online.');
         return;
       }
-      await _player.setSubtitleTrack(
+      await _chooseSubtitle(
           SubtitleTrack.data(srt, title: 'English (online)', language: 'en'));
       toast('English subtitles loaded.');
       _closePanel();
@@ -1369,13 +1398,18 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                 else if (showSpinner && !_controlsVisible)
                   const Center(
                       child: CircularProgressIndicator(color: Colors.white)),
-                IgnorePointer(
-                  child: AnimatedOpacity(
-                    duration: Aurora.slow,
-                    opacity: (!_playing && !_buffering && _error == null)
-                        ? 1
-                        : 0,
-                    child: const ColoredBox(color: Color(0x40000000)),
+                // Paused dim. Positioned.fill for the same reason as the
+                // panel scrim: a childless ColoredBox in a Stack lays out to
+                // Size.zero, so this has never actually dimmed anything.
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: AnimatedOpacity(
+                      duration: Aurora.slow,
+                      opacity: (!_playing && !_buffering && _error == null)
+                          ? 1
+                          : 0,
+                      child: const ColoredBox(color: Color(0x40000000)),
+                    ),
                   ),
                 ),
                 // ---- Controls ----
@@ -1411,7 +1445,10 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                     ),
                   ),
                 // ---- Mobile: screen-lock unlock pill ----
-                if (_locked)
+                // `phone &&` matters: the pill is a pointer-only
+                // GestureDetector and the locked state swallows every remote
+                // key, so a TV that somehow entered lock had no way out.
+                if (phone && _locked)
                   Positioned(
                     left: 0,
                     right: 0,
@@ -1570,16 +1607,27 @@ class _AuroraPlayerScreenState extends ConsumerState<AuroraPlayerScreen> {
                         options: [
                           (
                             'Off',
-                            _player.state.track.subtitle == SubtitleTrack.no(),
-                            () => _player.setSubtitleTrack(SubtitleTrack.no())
+                            _isActiveSub(SubtitleTrack.no()),
+                            () => _chooseSubtitle(SubtitleTrack.no())
                           ),
+                          // A downloaded subtitle is not in mpv's track list —
+                          // it is raw SRT data — so it needs its own row, or
+                          // fetching one leaves the panel showing nothing
+                          // selected while subtitles are plainly on screen.
+                          if (_subtitleChoice != null &&
+                              _subtitleChoice!.data)
+                            (
+                              'Downloaded subtitle',
+                              true,
+                              () => _chooseSubtitle(_subtitleChoice!)
+                            ),
                           for (final t in _player.state.tracks.subtitle)
                             if (t != SubtitleTrack.no() &&
                                 t != SubtitleTrack.auto())
                               (
                                 _trackLabel(t.title, t.language, t.id),
-                                _player.state.track.subtitle == t,
-                                () => _player.setSubtitleTrack(t)
+                                _isActiveSub(t),
+                                () => _chooseSubtitle(t)
                               ),
                         ],
                         onDone: _closePanel,

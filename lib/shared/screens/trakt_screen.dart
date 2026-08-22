@@ -128,6 +128,8 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
                         },
                       ),
                       const SizedBox(height: 16),
+                      const _MergeCard(),
+                      const SizedBox(height: 16),
                       const _DiagnosticsPanel(),
                     ],
                   )
@@ -143,6 +145,11 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // What "no Trakt" actually means, stated up front. Without this the
+        // screen only ever sold the upside of connecting and left the default
+        // state — which is most people, most of the time — unexplained.
+        const _NotTrackedCard(),
+        const SizedBox(height: 20),
         const Text('Connect Trakt',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
         const SizedBox(height: 8),
@@ -191,6 +198,151 @@ class _TraktScreenState extends ConsumerState<TraktScreen> {
               _polling ? 'Waiting for authorization…' : 'Connect with Trakt'),
         ),
       ],
+    );
+  }
+}
+
+
+/// Shown when Trakt is NOT connected: what is and is not happening.
+///
+/// The honest version. Nothing leaves the device, everything still works
+/// locally, and connecting later loses nothing — that last part is the one
+/// people actually worry about, so it is said explicitly.
+class _NotTrackedCard extends StatelessWidget {
+  const _NotTrackedCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: LumenTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF2A2E3A)),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Icon(Icons.cloud_off_rounded, size: 20, color: Color(0xFF9AA0B0)),
+            SizedBox(width: 8),
+            Text('Not tracking to Trakt',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+          ]),
+          SizedBox(height: 10),
+          Text(
+            'Everything you watch is still recorded on this device — Continue '
+            'Watching, resume points and watched ticks all work exactly as '
+            'they do now. None of it is sent anywhere.\n\n'
+            'What you lose without Trakt: history shared with your other '
+            'devices and apps, and your Trakt watchlist on Home.\n\n'
+            'Connect whenever you like. Nothing watched in the meantime is '
+            'lost — you can upload this device\'s history to Trakt in one tap '
+            'straight after connecting.',
+            style: TextStyle(
+                color: Color(0xFF9AA0B0), fontSize: 13, height: 1.5),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shown when Trakt IS connected: the merge rules in plain language, plus the
+/// one action the merge was missing — pushing history that predates the link.
+class _MergeCard extends ConsumerStatefulWidget {
+  const _MergeCard();
+
+  @override
+  ConsumerState<_MergeCard> createState() => _MergeCardState();
+}
+
+class _MergeCardState extends ConsumerState<_MergeCard> {
+  bool _busy = false;
+  String? _status;
+
+  Future<void> _upload() async {
+    setState(() {
+      _busy = true;
+      _status = 'Starting…';
+    });
+    try {
+      final svc = await ref.read(traktServiceProvider.future);
+      final res = await svc.uploadLocalHistory(onProgress: (stage) {
+        if (mounted) setState(() => _status = stage);
+      });
+      if (!mounted) return;
+      setState(() => _status = !res.connected
+          ? 'Not connected to Trakt.'
+          : res.uploaded == 0
+              ? 'Trakt already had everything from this device.'
+              : 'Sent ${res.uploaded} to Trakt'
+                  '${res.alreadyThere > 0 ? " (${res.alreadyThere} were already there)" : ""}.');
+      refreshTraktData(ref);
+    } catch (_) {
+      if (mounted) setState(() => _status = 'Could not reach Trakt.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: LumenTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Row(children: [
+            Icon(Icons.merge_rounded, size: 20, color: LumenTheme.accent),
+            SizedBox(width: 8),
+            Text('How your history is merged',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+          ]),
+          const SizedBox(height: 10),
+          const Text(
+            'Both sides are kept. Anything you watch here is sent to Trakt; '
+            'anything watched on another device or app appears here. Where '
+            'they disagree about the same episode, the newer change wins — '
+            'except that un-ticking something here always wins until you '
+            'actually rewatch it.\n\n'
+            'Watched offline? It queues and goes up the next time Lumen can '
+            'reach Trakt. Nothing is dropped.',
+            style: TextStyle(
+                color: Color(0xFF9AA0B0), fontSize: 13, height: 1.5),
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'History from before you connected is the one thing that does not '
+            'travel on its own. Send it now:',
+            style: TextStyle(
+                color: Color(0xFF9AA0B0), fontSize: 12.5, height: 1.4),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: _busy ? null : _upload,
+            icon: _busy
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.upload_rounded, size: 18),
+            label: Text(_busy
+                ? 'Uploading…'
+                : 'Upload this device\'s history to Trakt'),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _status ??
+                'Skips anything Trakt already has, so it is safe to run again.',
+            style: const TextStyle(color: Color(0xFF9AA0B0), fontSize: 12),
+          ),
+        ],
+      ),
     );
   }
 }

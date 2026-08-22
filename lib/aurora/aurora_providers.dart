@@ -317,6 +317,28 @@ final auroraCatalogPagerProvider = StateNotifierProvider.autoDispose
   return TmdbCatalogPager(svc, idxFuture, pl!.id!, key.show, key.genreId);
 });
 
+/// Until when the top bar must NOT turn a nav node gaining focus into a tab
+/// switch.
+///
+/// Focusing a tab selects it, which is the right behaviour when a person is
+/// sweeping the bar with a remote — and the wrong behaviour entirely when the
+/// focus arrived by accident. After a pushed route pops, Flutter restores focus
+/// into the shell route and, finding the page's own scope excluded or
+/// unmounted, falls through to the only permanently focusable children there:
+/// the tab nodes. That accident used to be committed as navigation, which is
+/// why Back from a title landed on Home (the node focused at boot) or on Search
+/// (the reading-order-first node) instead of where you came from.
+///
+/// A plain timestamp rather than a flag, so a missed reset can never wedge the
+/// bar permanently.
+DateTime? auroraSuppressFocusTabUntil;
+
+/// True while focus changes on the nav must not commit a tab switch.
+bool get auroraFocusTabSuppressed {
+  final until = auroraSuppressFocusTabUntil;
+  return until != null && DateTime.now().isBefore(until);
+}
+
 /// The nav's focus target — the currently-selected tab's *stable* focus node,
 /// published by the top bar each build. Pages call
 /// `auroraNavTarget?.requestFocus()` to send focus back up to the active tab

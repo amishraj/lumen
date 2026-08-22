@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../shared/smooth_scroll.dart';
 
 /// Owns a [ScrollController] for a page and hands it to [builder] — so a
 /// stateless page can drive its own scrollable (needed for scroll-to-top on
@@ -20,7 +21,7 @@ class AuroraNavScrollView extends StatefulWidget {
 }
 
 class _AuroraNavScrollViewState extends State<AuroraNavScrollView> {
-  final _controller = ScrollController();
+  final _controller = SmoothScrollController();
 
   @override
   void dispose() {
